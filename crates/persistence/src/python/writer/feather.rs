@@ -15,14 +15,9 @@
 
 //! Python bindings for the Rust `FeatherWriter` as `StreamingFeatherWriter`.
 
-#![expect(
-    clippy::too_many_lines,
-    reason = "PyO3 writer constructor mirrors Python keyword surface"
-)]
-
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     rc::Rc,
     sync::{
         Arc,
@@ -32,10 +27,10 @@ use std::{
 
 use nautilus_common::{
     clock::Clock,
-    live::{block_on_nautilus_with, get_runtime},
+    live::block_on_nautilus_with,
     python::{cache::PyCache, clock::PyClock},
 };
-use nautilus_core::{UnixNanos, datetime::get_timezone, python::to_pyruntime_err};
+use nautilus_core::python::to_pyvalue_err;
 use nautilus_model::{
     data::{
         Bar, CustomData, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
@@ -52,17 +47,23 @@ use nautilus_model::{
     python::instruments::pyobject_to_instrument_any,
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
 };
-use object_store::ObjectStoreExt;
 use pyo3::{exceptions::PyIOError, prelude::*};
 
 use crate::{
     common::{
-        paths::normalize_path_separators,
+        paths::{local_writer_directory, normalize_path_separators},
         storage::{StorageBackend, create_storage_backend_from_path},
     },
-    python::backend::writer_record_filter_from_py,
+    python::{
+        catalog::conversion::PyCatalogDataType,
+        writer::conversion::{
+            rotation_config_from_python, writer_record_filter_from_py, writer_type_prefix,
+            writer_types_from_py,
+        },
+    },
     writer::{
-        feather::{FeatherWriter, RotationConfig, WriterClock},
+        factory::{WriterConnectConfig, replace_existing_writer_data},
+        feather::{FeatherWriter, WriterClock},
         subscription::StreamingSinkSubscription,
     },
 };
@@ -99,25 +100,23 @@ impl PyStreamingFeatherWriter {
     ///
     /// # Parameters
     ///
-    /// - `path`: The path to persist the stream to. Must be a directory.
+    /// - `path`: The local directory to append the stream files to.
     /// - `cache`: The cache for query info (`PyCache`).
     /// - `clock`: The clock to use for time-related operations (`PyClock`).
-    /// - `fs_protocol`: Optional filesystem protocol (default: "file").
-    /// - `fs_storage_options`: Optional storage options for cloud backends.
-    /// - `include_types`: Optional list of type names to include (e.g., `["quotes", "trades"]`).
+    /// - `include_types`: Optional data, record, or instrument types to include (e.g.,
+    ///   `[NautilusDataType.QuoteTick, NautilusDataType.TradeTick]`).
     /// - `rotation_mode`: Rotation mode (0=SIZE, 1=INTERVAL, `2=SCHEDULED_DATES`, `3=NO_ROTATION`).
     /// - `max_file_size`: Maximum file size in bytes before rotation (for SIZE mode).
     /// - `rotation_interval_ns`: Rotation interval in nanoseconds (for `INTERVAL/SCHEDULED_DATES` modes).
     /// - `rotation_time_ns`: Scheduled rotation time in nanoseconds (for `SCHEDULED_DATES` mode).
-    /// - `flush_interval_ms`: Flush interval in milliseconds (default: 1000). Set to 0 to disable auto-flush.
+    /// - `flush_interval_ms`: Interval in milliseconds for flushing open files to disk (default:
+    ///   1000). Set to 0 to disable auto-flush.
     /// - `replace`: If existing files at the given path should be replaced (default: False).
     #[new]
     #[pyo3(signature = (
         path,
         cache,
         clock,
-        fs_protocol=None,
-        fs_storage_options=None,
         include_types=None,
         record_types=None,
         record_filters=None,
@@ -138,9 +137,7 @@ impl PyStreamingFeatherWriter {
         path: String,
         cache: PyCache,
         clock: PyClock,
-        fs_protocol: Option<&str>,
-        fs_storage_options: Option<HashMap<String, String>>,
-        include_types: Option<Vec<String>>,
+        include_types: Option<Vec<Bound<'_, PyAny>>>,
         record_types: Option<&Bound<'_, PyAny>>,
         record_filters: Option<&Bound<'_, PyAny>>,
         rotation_mode: u8,
@@ -151,69 +148,20 @@ impl PyStreamingFeatherWriter {
         flush_interval_ms: Option<u64>,
         replace: bool,
     ) -> PyResult<Self> {
-        // Create object store from path
-        // Use fs_protocol to construct the full path if it's a cloud protocol
-        let full_path = if let Some(protocol) = fs_protocol {
-            if protocol != "file" && !path.contains("://") {
-                format!("{protocol}://{path}")
-            } else {
-                path
-            }
-        } else {
-            path
-        };
+        let directory =
+            local_writer_directory(&path).map_err(|e| PyIOError::new_err(e.to_string()))?;
 
-        let storage_options = fs_storage_options
-            .map(|map| map.into_iter().collect::<ahash::AHashMap<String, String>>());
-
-        if replace
-            && url::Url::parse(&full_path).is_ok_and(|url| {
-                !matches!(url.scheme(), "file" | "memory")
-                    && url.path().trim_matches('/').is_empty()
-            })
-        {
-            return Err(PyIOError::new_err(
-                "replace=True for remote streaming paths requires a non-empty prefix",
-            ));
-        }
-
-        let storage = create_storage_backend_from_path(&full_path, storage_options)
-            .map_err(|e| PyIOError::new_err(format!("Failed to create storage backend: {e}")))?;
-        let object_store = storage.object_store.clone();
-
-        // Handle replace parameter - delete existing files if requested
         if replace {
-            let store_ref = object_store.clone();
-            let base_path = storage.base_path.clone();
-            block_on_nautilus_with(move || async move {
-                let prefix = if base_path.is_empty() {
-                    None
-                } else {
-                    Some(object_store::path::Path::from(
-                        base_path.trim_start_matches('/'),
-                    ))
-                };
-
-                let mut stream = store_ref.list(prefix.as_ref());
-                let mut to_delete = Vec::new();
-
-                while let Some(result) = futures::StreamExt::next(&mut stream).await {
-                    if let Ok(meta) = result {
-                        to_delete.push(meta.location);
-                    }
-                }
-
-                for path in to_delete {
-                    let _ = store_ref.delete(&path).await;
-                }
-
-                Ok::<(), anyhow::Error>(())
-            })
-            .map_err(|e| PyIOError::new_err(format!("Failed to replace existing files: {e}")))?;
+            replace_existing_writer_data(&WriterConnectConfig::new(path.clone(), None)).map_err(
+                |e| PyIOError::new_err(format!("Failed to replace existing files: {e}")),
+            )?;
         }
+
+        let storage = create_storage_backend_from_path(&path, None)
+            .map_err(|e| PyIOError::new_err(format!("Failed to create storage backend: {e}")))?;
 
         let run_manifest =
-            if let Some((kind, instance_id)) = run_kind_and_instance_id_from_path(&full_path) {
+            if let Some((kind, instance_id)) = run_kind_and_instance_id_from_path(&path) {
                 let manifest_storage = storage.clone();
                 let manifest_kind = kind.clone();
                 let manifest_instance_id = instance_id.clone();
@@ -229,45 +177,33 @@ impl PyStreamingFeatherWriter {
                 })
                 .map_err(|e| PyIOError::new_err(format!("Failed to write run manifest: {e}")))?;
 
-                Some((storage.clone(), kind, instance_id))
+                Some((storage, kind, instance_id))
             } else {
                 None
             };
 
         // Convert rotation mode to RotationConfig
         // Python RotationMode: 0=SIZE, 1=INTERVAL, 2=SCHEDULED_DATES, 3=NO_ROTATION
-        let rotation_config = match rotation_mode {
-            0 => RotationConfig::Size {
-                max_size: max_file_size,
-            },
-            1 => {
-                let interval = rotation_interval_ns.unwrap_or(86_400_000_000_000); // Default 1 day
+        let rotation_config = rotation_config_from_python(
+            rotation_mode,
+            max_file_size,
+            rotation_interval_ns,
+            rotation_time_ns,
+            rotation_timezone,
+        )?;
 
-                RotationConfig::Interval {
-                    interval_ns: interval,
-                }
+        let (type_filter, include_filter) = writer_types_from_py(include_types)?;
+        let record_filter = match (
+            include_filter,
+            writer_record_filter_from_py(record_types, record_filters)?,
+        ) {
+            (Some(_), Some(_)) => {
+                return Err(to_pyvalue_err(
+                    "pass include_types or record_types and record_filters, not both",
+                ));
             }
-            2 => {
-                let interval = rotation_interval_ns.unwrap_or(86_400_000_000_000); // Default 1 day
-
-                let tz = get_timezone(rotation_timezone).map_err(|e| {
-                    PyIOError::new_err(format!("Failed to parse rotation_timezone: {e}"))
-                })?;
-
-                let time_ns = rotation_time_ns.unwrap_or(0);
-
-                RotationConfig::ScheduledDates {
-                    interval_ns: interval,
-                    rotation_time: UnixNanos::from(time_ns),
-                    rotation_timezone: tz,
-                }
-            }
-            _ => RotationConfig::NoRotation, // Default to no rotation for invalid values
+            (include_filter, record_filter) => include_filter.or(record_filter),
         };
-
-        // Convert include_types to HashSet
-        let type_filter = include_types.map(|types| types.into_iter().collect::<HashSet<String>>());
-        let record_filter = writer_record_filter_from_py(record_types, record_filters)?;
 
         // Extract Clock from Python wrapper and translate it into the core
         // writer's Send time source (live clocks read the wall clock directly;
@@ -280,8 +216,7 @@ impl PyStreamingFeatherWriter {
 
         // Create FeatherWriter
         let writer = FeatherWriter::new(
-            storage.base_path,
-            object_store,
+            directory,
             writer_clock,
             rotation_config,
             type_filter,
@@ -447,33 +382,28 @@ impl PyStreamingFeatherWriter {
         ))
     }
 
-    /// Flushes all active buffers by writing any remaining buffered bytes to the object store.
+    /// Flushes buffered bytes of every open file to disk.
     ///
     /// This is called automatically based on `flush_interval_ms` if configured, but can also
-    /// be called manually by the client.
+    /// be called manually by the client. Files stay open, so flushing never starts a new file.
     pub fn flush(&self) -> PyResult<()> {
         self.refresh_writer_clock();
-        let mut writer = self.writer.borrow_mut();
-
-        block_on_local("flush StreamingFeatherWriter", || async {
-            writer.flush().await
-        })?
-        .map_err(|e| PyIOError::new_err(format!("Failed to flush: {e}")))
+        self.writer
+            .borrow_mut()
+            .flush()
+            .map_err(|e| PyIOError::new_err(format!("Failed to flush: {e}")))
     }
 
-    /// Closes all writers by flushing and removing them.
+    /// Seals all open files so each complete stream is visible as a `.feather` file.
     ///
-    /// After calling this, no further writes should be performed.
+    /// Writes after closing open new files.
     pub fn close(&self) -> PyResult<()> {
         self.refresh_writer_clock();
-        let mut writer = self.writer.borrow_mut();
+        self.writer
+            .borrow_mut()
+            .close()
+            .map_err(|e| PyIOError::new_err(format!("Failed to close: {e}")))?;
 
-        block_on_local("close StreamingFeatherWriter", || async {
-            writer.close().await
-        })?
-        .map_err(|e| PyIOError::new_err(format!("Failed to close: {e}")))?;
-
-        drop(writer);
         self.write_run_manifest(
             "completed",
             !*self.run_manifest_has_data.borrow(),
@@ -497,16 +427,16 @@ impl PyStreamingFeatherWriter {
     }
 
     /// Returns the next rotation time for a writer, or None if not set.
-    #[pyo3(signature = (type_str, instrument_id=None))]
+    #[pyo3(signature = (data_type, instrument_id=None))]
     #[must_use]
     pub fn get_next_rotation_time(
         &self,
-        type_str: &str,
+        data_type: PyCatalogDataType,
         instrument_id: Option<&str>,
     ) -> Option<u64> {
         self.writer
             .borrow()
-            .get_next_rotation_time(type_str, instrument_id)
+            .get_next_rotation_time(&writer_type_prefix(&data_type.into_inner()), instrument_id)
             .map(|ns| ns.as_u64())
     }
 }
@@ -553,22 +483,6 @@ impl PyStreamingFeatherWriter {
     }
 }
 
-fn block_on_local<C, F>(operation: &str, create_future: C) -> PyResult<F::Output>
-where
-    C: FnOnce() -> F,
-    F: std::future::Future,
-{
-    let run = move || get_runtime().block_on(async move { create_future().await });
-
-    if tokio::runtime::Handle::try_current().is_err() {
-        return Ok(run());
-    }
-
-    Err(to_pyruntime_err(format!(
-        "Cannot {operation} from an active Tokio runtime"
-    )))
-}
-
 fn run_kind_and_instance_id_from_path(path: &str) -> Option<(String, String)> {
     let normalized = normalize_path_separators(path);
     let parsed_url = url::Url::parse(&normalized).ok();
@@ -592,51 +506,10 @@ fn run_kind_and_instance_id_from_path(path: &str) -> Option<(String, String)> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::disallowed_types,
-    reason = "tests exercise direct Tokio LocalSet interoperability"
-)]
 mod tests {
     use rstest::rstest;
 
-    use super::{block_on_local, run_kind_and_instance_id_from_path};
-
-    #[rstest]
-    fn block_on_local_rejects_current_thread_runtime() {
-        pyo3::Python::initialize();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let error = runtime
-            .block_on(async { block_on_local("run test operation", || async { 42 }).unwrap_err() });
-
-        assert_eq!(
-            error.to_string(),
-            "RuntimeError: Cannot run test operation from an active Tokio runtime"
-        );
-    }
-
-    #[rstest]
-    fn block_on_local_rejects_multi_thread_local_set() {
-        pyo3::Python::initialize();
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap();
-        let local_set = tokio::task::LocalSet::new();
-
-        let error = runtime.block_on(local_set.run_until(async {
-            block_on_local("run test operation", || async { 42 }).unwrap_err()
-        }));
-
-        assert_eq!(
-            error.to_string(),
-            "RuntimeError: Cannot run test operation from an active Tokio runtime"
-        );
-    }
+    use super::run_kind_and_instance_id_from_path;
 
     #[rstest]
     #[case(

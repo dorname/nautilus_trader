@@ -9,9 +9,9 @@ from nautilus_trader import model
 __all__ = [
     "BarDataWrangler",
     "CatalogBackend",
-    "DataBackendSession",
+    "CatalogCommit",
+    "CatalogCoverageRow",
     "DataCatalogConfig",
-    "DataQueryResult",
     "MacroYieldCurveData",
     "OrderBookDeltaDataWrangler",
     "OrderBookDepthDataWrangler",
@@ -27,6 +27,7 @@ __all__ = [
     "StreamingFeatherWriter",
     "StreamingWriter",
     "TradeTickDataWrangler",
+    "read_feather_run",
 ]
 
 @typing.final
@@ -41,18 +42,40 @@ class BarDataWrangler:
     def process_record_batch_bytes(self, data: bytes) -> list[model.Bar]: ...
 
 @typing.final
-class DataBackendSession:
-    def __init__(self, chunk_size: int = 10000) -> None: ...
-    def add_file(
-        self, data_type: typing.Any, table_name: str, file_path: str, sql_query: str | None = None
-    ) -> None: ...
-    def add_custom_file(
-        self, type_name: str, table_name: str, file_path: str, sql_query: str | None = None
-    ) -> None: ...
-    def to_query_result(self) -> DataQueryResult: ...
-    def register_object_store_from_uri(
-        self, uri: str, storage_options: typing.Mapping[str, str] | None = None
-    ) -> None: ...
+class CatalogCommit:
+    @property
+    def version(self) -> int: ...
+    @property
+    def timestamp(self) -> int: ...
+    @property
+    def source(self) -> str: ...
+    @property
+    def operation(self) -> str: ...
+
+@typing.final
+class CatalogCoverageRow:
+    @property
+    def table_path(self) -> str: ...
+    @property
+    def data_type(self) -> str: ...
+    @property
+    def identifier(self) -> str | None: ...
+    @property
+    def start_ts(self) -> int: ...
+    @property
+    def end_ts(self) -> int: ...
+    @property
+    def status(self) -> str: ...
+    @property
+    def row_count(self) -> int: ...
+    @property
+    def data_version(self) -> int | None: ...
+    @property
+    def source(self) -> str: ...
+    @property
+    def created_ts(self) -> int: ...
+    @property
+    def schema_version(self) -> int: ...
 
 @typing.final
 class DataCatalogConfig:
@@ -68,8 +91,6 @@ class DataCatalogConfig:
     def catalog_backend(self) -> CatalogBackend: ...
     @property
     def params(self) -> dict | None: ...
-    @property
-    def fs_rust_storage_option_keys(self) -> list[str] | None: ...
     def __new__(
         cls,
         path: str,
@@ -78,14 +99,7 @@ class DataCatalogConfig:
         params: dict | None = None,
         name: str | None = None,
         read_only: bool = ...,
-        fs_rust_storage_options: typing.Mapping[str, str] | None = None,
     ) -> DataCatalogConfig: ...
-
-@typing.final
-class DataQueryResult:
-    def to_list(self) -> list[typing.Any]: ...
-    def __iter__(self) -> DataQueryResult: ...
-    def __next__(self) -> typing.Any | None: ...
 
 @typing.final
 class MacroYieldCurveData:
@@ -342,7 +356,7 @@ class ParquetDataCatalog:
     ) -> list[str]: ...
     def query_metadata(
         self,
-        data_type: model.NautilusDataType,
+        data_type: typing.Any,
         identifiers: typing.Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -350,7 +364,7 @@ class ParquetDataCatalog:
     ) -> dict: ...
     def query_data_arrow_bytes(
         self,
-        data_type: model.NautilusDataType,
+        data_type: typing.Any,
         identifiers: typing.Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -360,7 +374,7 @@ class ParquetDataCatalog:
     ) -> bytes: ...
     def query_data_arrow_stream(
         self,
-        data_type: model.NautilusDataType,
+        data_type: typing.Any,
         identifiers: typing.Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -370,14 +384,14 @@ class ParquetDataCatalog:
     ) -> typing.Any: ...
     def write_record_arrow_bytes(
         self,
-        record_type: model.NautilusRecordType,
+        record_type: typing.Any,
         data: typing.Sequence[int],
         identifier: str | None = None,
         params: dict | None = None,
     ) -> None: ...
     def query_record_arrow_bytes(
         self,
-        record_type: model.NautilusRecordType,
+        record_type: typing.Any,
         identifier: str | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -387,7 +401,7 @@ class ParquetDataCatalog:
     ) -> bytes: ...
     def query_record_arrow_stream(
         self,
-        record_type: model.NautilusRecordType,
+        record_type: typing.Any,
         identifier: str | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -493,13 +507,13 @@ class ParquetDataCatalog:
         self,
         instance_id: str,
         data_type: model.NautilusDataType | model.NautilusRecordType | model.NautilusInstrumentType,
-        subdirectory: str | None = None,
+        environment: common.Environment = common.Environment.BACKTEST,
         identifiers: typing.Sequence[str] | None = None,
         use_ts_event_for_ts_init: bool = False,
     ) -> None: ...
     def query_custom_data(
         self,
-        type_name: str,
+        data_type: model.NautilusDataType,
         identifiers: typing.Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
@@ -526,15 +540,63 @@ class RotationConfig:
     def scheduled_dates(interval_ns: int, schedule_ns: int) -> RotationConfig: ...
 
 @typing.final
+class StreamingConfig:
+    @property
+    def writer_path(self) -> str: ...
+    @property
+    def catalog(self) -> DataCatalogConfig | None: ...
+    @property
+    def flush_interval_ms(self) -> int: ...
+    @property
+    def replace_existing(self) -> bool: ...
+    @property
+    def rotation_config(self) -> RotationConfig: ...
+    @property
+    def promotion_interval_ms(self) -> int | None: ...
+    @property
+    def promote_on_close(self) -> bool: ...
+    @property
+    def delete_feather_after_promotion(self) -> bool: ...
+    @property
+    def use_ts_event_for_ts_init(self) -> bool: ...
+    @property
+    def writer_backend(self) -> str: ...
+    @property
+    def params(self) -> dict | None: ...
+    @property
+    def data_types(self) -> list[str] | None: ...
+    @property
+    def record_types(self) -> list[str] | None: ...
+    @property
+    def instrument_types(self) -> list[str] | None: ...
+    @property
+    def record_filters(self) -> dict | None: ...
+    def __new__(
+        cls,
+        writer_path: str,
+        catalog: DataCatalogConfig | None = None,
+        flush_interval_ms: int = ...,
+        replace_existing: bool = ...,
+        rotation_config: RotationConfig | None = None,
+        promotion_interval_ms: int | None = None,
+        promote_on_close: bool = ...,
+        delete_feather_after_promotion: bool = ...,
+        use_ts_event_for_ts_init: bool = ...,
+        data_types: typing.Any | None = None,
+        record_types: typing.Any | None = None,
+        instrument_types: typing.Any | None = None,
+        record_filters: typing.Any | None = None,
+        params: dict | None = None,
+    ) -> StreamingConfig: ...
+
+@typing.final
 class StreamingFeatherWriter:
     def __init__(
         self,
         path: str,
         cache: common.Cache,
         clock: common.Clock,
-        fs_protocol: str | None = None,
-        fs_storage_options: typing.Mapping[str, str] | None = None,
-        include_types: typing.Sequence[str] | None = None,
+        include_types: typing.Sequence[typing.Any] | None = None,
         record_types: typing.Any | None = None,
         record_filters: typing.Any | None = None,
         rotation_mode: int = 3,
@@ -554,17 +616,15 @@ class StreamingFeatherWriter:
     def is_closed(self) -> bool: ...
     def get_current_file_info(self) -> dict[str, tuple[int, str]]: ...
     def get_next_rotation_time(
-        self, type_str: str, instrument_id: str | None = None
+        self,
+        data_type: model.NautilusDataType | model.NautilusRecordType | model.NautilusInstrumentType,
+        instrument_id: str | None = None,
     ) -> int | None: ...
 
 @typing.final
 class StreamingWriter:
     def __init__(
-        self,
-        backend: str,
-        path: str,
-        clock: common.Clock,
-        storage_options: typing.Mapping[str, str] | None = None,
+        self, path: str, clock: common.Clock, catalog: DataCatalogConfig | None = None
     ) -> None: ...
     @property
     def backend(self) -> str: ...
@@ -781,57 +841,6 @@ class RustTestTypedMapCustomData:
     def from_json(cls, data: typing.Any) -> typing.Any: ...
 
 @typing.final
-class StreamingConfig:
-    @property
-    def catalog_path(self) -> str: ...
-    @property
-    def fs_protocol(self) -> str: ...
-    @property
-    def flush_interval_ms(self) -> int: ...
-    @property
-    def replace_existing(self) -> bool: ...
-    @property
-    def rotation_config(self) -> RotationConfig: ...
-    @property
-    def rotation_mode(self) -> str: ...
-    @property
-    def max_file_size(self) -> int | None: ...
-    @property
-    def rotation_interval_ns(self) -> int | None: ...
-    @property
-    def schedule_ns(self) -> int | None: ...
-    @property
-    def writer_backend(self) -> str: ...
-    @property
-    def params(self) -> dict | None: ...
-    @property
-    def data_types(self) -> list[str] | None: ...
-    @property
-    def record_types(self) -> list[str] | None: ...
-    @property
-    def instrument_types(self) -> list[str] | None: ...
-    @property
-    def record_filters(self) -> dict | None: ...
-    def __new__(
-        cls,
-        catalog_path: str,
-        fs_protocol: str | None = None,
-        flush_interval_ms: int = ...,
-        replace_existing: bool = ...,
-        rotation_config: RotationConfig | None = None,
-        writer_backend: str | None = None,
-        data_types: typing.Any | None = None,
-        record_types: typing.Any | None = None,
-        instrument_types: typing.Any | None = None,
-        record_filters: typing.Any | None = None,
-        params: dict | None = None,
-        rotation_mode: str | None = None,
-        max_file_size: int | None = None,
-        rotation_interval_ns: int | None = None,
-        schedule_ns: int | None = None,
-    ) -> StreamingConfig: ...
-
-@typing.final
 class TradeTickDataWrangler:
     def __init__(self, instrument_id: str, price_precision: int, size_precision: int) -> None: ...
     @property
@@ -841,3 +850,16 @@ class TradeTickDataWrangler:
     @property
     def size_precision(self) -> int: ...
     def process_record_batch_bytes(self, data: bytes) -> list[model.TradeTick]: ...
+
+def read_feather_run(
+    writer_path: str,
+    instance_id: str,
+    environment: common.Environment = common.Environment.BACKTEST,
+    data_types: typing.Sequence[
+        model.NautilusDataType | model.NautilusRecordType | model.NautilusInstrumentType
+    ]
+    | None = None,
+    identifiers: typing.Sequence[str] | None = None,
+    start: int | None = None,
+    end: int | None = None,
+) -> list[typing.Any]: ...

@@ -30,7 +30,7 @@ use nautilus_model::{
     enums::BarIntervalType,
     identifiers::{ClientId, TraderId, Venue},
 };
-use nautilus_persistence::config::{DataCatalogConfig, StreamingConfig};
+use nautilus_persistence::{config::DataCatalogConfig, python::config::PyStreamingConfig};
 use nautilus_portfolio::config::PortfolioConfig;
 use nautilus_trading::ImportableControllerConfig;
 use pyo3::{
@@ -1149,7 +1149,7 @@ impl LiveNodeConfig {
         exec_engine: Option<LiveExecutionEngineConfig>,
         controller: Option<ImportableControllerConfig>,
         plugins: Option<Vec<PluginConfig>>,
-        streaming: Option<StreamingConfig>,
+        streaming: Option<PyStreamingConfig>,
         catalogs: Option<Vec<DataCatalogConfig>>,
         data_clients: Option<Bound<'_, PyDict>>,
         exec_clients: Option<Bound<'_, PyDict>>,
@@ -1197,7 +1197,7 @@ impl LiveNodeConfig {
             msgbus,
             portfolio,
             emulator: None,
-            streaming,
+            streaming: streaming.map(Into::into),
             catalogs: catalogs.unwrap_or_default(),
             queue_monitor,
             event_store: None,
@@ -1276,8 +1276,8 @@ impl LiveNodeConfig {
 
     #[getter]
     #[pyo3(name = "streaming")]
-    fn py_streaming(&self) -> Option<StreamingConfig> {
-        self.streaming.clone()
+    fn py_streaming(&self) -> Option<PyStreamingConfig> {
+        self.streaming.clone().map(Into::into)
     }
 
     #[getter]

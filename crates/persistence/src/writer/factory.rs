@@ -16,21 +16,22 @@
 //! Streaming writer factory registry and connections.
 use std::{
     fmt::{Debug, Display},
+    fs, io,
     sync::Arc,
 };
 
-use ahash::AHashMap;
 use indexmap::IndexMap;
-use nautilus_common::live::block_on_nautilus_with;
 use nautilus_core::Params;
-use object_store::{ObjectStoreExt, path::Path as ObjectPath};
 
 use super::{
     feather::{RotationConfig, WriterClock},
     filter::WriterRecordFilter,
     traits::StreamingDataSink,
 };
-use crate::common::{backend_name::backend_type, storage::create_storage_backend_from_path};
+use crate::{
+    catalog::factory::CatalogConnectConfig,
+    common::{backend_name::backend_type, paths::local_writer_directory},
+};
 
 /// Built-in Feather streaming writer registry key.
 pub const FEATHER_WRITER_FACTORY_NAME: &str = "Feather";
@@ -49,30 +50,42 @@ backend_type!(
 /// Connection settings handed to writer factories.
 #[derive(Clone, Debug)]
 pub struct WriterConnectConfig {
-    /// Run-session storage URI the writer stages into.
+    /// Local run-session directory the writer appends Feather files to.
     pub uri: String,
-    /// Backend-specific storage options (credentials, endpoints).
-    pub storage_options: Option<AHashMap<String, String>>,
+    /// Catalog that receives promoted data; required by every backend except `Feather`.
+    pub catalog: Option<CatalogConnectConfig>,
     /// Rotation settings used by built-in streaming writer backends.
     pub rotation_config: RotationConfig,
     /// Optional automatic flush interval in milliseconds.
     pub flush_interval_ms: Option<u64>,
     /// Optional record-family and identifier filter.
     pub record_filter: Option<WriterRecordFilter>,
+    /// Interval in milliseconds for promoting sealed files into `catalog`.
+    pub promotion_interval_ms: Option<u64>,
+    /// Whether closing the writer promotes remaining files into `catalog`.
+    pub promote_on_close: bool,
+    /// Whether Feather files are deleted after a successful promotion.
+    pub delete_feather_after_promotion: bool,
+    /// Whether promotion replaces `ts_init` with `ts_event`.
+    pub use_ts_event_for_ts_init: bool,
     /// Backend-specific writer parameters.
     pub params: Option<Params>,
 }
 
 impl WriterConnectConfig {
-    /// Creates a connect config for the given URI.
+    /// Creates a connect config for the given writer directory and promotion catalog.
     #[must_use]
-    pub fn new(uri: impl Into<String>, storage_options: Option<AHashMap<String, String>>) -> Self {
+    pub fn new(uri: impl Into<String>, catalog: Option<CatalogConnectConfig>) -> Self {
         Self {
             uri: uri.into(),
-            storage_options,
+            catalog,
             rotation_config: RotationConfig::NoRotation,
             flush_interval_ms: None,
             record_filter: None,
+            promotion_interval_ms: None,
+            promote_on_close: true,
+            delete_feather_after_promotion: false,
+            use_ts_event_for_ts_init: false,
             params: None,
         }
     }
@@ -98,31 +111,54 @@ pub fn create_writer(
     clock: WriterClock,
     factories: &WriterFactoryRegistry,
 ) -> anyhow::Result<StreamingDataSink> {
-    let name = backend.to_string();
-    factories
-        .get(&name)
-        .ok_or_else(|| anyhow::anyhow!("No writer factory registered for '{name}'"))?(
-        config, clock
-    )
+    match backend {
+        WriterBackendType::Feather => factories
+            .get(FEATHER_WRITER_FACTORY_NAME)
+            .ok_or_else(|| anyhow::anyhow!("Feather writer factory missing from registry"))?(
+            config, clock,
+        ),
+        WriterBackendType::Parquet => factories
+            .get(PARQUET_WRITER_FACTORY_NAME)
+            .ok_or_else(|| anyhow::anyhow!("Parquet writer factory missing from registry"))?(
+            config, clock,
+        ),
+        WriterBackendType::External(name) => factories
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("No writer factory registered for '{name}'"))?(
+            config, clock,
+        ),
+    }
 }
 
-/// Deletes existing objects below writer connection URI.
+impl WriterConnectConfig {
+    /// Returns the catalog that receives promoted data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming `backend` when no catalog is configured.
+    pub fn required_catalog(&self, backend: &str) -> anyhow::Result<&CatalogConnectConfig> {
+        self.catalog
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{backend} writer requires a promotion catalog"))
+    }
+}
+
+/// Deletes existing files below the writer directory.
 ///
 /// # Errors
 ///
-/// Returns an error if storage cannot be opened or listing/deleting objects fails.
+/// Returns an error if the writer directory is not local or deleting it fails.
 pub fn replace_existing_writer_data(config: &WriterConnectConfig) -> anyhow::Result<()> {
-    let storage = create_storage_backend_from_path(&config.uri, config.storage_options.clone())?;
-    block_on_nautilus_with(|| async {
-        for path in storage.list_files("", None).await? {
-            storage.object_store.delete(&ObjectPath::from(path)).await?;
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })
+    let directory = local_writer_directory(&config.uri)?;
+    match fs::remove_dir_all(&directory) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
+
 #[cfg(test)]
 mod tests {
+    use nautilus_common::enums::Environment;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         data::{Data, NautilusDataType, QuoteTick},
@@ -241,12 +277,7 @@ mod tests {
             "parquet".parse::<WriterBackendType>().unwrap(),
             WriterBackendType::Parquet,
         );
-        assert_eq!(
-            "parquet".parse::<WriterBackendType>().unwrap(),
-            WriterBackendType::Parquet,
-        );
         assert_eq!(WriterBackendType::Feather.to_string(), "Feather");
-        assert_eq!(WriterBackendType::Parquet.to_string(), "Parquet");
         assert_eq!(WriterBackendType::Parquet.to_string(), "Parquet");
     }
 
@@ -330,7 +361,7 @@ mod tests {
             .convert_stream_to_data(
                 "run-001",
                 &CatalogDataType::from(NautilusDataType::QuoteTick),
-                Some("backtest"),
+                Environment::Backtest,
                 None,
                 false,
             )

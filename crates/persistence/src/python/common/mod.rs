@@ -13,6 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Python feather compatibility export.
+//! Python binding helpers shared by catalog, writer, and backend bindings.
 
-pub use super::backend::feather::PyStreamingFeatherWriter;
+pub(crate) mod arrow;
+
+use std::fmt::Display;
+
+use pyo3::{PyErr, exceptions::PyIOError};
+
+pub(crate) fn to_pyio_err(error: impl Display) -> PyErr {
+    PyIOError::new_err(error.to_string())
+}

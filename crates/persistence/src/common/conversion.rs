@@ -13,7 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-/// Result of converting one Feather file.
+//! Backend-neutral catalog conversion results.
+
+/// Summary of one Feather file committed to a transactional catalog.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeatherConversionSummary {
     pub type_name: String,

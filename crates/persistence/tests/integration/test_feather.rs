@@ -13,10 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{cell::RefCell, collections::HashSet, fs::File, rc::Rc, sync::Arc};
+// Links the workspace core from one shared library to collapse the binary's link time.
+use std::{
+    collections::HashSet,
+    fs::{self, File},
+    sync::{Arc, atomic::AtomicU64},
+};
 
 use datafusion::arrow::ipc::reader::StreamReader;
-use nautilus_common::clock::{Clock, VirtualClock};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
@@ -26,24 +30,18 @@ use nautilus_model::{
     identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
-use nautilus_persistence::backend::feather::{FeatherWriter, RotationConfig, WriterClock};
-use object_store::{ObjectStore, local::LocalFileSystem};
+use nautilus_persistence::writer::feather::{FeatherWriter, RotationConfig, WriterClock};
 use rstest::rstest;
 use tempfile::TempDir;
 
 #[rstest]
-#[tokio::test]
-async fn test_write_data_enum_quote() {
+fn test_write_data_enum_quote() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         None,
@@ -61,22 +59,17 @@ async fn test_write_data_enum_quote() {
     );
 
     writer.write_data(Data::Quote(quote)).unwrap();
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 }
 
 #[rstest]
-#[tokio::test]
-async fn test_write_data_enum_all_types() {
+fn test_write_data_enum_all_types() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         None,
@@ -126,22 +119,17 @@ async fn test_write_data_enum_all_types() {
     );
     writer.write_data(Data::FundingRate(funding_rate)).unwrap();
 
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 }
 
 #[rstest]
-#[tokio::test]
-async fn test_write_data_orderbook_deltas() {
+fn test_write_data_orderbook_deltas() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         None,
@@ -163,27 +151,22 @@ async fn test_write_data_orderbook_deltas() {
     );
 
     let deltas = OrderBookDeltas::new(instrument_id, vec![delta1, delta2]);
-
     // Test writing OrderBookDeltas via write_data
     writer
         .write_data(Data::BookDeltas(Box::new(deltas)))
         .unwrap();
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 }
 
 #[rstest]
-#[tokio::test]
-async fn test_auto_flush() {
+fn test_auto_flush() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let shared_time = Arc::new(AtomicU64::new(0));
+    let clock = WriterClock::Test(Arc::clone(&shared_time));
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         None,
@@ -200,14 +183,18 @@ async fn test_auto_flush() {
         UnixNanos::from(1000),
     );
 
-    // Write first quote
+    // Write first quote; the interval has not elapsed so no bytes reach disk yet
     writer.write(quote).unwrap();
+    let partial = temp_dir
+        .path()
+        .join("quotes")
+        .join("quotes_0.feather.partial");
+    assert_eq!(fs::metadata(&partial).unwrap().len(), 0);
 
-    // Note: VirtualClock doesn't have set_time_ns, so we can't easily test auto-flush
-    // with time advancement. Instead, we test that check_flush is called during write.
-    // For a proper test, we'd need a mock clock or use LiveClock with time advancement.
+    // Advance the shared time source past the 100ms flush interval
+    shared_time.store(200_000_000, std::sync::atomic::Ordering::Relaxed);
 
-    // Write second quote - check_flush will be called but won't flush if time hasn't advanced
+    // Second write hits the auto-flush boundary and appends both quotes to the same file
     let quote2 = QuoteTick::new(
         InstrumentId::from("AUD/USD.SIM"),
         Price::from("1.1"),
@@ -219,23 +206,22 @@ async fn test_auto_flush() {
     );
     writer.write(quote2).unwrap();
 
-    // Verify that writes succeeded (check_flush was called, even if it didn't flush)
-    // The flush_interval_ms is set, so check_flush runs but won't flush without time advancement
+    let rows = StreamReader::try_new(File::open(&partial).unwrap(), None)
+        .unwrap()
+        .map(|batch| batch.unwrap().num_rows())
+        .sum::<usize>();
+    assert_eq!(rows, 2);
+    assert_eq!(temp_dir.path().read_dir().unwrap().count(), 1);
 }
 
 #[rstest]
-#[tokio::test]
-async fn test_close() {
+fn test_close() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         None,
@@ -254,8 +240,8 @@ async fn test_close() {
 
     writer.write(quote).unwrap();
 
-    // Close should flush and clear writers
-    writer.close().await.unwrap();
+    // Close should seal and clear writers
+    writer.close().unwrap();
 }
 
 // Note: Message bus subscription test is skipped due to async/sync boundary complexity.
@@ -266,21 +252,16 @@ async fn test_close() {
 // Regression test for https://github.com/nautechsystems/nautilus_trader/issues/3913,
 // where a leading BookAction::Clear delta poisoned file metadata with 0 precision.
 #[rstest]
-#[tokio::test]
-async fn test_write_orderbook_deltas_clear_first_preserves_precision() {
+fn test_write_orderbook_deltas_clear_first_preserves_precision() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut per_instrument = HashSet::new();
     per_instrument.insert("order_book_deltas".to_string());
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         Some(per_instrument),
@@ -311,11 +292,10 @@ async fn test_write_orderbook_deltas_clear_first_preserves_precision() {
     );
 
     let deltas = OrderBookDeltas::new(instrument_id, vec![clear, add]);
-
     writer
         .write_data(Data::BookDeltas(Box::new(deltas)))
         .unwrap();
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 
     let feather_path = find_feather_file(temp_dir.path());
     let file = File::open(&feather_path).unwrap();
@@ -338,21 +318,16 @@ async fn test_write_orderbook_deltas_clear_first_preserves_precision() {
 // BookAction::Clear rows has no real precision to derive, so file metadata
 // legitimately carries price_precision=0, size_precision=0.
 #[rstest]
-#[tokio::test]
-async fn test_write_orderbook_deltas_all_sentinel_metadata_fallback() {
+fn test_write_orderbook_deltas_all_sentinel_metadata_fallback() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut per_instrument = HashSet::new();
     per_instrument.insert("order_book_deltas".to_string());
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         Some(per_instrument),
@@ -374,11 +349,10 @@ async fn test_write_orderbook_deltas_all_sentinel_metadata_fallback() {
     );
 
     let deltas = OrderBookDeltas::new(instrument_id, vec![clear1, clear2]);
-
     writer
         .write_data(Data::BookDeltas(Box::new(deltas)))
         .unwrap();
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 
     let feather_path = find_feather_file(temp_dir.path());
     let file = File::open(&feather_path).unwrap();
@@ -393,21 +367,16 @@ async fn test_write_orderbook_deltas_all_sentinel_metadata_fallback() {
 // batch contains deltas for multiple instruments, each instrument's rows
 // must land in its own file with its own precision metadata.
 #[rstest]
-#[tokio::test]
-async fn test_write_batch_partitions_by_instrument() {
+fn test_write_batch_partitions_by_instrument() {
     let temp_dir = TempDir::new().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap().to_string();
-    let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-    let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(VirtualClock::new()));
+    let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
     let mut per_instrument = HashSet::new();
     per_instrument.insert("order_book_deltas".to_string());
 
     let mut writer = FeatherWriter::new(
-        base_path,
-        store,
-        WriterClock::from_shared_clock(&clock).0,
+        temp_dir.path().to_path_buf(),
+        clock,
         RotationConfig::NoRotation,
         None,
         Some(per_instrument),
@@ -442,7 +411,7 @@ async fn test_write_batch_partitions_by_instrument() {
     ];
 
     writer.write_batch(deltas).unwrap();
-    writer.flush().await.unwrap();
+    writer.close().unwrap();
 
     let files = collect_feather_files(temp_dir.path());
     assert_eq!(

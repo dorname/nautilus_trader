@@ -94,7 +94,11 @@ impl Drop for CatalogTempDir {
     }
 }
 
-fn feather_files_under(root: &std::path::Path, family: &str) -> Vec<std::path::PathBuf> {
+fn feather_files_under(
+    root: &std::path::Path,
+    family: &str,
+    extension: &str,
+) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -106,7 +110,7 @@ fn feather_files_under(root: &std::path::Path, family: &str) -> Vec<std::path::P
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == "feather")
+            } else if path.to_string_lossy().ends_with(&format!(".{extension}"))
                 && path.to_string_lossy().contains(family)
             {
                 files.push(path);
@@ -131,7 +135,7 @@ async fn test_livenode_streaming_records_typed_routes_to_feather() {
     // Unreachable auto-flush interval: only size rotation can produce feather files before stop
     let streaming = StreamingConfig::new(
         catalog_dir.path().to_string_lossy().into_owned(),
-        "file".to_string(),
+        None,
         3_600_000,
         false,
         RotationConfig::Size { max_size: 1 },
@@ -234,7 +238,7 @@ async fn test_livenode_streaming_records_typed_routes_to_feather() {
 
     // Every quote write rotates (`max_size: 1`), so at least one file per quote proves each
     // rotation fired synchronously inside its publish callback.
-    let quote_files = feather_files_under(&run_dir, "quotes");
+    let quote_files = feather_files_under(&run_dir, "quotes", "feather");
     assert!(
         quote_files.len() >= quotes.len(),
         "expected at least one feather file per quote write, found {}",
@@ -257,7 +261,7 @@ async fn test_livenode_streaming_records_typed_routes_to_feather() {
             .convert_stream_to_data(
                 &instance_id.to_string(),
                 &CatalogDataType::from(data_type),
-                Some("live"),
+                Environment::Live,
                 None,
                 false,
             )
@@ -297,7 +301,7 @@ async fn test_livenode_streaming_records_typed_routes_to_feather() {
             .convert_stream_to_data(
                 &instance_id.to_string(),
                 &CatalogDataType::from(record_type),
-                Some("live"),
+                Environment::Live,
                 None,
                 false,
             )
@@ -326,9 +330,10 @@ async fn test_livenode_streaming_records_typed_routes_to_feather() {
 #[rstest]
 #[tokio::test(flavor = "current_thread")]
 async fn test_livenode_streaming_auto_flush_persists_before_stop() {
-    // With `NoRotation`, any feather file present before `stop()` proves the
-    // auto-flush boundary fired synchronously from inside a publish callback on
-    // the LiveNode runtime thread.
+    // With `NoRotation` the quotes stay in one open `.feather.partial` file until `stop()`.
+    // Bytes in that file before `stop()` prove the auto-flush boundary fired synchronously
+    // from inside a publish callback on the LiveNode runtime thread; unflushed bytes stay in
+    // the write buffer.
     let catalog_dir = CatalogTempDir::new("auto-flush");
     let instance_id = UUID4::new();
     let run_dir = catalog_dir
@@ -338,7 +343,7 @@ async fn test_livenode_streaming_auto_flush_persists_before_stop() {
 
     let streaming = StreamingConfig::new(
         catalog_dir.path().to_string_lossy().into_owned(),
-        "file".to_string(),
+        None,
         1,
         false,
         RotationConfig::NoRotation,
@@ -374,10 +379,13 @@ async fn test_livenode_streaming_auto_flush_persists_before_stop() {
         std::thread::sleep(Duration::from_millis(2));
     }
 
+    let open_files = feather_files_under(&run_dir, "quotes", "feather.partial");
+    assert_eq!(open_files.len(), 1);
     assert!(
-        !feather_files_under(&run_dir, "quotes").is_empty(),
+        std::fs::metadata(&open_files[0]).unwrap().len() > 0,
         "expected auto-flush to persist quotes before stop",
     );
+    assert!(feather_files_under(&run_dir, "quotes", "feather").is_empty());
 
     node.stop().await.unwrap();
     node.dispose();
@@ -387,7 +395,7 @@ async fn test_livenode_streaming_auto_flush_persists_before_stop() {
         .convert_stream_to_data(
             &instance_id.to_string(),
             &CatalogDataType::from(NautilusDataType::QuoteTick),
-            Some("live"),
+            Environment::Live,
             None,
             false,
         )

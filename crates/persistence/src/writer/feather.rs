@@ -15,7 +15,7 @@
 
 #![expect(
     clippy::missing_errors_doc,
-    reason = "Feather writer public methods forward encoding and object-store errors directly"
+    reason = "Feather writer public methods forward encoding and file IO errors directly"
 )]
 
 use std::{
@@ -23,6 +23,9 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
+    fs::{self, File, OpenOptions},
+    io::{self, BufWriter, Write},
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         Arc,
@@ -31,7 +34,6 @@ use std::{
 };
 
 use ahash::AHashMap;
-use bytes::Bytes;
 use datafusion::arrow::{
     array::StringArray,
     datatypes::{DataType, Field, Schema},
@@ -44,11 +46,8 @@ use jiff::{
     civil::Time,
     tz::{AmbiguousOffset, TimeZone},
 };
-use nautilus_common::{
-    clock::Clock,
-    live::{LiveClock, block_on_nautilus_with},
-};
-use nautilus_core::{UnixNanos, time::nanos_since_unix_epoch};
+use nautilus_common::{clock::Clock, live::LiveClock};
+use nautilus_core::{DurationNanos, UnixNanos, time::nanos_since_unix_epoch};
 use nautilus_model::{
     data::{
         Bar, CustomData, CustomDataTrait, Data, DataBatch, FundingRateUpdate, IndexPriceUpdate,
@@ -70,7 +69,6 @@ use nautilus_serialization::arrow::{
     EncodeToRecordBatch, KEY_INSTRUMENT_ID, catalog_identifier_from_metadata,
     record_batch_with_identifier_column, schema_with_identifier_column,
 };
-use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 
 use crate::{
     common::{
@@ -127,7 +125,7 @@ struct StagedArrowMetadataRow {
 
 #[derive(Debug, Default, PartialEq, PartialOrd, Hash, Eq, Clone)]
 pub struct FileWriterPath {
-    path: Path,
+    path: PathBuf,
     type_str: String,
     instrument_id: Option<String>,
 }
@@ -299,45 +297,56 @@ pub(crate) fn staged_metadata_id(metadata_json: &str) -> String {
     format!("blake3:{}", blake3::hash(metadata_json.as_bytes()).to_hex())
 }
 
-/// A `FeatherBuffer` encodes data via an Arrow `StreamWriter`.
+/// File extension of a sealed Feather stream file.
+pub(crate) const FEATHER_EXTENSION: &str = "feather";
+
+/// File extension of a Feather stream file that is still being appended to.
+pub(crate) const FEATHER_PARTIAL_EXTENSION: &str = "feather.partial";
+
+/// An open local Feather file that appends Arrow IPC stream batches.
 ///
-/// It flushes the internal byte buffer according to rotation policy.
-pub struct FeatherBuffer {
-    /// Arrow `StreamWriter` that writes to an in-memory `Vec<u8>`.
-    writer: StreamWriter<Vec<u8>>,
-    /// Current size in bytes.
-    size: u64,
-    /// Current number of buffered rows.
-    rows: u64,
-    /// Schema of the data being written.
+/// Batches go to `{name}.feather.partial`, which is renamed to `{name}.feather` when the file is
+/// sealed, so readers listing `.feather` files only see complete streams.
+struct FeatherFile {
+    writer: StreamWriter<CountingWriter<BufWriter<File>>>,
+    partial_path: PathBuf,
+    path: PathBuf,
     schema: Schema,
-    /// Maximum buffer size in bytes.
-    max_buffer_size: u64,
+    max_size: Option<u64>,
 }
 
-impl FeatherBuffer {
-    /// Creates a new [`FeatherBuffer`] using the given path, schema and maximum buffer size.
-    pub fn new(schema: &Schema, rotation_config: &RotationConfig) -> Result<Self, ArrowError> {
-        let writer = StreamWriter::try_new(Vec::new(), schema)?;
-        let mut max_buffer_size = 1_073_741_824; // 1 GiB fallback cap without size rotation
-
-        if let RotationConfig::Size { max_size } = &rotation_config {
-            max_buffer_size = *max_size;
+impl FeatherFile {
+    fn create(
+        path: &Path,
+        schema: &Schema,
+        rotation_config: &RotationConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let partial_path = path.with_extension(FEATHER_PARTIAL_EXTENSION);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
         }
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial_path)?;
+        let writer = StreamWriter::try_new(CountingWriter::new(BufWriter::new(file)), schema)?;
+        let max_size = match rotation_config {
+            RotationConfig::Size { max_size } => Some(*max_size),
+            _ => None,
+        };
 
         Ok(Self {
             writer,
-            size: 0,
-            rows: 0,
-            max_buffer_size,
+            partial_path,
+            path: path.to_path_buf(),
             schema: schema.clone(),
+            max_size,
         })
     }
 
-    /// Writes the given `RecordBatch` to the internal buffer.
-    ///
-    /// Returns true if it should be rotated according rotation policy
-    pub fn write_record_batch(&mut self, batch: &RecordBatch) -> Result<bool, ArrowError> {
+    // Returns true when size rotation is due
+    fn write_record_batch(&mut self, batch: &RecordBatch) -> Result<bool, ArrowError> {
         let batch = if batch.schema().as_ref() == &self.schema {
             batch.clone()
         } else {
@@ -345,26 +354,59 @@ impl FeatherBuffer {
         };
 
         self.writer.write(&batch)?;
-        self.size += batch.get_array_memory_size() as u64;
-        self.rows += batch.num_rows() as u64;
-        Ok(self.size >= self.max_buffer_size)
+        Ok(self
+            .max_size
+            .is_some_and(|max_size| self.size() >= max_size))
     }
 
-    /// Consumes the writer and returns the buffer of bytes from the `StreamWriter`
-    pub fn take_buffer(&mut self) -> Result<Vec<u8>, ArrowError> {
-        let mut writer = StreamWriter::try_new(Vec::new(), &self.schema)?;
-        std::mem::swap(&mut self.writer, &mut writer);
-        let buffer = writer.into_inner()?;
-        self.size = 0;
-        self.rows = 0;
-        Ok(buffer)
+    fn size(&self) -> u64 {
+        self.writer.get_ref().bytes
+    }
+
+    fn flush(&mut self) -> Result<(), ArrowError> {
+        self.writer.flush()
+    }
+
+    fn seal(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.writer.finish()?;
+        let file = self
+            .writer
+            .into_inner()?
+            .inner
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&self.partial_path, &self.path)?;
+        Ok(())
     }
 }
 
-/// Deferred IO produced by the synchronous encode path.
-///
-/// Rotations and flushes are the only operations that touch the object store,
-/// so they are collected here and executed in one runtime entry when due.
+/// Counts the bytes written through the inner writer.
+struct CountingWriter<W> {
+    inner: W,
+    bytes: u64,
+}
+
+impl<W> CountingWriter<W> {
+    const fn new(inner: W) -> Self {
+        Self { inner, bytes: 0 }
+    }
+}
+
+impl<W: Write> Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Rotations and flushes collected by the synchronous encode path and run once it completes.
 #[derive(Debug, Default)]
 struct PendingIo {
     rotate_paths: Vec<FileWriterPath>,
@@ -412,17 +454,15 @@ impl RotationConfig {
     }
 }
 
-/// Manages multiple `FeatherBuffers` and handles encoding, rotation, and flushing to the object store.
+/// Streams encoded data into one local Feather file per record type and identifier.
 ///
 /// The `write()` method is the single entry point for clients: they supply a data value (of generic type T)
 /// and the manager encodes it (using T's metadata via `EncodeToRecordBatch`), routes it by `CatalogPathPrefix`,
-/// and writes it to the appropriate `FileWriter`. When a writer's buffer is full or rotation criteria are met,
-/// its contents are flushed to the object store and it is replaced.
+/// and appends it to that key's open file. Flushing pushes buffered bytes to disk without starting
+/// a new file; a file is sealed and replaced only on rotation, [`Self::seal`], or [`Self::close`].
 pub struct FeatherWriter {
-    /// Base directory for writing files.
-    base_path: String,
-    /// Object store for persistence.
-    store: Arc<dyn ObjectStore>,
+    /// Local directory for writing files.
+    directory: PathBuf,
     /// Send time source for timestamps, rotation, and flush cadence.
     clock: WriterClock,
     /// Rotation configuration.
@@ -433,10 +473,10 @@ pub struct FeatherWriter {
     record_filter: Option<WriterRecordFilter>,
     /// Set of types that should be split by instrument.
     per_instrument_types: HashSet<String>,
-    /// Map of active `FeatherBuffers` keyed by their path.
-    writers: HashMap<FileWriterPath, FeatherBuffer>,
+    /// Open files keyed by their sealed path.
+    writers: HashMap<FileWriterPath, FeatherFile>,
     /// Paths already handed out by this writer instance.
-    reserved_paths: HashSet<Path>,
+    reserved_paths: HashSet<PathBuf>,
     /// Map of next rotation times keyed by their path.
     next_rotation_times: HashMap<FileWriterPath, UnixNanos>,
     /// Flush interval in milliseconds (0 = no automatic flushing).
@@ -446,14 +486,13 @@ pub struct FeatherWriter {
     /// Whether staged batches include the catalog row identifier column.
     catalog_identifier_column: bool,
     pending_write_error: Option<String>,
-    pending_puts: Vec<(Path, Bytes)>,
 }
 
 impl FeatherWriter {
     /// Creates a new [`FeatherWriter`] instance.
+    #[must_use]
     pub fn new(
-        base_path: String,
-        store: Arc<dyn ObjectStore>,
+        directory: PathBuf,
         clock: WriterClock,
         rotation_config: RotationConfig,
         included_types: Option<HashSet<String>>,
@@ -461,19 +500,10 @@ impl FeatherWriter {
         flush_interval_ms: Option<u64>,
     ) -> Self {
         let flush_interval_ms = flush_interval_ms.unwrap_or(1000); // Default 1 second
-        if flush_interval_ms == 0 && matches!(rotation_config, RotationConfig::NoRotation) {
-            log::warn!(
-                "FeatherWriter has auto-flush disabled (flush_interval_ms=0) with \
-                 RotationConfig::NoRotation; buffers grow until the 1 GiB fallback cap \
-                 per stream - configure size rotation or a flush interval for live use"
-            );
-        }
-
         let last_flush_ns = clock.timestamp_ns();
 
         Self {
-            base_path,
-            store,
+            directory,
             clock,
             rotation_config,
             included_types,
@@ -486,7 +516,6 @@ impl FeatherWriter {
             last_flush_ns,
             catalog_identifier_column: false,
             pending_write_error: None,
-            pending_puts: Vec::new(),
         }
     }
 
@@ -520,9 +549,8 @@ impl FeatherWriter {
 
     /// Writes a single data value.
     ///
-    /// This is the user entry point. The data is encoded into a `RecordBatch` and written to the
-    /// appropriate `FileWriter`. The encode path is fully synchronous; the runtime is entered
-    /// only when a rotation or auto-flush boundary is actually hit.
+    /// This is the user entry point. The data is encoded into a `RecordBatch` and appended to the
+    /// open file for its type and identifier.
     pub fn write<T>(&mut self, data: T) -> Result<(), Box<dyn std::error::Error>>
     where
         T: EncodeToRecordBatch + CatalogPathPrefix + 'static,
@@ -703,27 +731,19 @@ impl FeatherWriter {
         elapsed_ms >= self.flush_interval_ms
     }
 
-    // Runs deferred rotation/flush IO; enters the runtime only when a boundary was hit.
     fn complete_pending_io(
         &mut self,
         pending: &PendingIo,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if pending.rotate_paths.is_empty() && !pending.flush_due {
-            return Ok(());
+        for path in &pending.rotate_paths {
+            self.seal_file(path)?;
         }
 
-        block_on_nautilus_with(|| async {
-            for path in &pending.rotate_paths {
-                self.rotate_writer(path).await.map_err(feather_error)?;
-            }
+        if pending.flush_due {
+            self.flush()?;
+        }
 
-            if pending.flush_due {
-                self.flush().await.map_err(feather_error)?;
-            }
-
-            Ok::<(), anyhow::Error>(())
-        })
-        .map_err(Into::into)
+        Ok(())
     }
 
     fn check_scheduled_rotation(&mut self, path: &FileWriterPath) -> bool {
@@ -734,17 +754,13 @@ impl FeatherWriter {
 
                 match next_rotation {
                     None => {
-                        self.next_rotation_times.insert(
-                            path.clone(),
-                            now + nautilus_core::DurationNanos::new(*interval_ns),
-                        );
+                        self.next_rotation_times
+                            .insert(path.clone(), now + DurationNanos::new(*interval_ns));
                         false
                     }
                     Some(next) if now >= next => {
-                        self.next_rotation_times.insert(
-                            path.clone(),
-                            now + nautilus_core::DurationNanos::new(*interval_ns),
-                        );
+                        self.next_rotation_times
+                            .insert(path.clone(), now + DurationNanos::new(*interval_ns));
                         true
                     }
                     _ => false,
@@ -827,59 +843,21 @@ impl FeatherWriter {
         UnixNanos::from(u64::try_from(next_rotation.as_nanosecond()).unwrap_or(0))
     }
 
-    /// Flushes and rotates `FileWriter` associated with `key`.
-    async fn rotate_writer(
-        &mut self,
-        path: &FileWriterPath,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut writer = self.writers.remove(path).unwrap();
-
-        let bytes = match writer.take_buffer() {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.writers.insert(path.clone(), writer);
-                return Err(e.into());
-            }
-        };
-
-        let new_path = self.regen_writer_path(path);
-        self.writers.insert(new_path, writer);
-        self.put_sealed(path.path.clone(), Bytes::from(bytes)).await
-    }
-
-    async fn put_sealed(
-        &mut self,
-        path: Path,
-        payload: Bytes,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        if payload.is_empty() {
-            return Ok(());
+    // Seals the open file at `path`; the next write for its key opens a new file
+    fn seal_file(&mut self, path: &FileWriterPath) -> Result<(), Box<dyn std::error::Error>> {
+        self.next_rotation_times.remove(path);
+        match self.writers.remove(path) {
+            Some(file) => file.seal(),
+            None => Ok(()),
         }
-
-        if let Err(e) = self.store.put(&path, payload.clone().into()).await {
-            self.pending_puts.push((path, payload));
-            return Err(e.into());
-        }
-
-        Ok(())
-    }
-
-    async fn flush_pending(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let pending = std::mem::take(&mut self.pending_puts);
-        let mut rest = pending.into_iter();
-
-        while let Some((path, payload)) = rest.next() {
-            if let Err(e) = self.put_sealed(path, payload).await {
-                self.pending_puts.extend(rest);
-                return Err(e);
-            }
-        }
-
-        Ok(())
     }
 
     /// Creates (and inserts) a new `FileWriter` for type T.
-    fn create_writer<T>(&mut self, path: FileWriterPath, data: &T) -> Result<(), ArrowError>
+    fn create_writer<T>(
+        &mut self,
+        path: FileWriterPath,
+        data: &T,
+    ) -> Result<(), Box<dyn std::error::Error>>
     where
         T: EncodeToRecordBatch + CatalogPathPrefix + 'static,
     {
@@ -894,7 +872,7 @@ impl FeatherWriter {
         &mut self,
         path: FileWriterPath,
         metadata: HashMap<String, String>,
-    ) -> Result<(), ArrowError>
+    ) -> Result<(), Box<dyn std::error::Error>>
     where
         T: EncodeToRecordBatch + CatalogPathPrefix + 'static,
     {
@@ -917,8 +895,8 @@ impl FeatherWriter {
             schema
         };
 
-        let writer = FeatherBuffer::new(&schema, &self.rotation_config)?;
-        self.writers.insert(path, writer);
+        let file = FeatherFile::create(&path.path, &schema, &self.rotation_config)?;
+        self.writers.insert(path, file);
         Ok(())
     }
 
@@ -944,9 +922,9 @@ impl FeatherWriter {
             schema
         };
 
-        let writer = FeatherBuffer::new(&schema, &self.rotation_config)
-            .map_err(|e| format!("Failed to create feather buffer for custom {type_name}: {e}"))?;
-        self.writers.insert(path, writer);
+        let file = FeatherFile::create(&path.path, &schema, &self.rotation_config)
+            .map_err(|e| format!("Failed to create Feather file for custom {type_name}: {e}"))?;
+        self.writers.insert(path, file);
         Ok(())
     }
 
@@ -1013,37 +991,13 @@ impl FeatherWriter {
         Schema::new(fields)
     }
 
-    /// Flushes all active `FeatherBuffers` by writing any remaining buffered bytes to the object store.
+    /// Flushes buffered bytes of every open file to disk.
     ///
     /// This is called automatically based on `flush_interval_ms` if configured, but can also
-    /// be called manually by the client.
-    ///
-    /// Note: In Rust, we use in-memory buffers. Flushing writes the current buffer to the
-    /// object store and creates a new buffer for continued writing. This is different from
-    /// Python which just flushes OS buffers.
-    pub async fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.flush_pending().await?;
-
-        let paths_to_flush: Vec<FileWriterPath> = self.writers.keys().cloned().collect();
-
-        for path in paths_to_flush {
-            let Some(mut writer) = self.writers.remove(&path) else {
-                continue;
-            };
-
-            if writer.rows == 0 {
-                continue;
-            }
-
-            let bytes = match writer.take_buffer() {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    self.writers.insert(path, writer);
-                    return Err(e.into());
-                }
-            };
-
-            self.put_sealed(path.path, Bytes::from(bytes)).await?;
+    /// be called manually by the client. Files stay open, so flushing never starts a new file.
+    pub fn flush(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        for file in self.writers.values_mut() {
+            file.flush()?;
         }
 
         self.last_flush_ns = self.clock.timestamp_ns();
@@ -1055,12 +1009,36 @@ impl FeatherWriter {
         Ok(())
     }
 
-    /// Closes all writers by flushing and removing them.
+    /// Seals every open file so its complete stream is visible as a `.feather` file.
     ///
-    /// After calling this, no further writes should be performed.
-    pub async fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.flush().await?;
-        self.writers.clear();
+    /// Writes after sealing open new files, so this is the boundary promotion uses.
+    pub fn seal(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let paths = self.writers.keys().cloned().collect::<Vec<_>>();
+        let mut first_error = None;
+
+        for path in paths {
+            if let Err(e) = self.seal_file(&path) {
+                log::error!("Failed to seal Feather file {}: {e}", path.path.display());
+                first_error.get_or_insert(e);
+            }
+        }
+
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// Seals all open files and reports any write error recorded since the last flush.
+    ///
+    /// Writes after closing open new files.
+    pub fn close(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.seal()?;
+
+        if let Some(error) = self.pending_write_error.take() {
+            return Err(error.into());
+        }
+
         Ok(())
     }
 
@@ -1078,31 +1056,16 @@ impl FeatherWriter {
     pub fn get_current_file_info(&self) -> HashMap<String, (u64, String)> {
         let mut info = HashMap::new();
 
-        for (path, buffer) in &self.writers {
+        for (path, file) in &self.writers {
             let key = match &path.instrument_id {
                 Some(id) => format!("{}:{}", path.type_str, id),
                 None => path.type_str.clone(),
             };
 
-            info.insert(key, (buffer.size, path.path.to_string()));
+            info.insert(key, (file.size(), path.path.display().to_string()));
         }
 
         info
-    }
-
-    /// Returns the total buffered (unflushed) bytes and rows across all active buffers.
-    #[must_use]
-    pub fn buffered_totals(&self) -> (u64, u64) {
-        let (mut bytes, rows) = self.writers.values().fold((0, 0), |(bytes, rows), buffer| {
-            (bytes + buffer.size, rows + buffer.rows)
-        });
-
-        bytes += self
-            .pending_puts
-            .iter()
-            .map(|(_, payload)| payload.len() as u64)
-            .sum::<u64>();
-        (bytes, rows)
     }
 
     /// Returns the next rotation time for a specific writer key, if set.
@@ -1148,10 +1111,6 @@ impl FeatherWriter {
                 .is_none_or(|filter| filter.allows(record_prefix, identifier, instrument_type))
     }
 
-    fn regen_writer_path(&mut self, path: &FileWriterPath) -> FileWriterPath {
-        self.reserve_writer_path(&path.type_str, path.instrument_id.clone())
-    }
-
     fn reserve_writer_path(
         &mut self,
         type_str: &str,
@@ -1162,6 +1121,11 @@ impl FeatherWriter {
         for sequence in 0.. {
             let path =
                 self.build_writer_path(type_str, instrument_id.as_deref(), timestamp, sequence);
+
+            // Files left by an earlier writer in the same directory keep their names
+            if path.exists() || path.with_extension(FEATHER_PARTIAL_EXTENSION).exists() {
+                continue;
+            }
 
             if self.reserved_paths.insert(path.clone()) {
                 return FileWriterPath {
@@ -1181,13 +1145,11 @@ impl FeatherWriter {
         instrument_id: Option<&str>,
         timestamp: UnixNanos,
         sequence: u64,
-    ) -> Path {
-        // Note: Path removes prefixing slashes
-        let mut path = Path::from(self.base_path.clone());
+    ) -> PathBuf {
+        let mut path = self.directory.clone();
 
-        if type_str.starts_with("data/custom/") {
-            let type_name = type_str.strip_prefix("data/custom/").unwrap_or(type_str);
-            path = path.join("data").join("custom").join(type_name.to_string());
+        if let Some(type_name) = type_str.strip_prefix("data/custom/") {
+            path = path.join("data").join("custom").join(type_name);
 
             // Use a single flat urisafe segment so the writer path, the stream-promotion
             // parser, and the catalog layout (custom_data_path_components) agree.
@@ -1196,34 +1158,31 @@ impl FeatherWriter {
                 .filter(|safe| !safe.is_empty());
 
             if let Some(safe) = &safe_id {
-                path = path.join(safe.clone());
+                path = path.join(safe);
             }
 
             let file_stem = safe_id.as_deref().unwrap_or(type_name);
-            path = path.join(Self::timestamped_feather_file_name(
+            path.join(Self::timestamped_feather_file_name(
                 file_stem, timestamp, sequence,
-            ));
-        } else if let Some(instrument_id) = instrument_id {
-            let safe_id = urisafe_instrument_id(instrument_id);
-            path = path.join(type_str);
-            path = path.join(safe_id);
-            path = path.join(Self::timestamped_feather_file_name(
-                type_str, timestamp, sequence,
-            ));
+            ))
         } else {
-            path = path.join(Self::timestamped_feather_file_name(
-                type_str, timestamp, sequence,
-            ));
-        }
+            path = path.join(type_str);
 
-        path
+            if let Some(instrument_id) = instrument_id {
+                path = path.join(urisafe_instrument_id(instrument_id));
+            }
+
+            path.join(Self::timestamped_feather_file_name(
+                type_str, timestamp, sequence,
+            ))
+        }
     }
 
     fn timestamped_feather_file_name(stem: &str, timestamp: UnixNanos, sequence: u64) -> String {
         if sequence == 0 {
-            format!("{stem}_{timestamp}.feather")
+            format!("{stem}_{timestamp}.{FEATHER_EXTENSION}")
         } else {
-            format!("{stem}_{timestamp}-{sequence}.feather")
+            format!("{stem}_{timestamp}-{sequence}.{FEATHER_EXTENSION}")
         }
     }
 
@@ -1546,8 +1505,7 @@ impl FeatherWriter {
     ///
     /// The writer must be wrapped in `Rc<RefCell<>>` to be shareable with the message bus handler.
     ///
-    /// Note: Writes are synchronous; the writer enters the runtime internally only when a
-    /// rotation or auto-flush boundary is hit.
+    /// Note: Writes are synchronous local file appends.
     pub fn subscribe_to_message_bus(
         writer: Rc<RefCell<Self>>,
     ) -> Result<StreamingSinkSubscription, Box<dyn std::error::Error>> {
@@ -1571,6 +1529,17 @@ impl Debug for FeatherWriter {
     }
 }
 
+/// Drop contract: seals open files so their streams stay readable and promotable.
+///
+/// Errors are logged, never raised. Call [`FeatherWriter::close`] for deterministic sealing.
+impl Drop for FeatherWriter {
+    fn drop(&mut self) {
+        if !self.writers.is_empty() {
+            let _ = self.seal();
+        }
+    }
+}
+
 impl StreamingSink for FeatherWriter {
     fn write_data(&mut self, data: Data) -> anyhow::Result<()> {
         Self::write_data(self, data).map_err(feather_error)
@@ -1585,11 +1554,11 @@ impl StreamingSink for FeatherWriter {
     }
 
     fn flush(&mut self) -> anyhow::Result<()> {
-        block_on_nautilus_with(|| async { self.flush().await.map_err(feather_error) })
+        Self::flush(self).map_err(feather_error)
     }
 
     fn close(&mut self) -> anyhow::Result<()> {
-        block_on_nautilus_with(|| async { self.close().await.map_err(feather_error) })
+        Self::close(self).map_err(feather_error)
     }
 }
 
@@ -1615,23 +1584,37 @@ impl StreamingSink for Rc<RefCell<FeatherWriter>> {
     }
 }
 
+/// Returns the replay identity of a flushed Feather file, so a rerun does not write it twice.
+pub(crate) fn feather_replay_identity(
+    source_uri: &str,
+    source_path: &str,
+    content_hash: &str,
+    identifiers: Option<&[String]>,
+) -> String {
+    let mut identifiers = identifiers.map(<[String]>::to_vec);
+    if let Some(identifiers) = identifiers.as_mut() {
+        identifiers.sort();
+        identifiers.dedup();
+    }
+
+    let identity = serde_json::json!({
+        "source_uri": source_uri,
+        "source_path": source_path,
+        "content_hash": content_hash,
+        "identifiers": identifiers,
+    });
+    format!(
+        "nautilus-feather:{}",
+        blake3::hash(identity.to_string().as_bytes()).to_hex(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{
-        fmt::Display,
-        io::Cursor,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        },
-    };
+    use std::sync::{Arc, atomic::Ordering};
 
     use datafusion::arrow::ipc::reader::StreamReader;
-    use futures::stream::BoxStream;
-    use nautilus_common::{
-        clock::VirtualClock,
-        live::{LiveClock, block_on_nautilus_with, get_runtime},
-    };
+    use nautilus_common::{clock::VirtualClock, live::LiveClock};
     use nautilus_model::{
         data::{Data, QuoteTick, TradeTick},
         enums::AggressorSide,
@@ -1641,194 +1624,35 @@ mod tests {
     use nautilus_serialization::arrow::{
         ArrowSchemaProvider, DecodeDataFromRecordBatch, EncodeToRecordBatch,
     };
-    use object_store::{
-        GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-        PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
-        local::LocalFileSystem, memory::InMemory, path::Path as ObjectPath,
-    };
     use rstest::rstest;
     use tempfile::TempDir;
 
     use super::*;
 
-    #[derive(Debug)]
-    struct FailPutStore {
-        inner: InMemory,
-        fail: AtomicBool,
-    }
+    fn feather_files(directory: &Path, extension: &str) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![directory.to_path_buf()];
 
-    impl Display for FailPutStore {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("fail-put")
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ObjectStore for FailPutStore {
-        async fn put_opts(
-            &self,
-            location: &ObjectPath,
-            payload: PutPayload,
-            opts: PutOptions,
-        ) -> ObjectStoreResult<PutResult> {
-            if self.fail.load(Ordering::Relaxed) {
-                return Err(object_store::Error::Generic {
-                    store: "fail-put",
-                    source: Box::new(std::io::Error::other("injected put failure")),
-                });
+        while let Some(path) = stack.pop() {
+            for entry in fs::read_dir(&path).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.to_string_lossy().ends_with(&format!(".{extension}")) {
+                    files.push(path);
+                }
             }
-
-            self.inner.put_opts(location, payload, opts).await
         }
 
-        async fn put_multipart_opts(
-            &self,
-            location: &ObjectPath,
-            opts: PutMultipartOptions,
-        ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
-            self.inner.put_multipart_opts(location, opts).await
-        }
-
-        async fn get_opts(
-            &self,
-            location: &ObjectPath,
-            options: GetOptions,
-        ) -> ObjectStoreResult<GetResult> {
-            self.inner.get_opts(location, options).await
-        }
-
-        fn list(
-            &self,
-            prefix: Option<&ObjectPath>,
-        ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
-            self.inner.list(prefix)
-        }
-
-        async fn list_with_delimiter(
-            &self,
-            prefix: Option<&ObjectPath>,
-        ) -> ObjectStoreResult<ListResult> {
-            self.inner.list_with_delimiter(prefix).await
-        }
-
-        fn delete_stream(
-            &self,
-            locations: BoxStream<'static, ObjectStoreResult<ObjectPath>>,
-        ) -> BoxStream<'static, ObjectStoreResult<ObjectPath>> {
-            self.inner.delete_stream(locations)
-        }
-
-        async fn copy_opts(
-            &self,
-            from: &ObjectPath,
-            to: &ObjectPath,
-            opts: object_store::CopyOptions,
-        ) -> ObjectStoreResult<()> {
-            self.inner.copy_opts(from, to, opts).await
-        }
+        files.sort();
+        files
     }
 
-    #[rstest]
-    fn failed_flush_keeps_accepted_rows_for_retry() {
-        let store = Arc::new(FailPutStore {
-            inner: InMemory::new(),
-            fail: AtomicBool::new(true),
-        });
-
-        let mut writer = FeatherWriter::new(
-            "run".to_string(),
-            store.clone(),
-            WriterClock::Test(Arc::new(AtomicU64::new(1_000))),
-            RotationConfig::NoRotation,
-            None,
-            None,
-            Some(0),
-        );
-        writer
-            .write(QuoteTick::new(
-                InstrumentId::from("AUD/USD.SIM"),
-                Price::from("1.0"),
-                Price::from("1.1"),
-                Quantity::from("2"),
-                Quantity::from("3"),
-                4.into(),
-                5.into(),
-            ))
-            .unwrap();
-
-        let error = block_on_nautilus_with(|| async {
-            writer.flush().await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
-        .unwrap_err();
-
-        assert!(error.to_string().contains("injected put failure"));
-        assert_eq!(writer.pending_puts.len(), 1);
-        assert!(writer.buffered_totals().0 > 0);
-        let path = writer.pending_puts[0].0.clone();
-
-        store.fail.store(false, Ordering::Relaxed);
-        block_on_nautilus_with(|| async {
-            writer.flush().await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
-        .unwrap();
-
-        assert!(writer.pending_puts.is_empty());
-
-        let stored = block_on_nautilus_with(|| async {
-            let get = store.get(&path).await.map_err(anyhow::Error::from)?;
-            get.bytes().await.map_err(anyhow::Error::from)
-        })
-        .unwrap();
-
-        assert!(!stored.is_empty());
-    }
-
-    #[rstest]
-    fn failed_rotation_keeps_accepted_rows_for_retry() {
-        let store = Arc::new(FailPutStore {
-            inner: InMemory::new(),
-            fail: AtomicBool::new(true),
-        });
-
-        let mut writer = FeatherWriter::new(
-            "run".to_string(),
-            store.clone(),
-            WriterClock::Test(Arc::new(AtomicU64::new(1_000))),
-            RotationConfig::Size { max_size: 1 },
-            None,
-            None,
-            Some(0),
-        );
-        let error = writer
-            .write(QuoteTick::new(
-                InstrumentId::from("AUD/USD.SIM"),
-                Price::from("1.0"),
-                Price::from("1.1"),
-                Quantity::from("2"),
-                Quantity::from("3"),
-                4.into(),
-                5.into(),
-            ))
-            .unwrap_err();
-        assert!(error.to_string().contains("injected put failure"));
-        assert_eq!(writer.pending_puts.len(), 1);
-        let path = writer.pending_puts[0].0.clone();
-
-        store.fail.store(false, Ordering::Relaxed);
-        block_on_nautilus_with(|| async {
-            writer.flush().await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
-        .unwrap();
-
-        assert!(writer.pending_puts.is_empty());
-
-        let stored = block_on_nautilus_with(|| async {
-            let get = store.get(&path).await.map_err(anyhow::Error::from)?;
-            get.bytes().await.map_err(anyhow::Error::from)
-        })
-        .unwrap();
-
-        assert!(!stored.is_empty());
+    fn read_feather_batches(path: &Path) -> Vec<RecordBatch> {
+        StreamReader::try_new(File::open(path).unwrap(), None)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
     }
 
     #[rstest]
@@ -1853,9 +1677,9 @@ mod tests {
     fn test_subscription_receives_typed_quotes_and_unsubscribes() {
         use nautilus_common::msgbus::{MStr, publish_quote};
 
+        let temp_dir = TempDir::new().unwrap();
         let writer = Rc::new(RefCell::new(FeatherWriter::new(
-            "run".to_string(),
-            Arc::new(object_store::memory::InMemory::new()),
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::new(AtomicU64::new(0))),
             RotationConfig::NoRotation,
             None,
@@ -1876,24 +1700,23 @@ mod tests {
         publish_quote(MStr::topic("data.quotes.AUD/USD.SIM").unwrap(), &quote);
         FeatherWriter::unsubscribe_from_message_bus(&handler);
         publish_quote(MStr::topic("data.quotes.AUD/USD.SIM").unwrap(), &quote);
-        assert_eq!(
-            writer
-                .borrow()
-                .writers
-                .values()
-                .map(|buffer| buffer.rows)
-                .sum::<u64>(),
-            1
-        );
+        writer.borrow_mut().close().unwrap();
+
+        let rows = feather_files(temp_dir.path(), FEATHER_EXTENSION)
+            .iter()
+            .flat_map(|path| read_feather_batches(path))
+            .map(|batch| batch.num_rows())
+            .sum::<usize>();
+        assert_eq!(rows, 1);
     }
 
     #[rstest]
     #[case(false)]
     #[case(true)]
     fn test_message_write_error_reaches_flush_or_close(#[case] close: bool) {
+        let temp_dir = TempDir::new().unwrap();
         let mut writer = FeatherWriter::new(
-            "run".to_string(),
-            Arc::new(object_store::memory::InMemory::new()),
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::new(AtomicU64::new(0))),
             RotationConfig::NoRotation,
             None,
@@ -1924,13 +1747,7 @@ mod tests {
 
     #[rstest]
     fn test_writer_manager_keys() {
-        // Create a temporary directory for base path
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-
-        // Create a LocalFileSystem based object store using the temp directory
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
 
         // Create a test time source
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
@@ -1942,8 +1759,7 @@ mod tests {
         per_instrument.insert(quote_type_str.to_string());
 
         let mut manager = FeatherWriter::new(
-            base_path.clone(),
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -1980,33 +1796,34 @@ mod tests {
         // Check keys and paths for quotes and trades
         let path = manager.get_writer_path(&quote).unwrap();
         let safe_id = instrument_id.replace('/', "");
-        let expected_path = Path::from(format!(
-            "{base_path}/quotes/{safe_id}/quotes_{timestamp}.feather"
-        ));
+        let expected_path = temp_dir
+            .path()
+            .join("quotes")
+            .join(&safe_id)
+            .join(format!("quotes_{timestamp}.feather"));
         assert_eq!(path.path, expected_path);
         assert!(manager.writers.contains_key(&path));
         let writer = manager.writers.get(&path).unwrap();
-        assert!(writer.size > 0);
+        assert!(writer.size() > 0);
 
         let path = manager.get_writer_path(&trade).unwrap();
-        let expected_path = Path::from(format!("{base_path}/trades_{timestamp}.feather"));
+        let expected_path = temp_dir
+            .path()
+            .join("trades")
+            .join(format!("trades_{timestamp}.feather"));
         assert_eq!(path.path, expected_path);
         assert!(manager.writers.contains_key(&path));
         let writer = manager.writers.get(&path).unwrap();
-        assert!(writer.size > 0);
+        assert!(writer.size() > 0);
     }
 
     #[rstest]
     fn test_per_instrument_path_keeps_long_id_out_of_filename() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let manager = FeatherWriter::new(
-            base_path.clone(),
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2023,23 +1840,21 @@ mod tests {
         );
 
         let safe_id = urisafe_instrument_id(&instrument_id);
-        let expected = Path::from(format!("{base_path}/quotes/{safe_id}/quotes_0.feather"));
+        let expected = temp_dir
+            .path()
+            .join("quotes")
+            .join(&safe_id)
+            .join("quotes_0.feather");
         assert_eq!(path, expected);
     }
 
     #[rstest]
     fn existing_feather_writer_implements_streaming_data_sink() {
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::common::storage::create_storage_backend_from_path(
-            temp_dir.path().to_str().unwrap(),
-            None,
-        )
-        .unwrap();
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            storage.base_path.clone(),
-            storage.object_store.clone(),
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2059,13 +1874,12 @@ mod tests {
 
         StreamingSink::write_data(&mut writer, Data::Quote(quote)).unwrap();
         StreamingSink::flush(&mut writer).unwrap();
+        StreamingSink::close(&mut writer).unwrap();
 
-        let files = get_runtime()
-            .block_on(storage.list_files("quotes", Some(".feather")))
-            .unwrap();
+        let files = feather_files(&temp_dir.path().join("quotes"), FEATHER_EXTENSION);
         assert_eq!(files.len(), 1);
         assert!(
-            std::path::PathBuf::from(&files[0])
+            files[0]
                 .components()
                 .any(|component| component.as_os_str() == "AUDUSD.SIM"),
         );
@@ -2074,25 +1888,19 @@ mod tests {
     #[rstest]
     fn scheduled_rotation_keeps_time_of_day_anchor_after_late_rotation() {
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::common::storage::create_storage_backend_from_path(
-            temp_dir.path().to_str().unwrap(),
-            None,
-        )
-        .unwrap();
 
         let now = Arc::new(AtomicU64::new(
             1_767_258_000_000_000_000, // 2026-01-01 09:00:00 UTC
         ));
 
         let path = FileWriterPath {
-            path: Path::from("quotes.feather"),
+            path: PathBuf::from("quotes.feather"),
             type_str: "quotes".to_string(),
             instrument_id: None,
         };
 
         let mut writer = FeatherWriter::new(
-            storage.base_path,
-            storage.object_store,
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::clone(&now)),
             RotationConfig::ScheduledDates {
                 interval_ns: 86_400_000_000_000,
@@ -2136,11 +1944,14 @@ mod tests {
         let schema = QuoteTick::get_schema(Some(metadata.clone()));
         let batch = QuoteTick::encode_batch(&QuoteTick::metadata(&quote), &[quote]).unwrap();
 
-        let mut writer = FeatherBuffer::new(&schema, &RotationConfig::NoRotation).unwrap();
-        writer.write_record_batch(&batch).unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("quotes.feather");
+        let mut file = FeatherFile::create(&path, &schema, &RotationConfig::NoRotation).unwrap();
+        file.write_record_batch(&batch).unwrap();
+        file.seal().unwrap();
 
-        let buffer = writer.take_buffer().unwrap();
-        let mut reader = StreamReader::try_new(Cursor::new(buffer.as_slice()), None).unwrap();
+        assert!(!path.with_extension(FEATHER_PARTIAL_EXTENSION).exists());
+        let mut reader = StreamReader::try_new(File::open(&path).unwrap(), None).unwrap();
 
         let read_metadata = reader.schema().metadata().clone();
         assert_eq!(read_metadata, metadata);
@@ -2156,11 +1967,6 @@ mod tests {
     fn test_round_trip() {
         // Create a temporary directory for base path
         let temp_dir = TempDir::new_in(".").unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-
-        // Create a LocalFileSystem based object store using the temp directory
-        let local_fs = LocalFileSystem::new_with_prefix(&base_path).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
 
         // Create a test time source
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
@@ -2173,8 +1979,7 @@ mod tests {
         per_instrument.insert(trade_type_str.to_string());
 
         let mut manager = FeatherWriter::new(
-            base_path.clone(),
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2211,16 +2016,14 @@ mod tests {
         let paths = manager.writers.keys().cloned().collect::<Vec<_>>();
         assert_eq!(paths.len(), 2);
 
-        // Flush data
-        get_runtime().block_on(manager.flush()).unwrap();
+        manager.close().unwrap();
 
-        // Read files from the temporary directory
         let mut recovered_quotes = Vec::new();
         let mut recovered_trades = Vec::new();
-        let local_fs = LocalFileSystem::new_with_prefix(&base_path).unwrap();
+
         for path in paths {
-            let path_str = local_fs.path_to_filesystem(&path.path).unwrap();
-            let buffer = std::fs::File::open(&path_str).unwrap();
+            let path_str = path.path;
+            let buffer = File::open(&path_str).unwrap();
             let reader = StreamReader::try_new(buffer, None).unwrap();
             let metadata = reader.schema().metadata().clone();
             for batch in reader {
@@ -2247,14 +2050,10 @@ mod tests {
     #[rstest]
     fn test_write_data_enum() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            base_path,
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2274,7 +2073,7 @@ mod tests {
 
         // Test writing via write_data
         writer.write_data(Data::Quote(quote)).unwrap();
-        get_runtime().block_on(writer.flush()).unwrap();
+        writer.flush().unwrap();
 
         // Verify file was created
         assert!(!writer.writers.is_empty() || temp_dir.path().read_dir().unwrap().count() > 0);
@@ -2283,14 +2082,10 @@ mod tests {
     #[rstest]
     fn test_write_data_all_types() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            base_path,
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2331,21 +2126,17 @@ mod tests {
         );
         writer.write_data(Data::BookDelta(delta)).unwrap();
 
-        get_runtime().block_on(writer.flush()).unwrap();
+        writer.flush().unwrap();
     }
 
     #[rstest]
     fn test_auto_flush() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let shared_time = Arc::new(AtomicU64::new(0));
         let clock = WriterClock::Test(Arc::clone(&shared_time));
 
         let mut writer = FeatherWriter::new(
-            base_path,
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2363,7 +2154,7 @@ mod tests {
             UnixNanos::from(1000),
         );
 
-        // Write first quote; interval not elapsed, so the buffer is retained
+        // Write first quote; interval not elapsed, so nothing is flushed yet
         writer.write(quote).unwrap();
         assert_eq!(writer.writers.len(), 1);
         assert_eq!(writer.last_flush_ns, UnixNanos::from(0));
@@ -2371,7 +2162,7 @@ mod tests {
         // Advance the shared time source past the 100ms flush interval
         shared_time.store(200_000_000, Ordering::Relaxed);
 
-        // Second write hits the flush boundary: buffers are flushed and removed
+        // Second write hits the flush boundary: both quotes reach the same open file
         let quote2 = QuoteTick::new(
             InstrumentId::from("AUD/USD.SIM"),
             Price::from("1.1"),
@@ -2383,22 +2174,137 @@ mod tests {
         );
         writer.write(quote2).unwrap();
 
-        assert_eq!(writer.writers.len(), 0);
+        let partial = feather_files(temp_dir.path(), FEATHER_PARTIAL_EXTENSION);
+        let flushed_rows = read_feather_batches(&partial[0])
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum::<usize>();
+        assert_eq!(writer.writers.len(), 1);
         assert_eq!(writer.last_flush_ns, UnixNanos::from(200_000_000));
-        assert_eq!(temp_dir.path().read_dir().unwrap().count(), 1);
+        assert_eq!(partial.len(), 1);
+        assert_eq!(flushed_rows, 2);
+        assert!(feather_files(temp_dir.path(), FEATHER_EXTENSION).is_empty());
+    }
+
+    #[rstest]
+    fn flushes_append_to_one_file_per_type_until_close() {
+        let temp_dir = TempDir::new().unwrap();
+        let shared_time = Arc::new(AtomicU64::new(0));
+        let mut writer = FeatherWriter::new(
+            temp_dir.path().to_path_buf(),
+            WriterClock::Test(Arc::clone(&shared_time)),
+            RotationConfig::NoRotation,
+            None,
+            Some(FeatherWriter::default_per_instrument_types()),
+            Some(1_000),
+        );
+        let quotes = (1..=10)
+            .map(|minute| {
+                QuoteTick::new(
+                    InstrumentId::from("AUD/USD.SIM"),
+                    Price::from("1.0"),
+                    Price::from("1.1"),
+                    Quantity::from("1000"),
+                    Quantity::from("1000"),
+                    UnixNanos::from(minute * 60_000_000_000),
+                    UnixNanos::from(minute * 60_000_000_000),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // Each write crosses a flush interval, as a 1-minute bar does in a backtest
+        for quote in &quotes {
+            shared_time.store(quote.ts_init.as_u64(), Ordering::Relaxed);
+            writer.write(*quote).unwrap();
+        }
+
+        let partial_before_close = feather_files(temp_dir.path(), FEATHER_PARTIAL_EXTENSION);
+        let sealed_before_close = feather_files(temp_dir.path(), FEATHER_EXTENSION);
+        writer.close().unwrap();
+        let sealed = feather_files(temp_dir.path(), FEATHER_EXTENSION);
+        let batches = read_feather_batches(&sealed[0]);
+        let metadata = batches[0].schema().metadata().clone();
+        let recovered = batches
+            .into_iter()
+            .flat_map(|batch| QuoteTick::decode_data_batch(&metadata, batch).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(partial_before_close.len(), 1);
+        assert!(sealed_before_close.is_empty());
+        assert_eq!(sealed.len(), 1);
+        assert!(feather_files(temp_dir.path(), FEATHER_PARTIAL_EXTENSION).is_empty());
+        assert_eq!(
+            recovered,
+            quotes.into_iter().map(Data::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[rstest]
+    fn drop_seals_open_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut writer = FeatherWriter::new(
+            temp_dir.path().to_path_buf(),
+            WriterClock::Test(Arc::new(AtomicU64::new(0))),
+            RotationConfig::NoRotation,
+            None,
+            None,
+            None,
+        );
+        writer
+            .write(QuoteTick::new(
+                InstrumentId::from("AUD/USD.SIM"),
+                Price::from("1.0"),
+                Price::from("1.1"),
+                Quantity::from("1000"),
+                Quantity::from("1000"),
+                UnixNanos::from(1_000),
+                UnixNanos::from(1_000),
+            ))
+            .unwrap();
+
+        drop(writer);
+
+        assert_eq!(feather_files(temp_dir.path(), FEATHER_EXTENSION).len(), 1);
+        assert!(feather_files(temp_dir.path(), FEATHER_PARTIAL_EXTENSION).is_empty());
+    }
+
+    #[rstest]
+    fn reserved_paths_skip_files_left_in_the_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut writer = FeatherWriter::new(
+            temp_dir.path().to_path_buf(),
+            WriterClock::Test(Arc::new(AtomicU64::new(5))),
+            RotationConfig::NoRotation,
+            None,
+            None,
+            None,
+        );
+        let sealed = temp_dir.path().join("trades").join("trades_5.feather");
+        let partial = temp_dir
+            .path()
+            .join("trades")
+            .join("trades_5-1.feather.partial");
+        fs::create_dir_all(sealed.parent().unwrap()).unwrap();
+        fs::write(&sealed, b"sealed").unwrap();
+        fs::write(&partial, b"partial").unwrap();
+
+        let path = writer.reserve_writer_path("trades", None);
+
+        assert_eq!(
+            path.path,
+            temp_dir.path().join("trades").join("trades_5-2.feather")
+        );
+        assert_eq!(fs::read(&sealed).unwrap(), b"sealed");
+        assert_eq!(fs::read(&partial).unwrap(), b"partial");
     }
 
     #[rstest]
     fn test_close() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            base_path,
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2419,21 +2325,17 @@ mod tests {
         writer.write(quote).unwrap();
         assert!(!writer.writers.is_empty());
 
-        get_runtime().block_on(writer.close()).unwrap();
+        writer.close().unwrap();
         assert!(writer.writers.is_empty());
     }
 
     #[rstest]
     fn test_write_data_orderbook_deltas() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            base_path,
-            store,
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2460,7 +2362,7 @@ mod tests {
         writer
             .write_data(Data::BookDeltas(Box::new(deltas)))
             .unwrap();
-        get_runtime().block_on(writer.flush()).unwrap();
+        writer.flush().unwrap();
     }
 
     #[rstest]
@@ -2514,85 +2416,45 @@ mod tests {
     }
 
     #[rstest]
-    fn buffered_totals_tracks_bytes_and_rows() {
+    fn size_rotation_seals_each_full_file_and_opens_the_next_lazily() {
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
-        let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
-
-        let mut writer = FeatherWriter::new(
-            base_path,
-            store,
-            clock,
-            RotationConfig::NoRotation,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(writer.buffered_totals(), (0, 0));
-
-        let quote = QuoteTick::new(
-            InstrumentId::from("AUD/USD.SIM"),
-            Price::from("1.0"),
-            Price::from("1.0"),
-            Quantity::from("1000"),
-            Quantity::from("1000"),
-            UnixNanos::from(1000),
-            UnixNanos::from(1000),
-        );
-        let metadata = QuoteTick::metadata(&quote);
-        let batch = QuoteTick::encode_batch(&metadata, &[quote]).unwrap();
-        let expected_bytes = batch.get_array_memory_size() as u64;
-
-        writer.write(quote).unwrap();
-        assert_eq!(writer.buffered_totals(), (expected_bytes, 1));
-
-        get_runtime().block_on(writer.flush()).unwrap();
-        assert_eq!(writer.buffered_totals(), (0, 0));
-    }
-
-    #[tokio::test]
-    async fn size_rotation_with_due_flush_does_not_persist_empty_file() {
-        use futures::StreamExt;
-
-        let temp_dir = TempDir::new().unwrap();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let shared_clock = Arc::new(AtomicU64::new(0));
-
         let mut writer = FeatherWriter::new(
-            temp_dir.path().to_str().unwrap().to_string(),
-            Arc::clone(&store),
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::clone(&shared_clock)),
             RotationConfig::Size { max_size: 1 },
             None,
             None,
             Some(1),
         );
-        shared_clock.store(1_000_000, Ordering::Relaxed);
 
-        writer
-            .write(QuoteTick::new(
-                InstrumentId::from("AUD/USD.SIM"),
-                Price::from("1.0"),
-                Price::from("1.0"),
-                Quantity::from("1000"),
-                Quantity::from("1000"),
-                UnixNanos::from(1000),
-                UnixNanos::from(1000),
-            ))
-            .unwrap();
-
-        let mut objects = store.list(None);
-        let mut object_count = 0;
-
-        while let Some(object) = objects.next().await {
-            object.unwrap();
-            object_count += 1;
+        for ts in [1_000, 2_000] {
+            shared_clock.store(ts * 1_000_000, Ordering::Relaxed);
+            writer
+                .write(QuoteTick::new(
+                    InstrumentId::from("AUD/USD.SIM"),
+                    Price::from("1.0"),
+                    Price::from("1.0"),
+                    Quantity::from("1000"),
+                    Quantity::from("1000"),
+                    UnixNanos::from(ts),
+                    UnixNanos::from(ts),
+                ))
+                .unwrap();
         }
 
-        assert_eq!(object_count, 1);
+        let rows = feather_files(temp_dir.path(), FEATHER_EXTENSION)
+            .iter()
+            .map(|path| {
+                read_feather_batches(path)
+                    .iter()
+                    .map(RecordBatch::num_rows)
+                    .sum::<usize>()
+            })
+            .collect::<Vec<_>>();
+        assert!(writer.writers.is_empty());
+        assert_eq!(rows, vec![1, 1]);
+        assert!(feather_files(temp_dir.path(), FEATHER_PARTIAL_EXTENSION).is_empty());
     }
 
     #[rstest]
@@ -2619,9 +2481,9 @@ mod tests {
         )
         .unwrap();
 
+        let temp_dir = TempDir::new().unwrap();
         let mut writer = FeatherWriter::new(
-            "run".to_string(),
-            Arc::new(object_store::memory::InMemory::new()),
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::new(AtomicU64::new(0))),
             RotationConfig::NoRotation,
             None,
@@ -2638,12 +2500,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[rstest]
     #[cfg(feature = "python")]
-    async fn test_write_custom_data_round_trip() {
+    fn test_write_custom_data_round_trip() {
         use std::sync::Arc;
 
-        use futures::StreamExt;
         use nautilus_model::{
             data::{CustomData, Data, DataType},
             identifiers::InstrumentId,
@@ -2657,14 +2518,10 @@ mod tests {
         ensure_custom_data_registered::<RustTestCustomData>();
 
         let temp_dir = TempDir::new().unwrap();
-        let base_path = temp_dir.path().to_str().unwrap().to_string();
-        let local_fs = LocalFileSystem::new_with_prefix(temp_dir.path()).unwrap();
-        let store: Arc<dyn ObjectStore> = Arc::new(local_fs);
         let clock = WriterClock::Test(Arc::new(AtomicU64::new(0)));
 
         let mut writer = FeatherWriter::new(
-            base_path.clone(),
-            store.clone(),
+            temp_dir.path().to_path_buf(),
             clock,
             RotationConfig::NoRotation,
             None,
@@ -2688,21 +2545,16 @@ mod tests {
         writer
             .write_data(Data::Custom(custom))
             .expect("write_data CustomData");
-        writer.flush().await.expect("flush");
+        writer.close().expect("close");
 
-        let prefix = Path::from(format!("{base_path}/data/custom/RustTestCustomData"));
-        let mut list_stream = store.list(Some(&prefix));
-        let first = list_stream.next().await.expect("at least one object");
-        let meta = first.expect("list item");
-        let bytes = store
-            .get(&meta.location)
-            .await
-            .expect("get")
-            .bytes()
-            .await
-            .expect("bytes");
+        let prefix = temp_dir
+            .path()
+            .join("data")
+            .join("custom")
+            .join("RustTestCustomData");
+        let files = feather_files(&prefix, FEATHER_EXTENSION);
         let mut reader =
-            StreamReader::try_new(Cursor::new(bytes.as_ref()), None).expect("StreamReader");
+            StreamReader::try_new(File::open(&files[0]).unwrap(), None).expect("StreamReader");
         let schema = reader.schema();
         let metadata: std::collections::HashMap<String, String> = schema
             .metadata()
@@ -2727,10 +2579,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[rstest]
     #[cfg(feature = "python")]
-    async fn test_write_custom_data_reuses_writer_until_rotation() {
-        use futures::StreamExt;
+    fn test_write_custom_data_reuses_writer_until_rotation() {
         use nautilus_model::data::{CustomData, DataType};
         use nautilus_serialization::ensure_custom_data_registered;
 
@@ -2738,15 +2589,9 @@ mod tests {
 
         ensure_custom_data_registered::<RustTestCustomData>();
         let temp_dir = TempDir::new().unwrap();
-        let storage = crate::common::storage::create_storage_backend_from_path(
-            temp_dir.path().to_str().unwrap(),
-            None,
-        )
-        .unwrap();
 
         let mut writer = FeatherWriter::new(
-            storage.base_path.clone(),
-            storage.object_store.clone(),
+            temp_dir.path().to_path_buf(),
             WriterClock::Test(Arc::new(AtomicU64::new(0))),
             RotationConfig::NoRotation,
             None,
@@ -2772,36 +2617,41 @@ mod tests {
         }
 
         assert_eq!(writer.get_current_file_info().len(), 1);
-        writer.flush().await.unwrap();
+        writer.close().unwrap();
 
-        let prefix = Path::from(format!(
-            "{}/data/custom/RustTestCustomData",
-            storage.base_path
-        ));
-        let files = storage
-            .object_store
-            .list(Some(&prefix))
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .into_iter()
-            .filter(|meta| meta.location.as_ref().ends_with(".feather"))
-            .collect::<Vec<_>>();
+        let prefix = temp_dir
+            .path()
+            .join("data")
+            .join("custom")
+            .join("RustTestCustomData");
+        let files = feather_files(&prefix, FEATHER_EXTENSION);
         assert_eq!(files.len(), 1);
-        let bytes = storage
-            .object_store
-            .get(&files[0].location)
-            .await
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap();
-        let rows = StreamReader::try_new(Cursor::new(bytes.as_ref()), None)
-            .unwrap()
-            .map(|batch| batch.unwrap().num_rows())
+        let rows = read_feather_batches(&files[0])
+            .iter()
+            .map(RecordBatch::num_rows)
             .sum::<usize>();
         assert_eq!(rows, 2);
+    }
+
+    #[rstest]
+    fn feather_replay_identity_is_stable_and_ignores_identifier_order() {
+        let identity = |identifiers: Option<&[String]>| {
+            feather_replay_identity(
+                "file:///catalog/backtest/run-1",
+                "quotes/AUDUSD.SIM/part-0.feather",
+                "content-hash",
+                identifiers,
+            )
+        };
+
+        let unordered = ["B".to_string(), "A".to_string(), "A".to_string()];
+        let ordered = ["A".to_string(), "B".to_string()];
+
+        let expected =
+            "nautilus-feather:10a9435c28f7536f26653c3fc808571be89bfe769e06c7307cb4743e273a23fd";
+
+        assert_eq!(identity(Some(&unordered)), expected);
+        assert_eq!(identity(Some(&ordered)), expected);
+        assert_ne!(identity(None), expected);
     }
 }

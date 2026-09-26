@@ -21,6 +21,7 @@
 
 use std::collections::HashMap;
 
+use nautilus_common::enums::Environment;
 use nautilus_core::{
     UnixNanos,
     python::{to_pytype_err, to_pyvalue_err},
@@ -51,7 +52,10 @@ use pyo3::{
 };
 
 use crate::{
-    backend::{migration::build_catalog_migration_plan, parquet::catalog::ParquetDataCatalog},
+    backend::parquet::{
+        catalog::ParquetDataCatalog, feather_session::read_feather_run,
+        migration::build_catalog_migration_plan,
+    },
     catalog::{
         traits::{CatalogQuery, CatalogReader, CatalogRecordQuery, CatalogWriter},
         types::{
@@ -59,10 +63,18 @@ use crate::{
             parquet_catalog_data_type_path_prefixes,
         },
     },
-    python::backend::{
-        PyCatalogDataType, arrow_ipc_batches, arrow_ipc_data_schema, arrow_ipc_record_schema,
-        arrow_record_batches_from_pybytes, catalog_metadata_to_pydict, catalog_record_type_from_py,
-        nautilus_data_type_from_py, to_pyio_err, write_record_params_from_py,
+    python::{
+        catalog::conversion::{
+            PyCatalogDataType, catalog_metadata_to_pydict, catalog_record_type_from_py,
+            nautilus_data_type_from_py, write_record_params_from_py,
+        },
+        common::{
+            arrow::{
+                arrow_ipc_batches, arrow_ipc_data_schema, arrow_ipc_record_schema,
+                arrow_record_batches_from_pybytes,
+            },
+            to_pyio_err,
+        },
     },
 };
 
@@ -1033,22 +1045,18 @@ impl PyParquetDataCatalog {
     pub fn query_metadata(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusDataType"))] data_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        data_type: &Bound<'_, PyAny>,
         identifiers: Option<Vec<String>>,
         start: Option<u64>,
         end: Option<u64>,
         where_clause: Option<&str>,
     ) -> PyResult<Py<PyDict>> {
-        let data_type = nautilus_data_type_from_py(data_type)?;
-
+        let catalog_data_type = nautilus_data_type_from_py(data_type)?;
         let metadata = py
             .detach(|| {
                 CatalogReader::query_metadata(
                     &mut self.inner,
-                    &CatalogQuery::new(data_type)
+                    &CatalogQuery::new(catalog_data_type)
                         .with_identifiers(identifiers)
                         .with_range(start.map(UnixNanos::from), end.map(UnixNanos::from))
                         .with_where_clause(where_clause.map(str::to_string)),
@@ -1072,10 +1080,7 @@ impl PyParquetDataCatalog {
     pub fn query_data_arrow_bytes(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusDataType"))] data_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        data_type: &Bound<'_, PyAny>,
         identifiers: Option<Vec<String>>,
         start: Option<u64>,
         end: Option<u64>,
@@ -1083,9 +1088,9 @@ impl PyParquetDataCatalog {
         display: bool,
         as_of: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyBytes>> {
-        let data_type = nautilus_data_type_from_py(data_type)?;
+        let catalog_data_type = nautilus_data_type_from_py(data_type)?;
         reject_parquet_as_of(as_of)?;
-        let query = CatalogQuery::new(data_type.clone())
+        let query = CatalogQuery::new(catalog_data_type.clone())
             .with_identifiers(identifiers)
             .with_range(start.map(UnixNanos::from), end.map(UnixNanos::from))
             .with_where_clause(where_clause.map(str::to_string));
@@ -1097,12 +1102,12 @@ impl PyParquetDataCatalog {
                 } else {
                     let data = CatalogReader::query_batch(&mut self.inner, &query)?
                         .to_data_vec_for_compat();
-                    crate::common::arrow::data_to_arrow_batches(&data_type, data)
+                    crate::common::arrow::data_to_arrow_batches(&catalog_data_type, data)
                 }
             })
             .map_err(|e| PyIOError::new_err(format!("Query failed: {e}")))?;
 
-        let schema = arrow_ipc_data_schema(&data_type, &batches, display)?;
+        let schema = arrow_ipc_data_schema(&catalog_data_type, &batches, display)?;
         let batches = arrow_ipc_batches(&schema, batches)?;
         arrow_record_batches_to_pybytes(py, &schema, &batches)
     }
@@ -1120,10 +1125,7 @@ impl PyParquetDataCatalog {
     pub fn query_data_arrow_stream(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusDataType"))] data_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        data_type: &Bound<'_, PyAny>,
         identifiers: Option<Vec<String>>,
         start: Option<u64>,
         end: Option<u64>,
@@ -1131,9 +1133,9 @@ impl PyParquetDataCatalog {
         display: bool,
         as_of: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let data_type = nautilus_data_type_from_py(data_type)?;
+        let catalog_data_type = nautilus_data_type_from_py(data_type)?;
         reject_parquet_as_of(as_of)?;
-        let query = CatalogQuery::new(data_type.clone())
+        let query = CatalogQuery::new(catalog_data_type.clone())
             .with_identifiers(identifiers)
             .with_range(start.map(UnixNanos::from), end.map(UnixNanos::from))
             .with_where_clause(where_clause.map(str::to_string));
@@ -1145,12 +1147,12 @@ impl PyParquetDataCatalog {
                 } else {
                     let data = CatalogReader::query_batch(&mut self.inner, &query)?
                         .to_data_vec_for_compat();
-                    crate::common::arrow::data_to_arrow_batches(&data_type, data)
+                    crate::common::arrow::data_to_arrow_batches(&catalog_data_type, data)
                 }
             })
             .map_err(|e| PyIOError::new_err(format!("Query failed: {e}")))?;
 
-        let schema = arrow_ipc_data_schema(&data_type, &batches, display)?;
+        let schema = arrow_ipc_data_schema(&catalog_data_type, &batches, display)?;
         let batches = arrow_ipc_batches(&schema, batches)?;
         arrow_record_batches_to_pyarrow_stream(py, &schema, batches)
     }
@@ -1160,10 +1162,7 @@ impl PyParquetDataCatalog {
     pub fn write_record_arrow_bytes(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusRecordType"))] record_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        record_type: &Bound<'_, PyAny>,
         data: Vec<u8>,
         identifier: Option<String>,
         params: Option<Py<PyDict>>,
@@ -1189,10 +1188,7 @@ impl PyParquetDataCatalog {
     pub fn query_record_arrow_bytes(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusRecordType"))] record_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        record_type: &Bound<'_, PyAny>,
         identifier: Option<String>,
         start: Option<u64>,
         end: Option<u64>,
@@ -1246,10 +1242,7 @@ impl PyParquetDataCatalog {
     pub fn query_record_arrow_stream(
         &mut self,
         py: Python<'_>,
-        #[gen_stub(override_type(type_repr = "model.NautilusRecordType"))] record_type: &Bound<
-            '_,
-            PyAny,
-        >,
+        record_type: &Bound<'_, PyAny>,
         identifier: Option<String>,
         start: Option<u64>,
         end: Option<u64>,
@@ -1835,7 +1828,7 @@ impl PyParquetDataCatalog {
     ///
     /// - `instance_id`: The ID of the backtest or live run instance
     /// - `data_type`: The stored family to convert (data type or record type).
-    /// - `subdirectory`: Optional subdirectory containing the feather files. Either "backtest" or "live" (default: "backtest")
+    /// - `environment`: The environment the run executed in (default: `Environment.BACKTEST`)
     /// - `identifiers`: Optional list of identifiers to filter by (instrument IDs or bar types)
     /// - `use_ts_event_for_ts_init`: If true, replaces the `ts_init` column with `ts_event` column values before deserializing
     ///
@@ -1847,38 +1840,33 @@ impl PyParquetDataCatalog {
     ///
     /// ```python
     /// # Convert backtest stream data to parquet
-    /// catalog.convert_stream_to_data(
-    ///     "instance-123",
-    ///     NautilusDataType.QuoteTick,
-    ///     subdirectory="backtest"
-    /// )
+    /// catalog.convert_stream_to_data("instance-123", NautilusDataType.QuoteTick)
     ///
     /// # Convert live run data with identifier filtering
     /// catalog.convert_stream_to_data(
     ///     "instance-456",
     ///     NautilusDataType.TradeTick,
-    ///     subdirectory="live",
-    ///     identifiers=["EUR/USD.SIM"]
+    ///     environment=Environment.LIVE,
+    ///     identifiers=["EUR/USD.SIM"],
     /// )
     /// ```
-    #[pyo3(signature = (instance_id, data_type, subdirectory=None, identifiers=None, use_ts_event_for_ts_init=false))]
+    #[pyo3(signature = (instance_id, data_type, environment=Environment::Backtest, identifiers=None, use_ts_event_for_ts_init=false))]
     #[expect(clippy::needless_pass_by_value)]
     pub fn convert_stream_to_data(
         &mut self,
         instance_id: &str,
         data_type: PyCatalogDataType,
-        subdirectory: Option<&str>,
+        environment: Environment,
         identifiers: Option<Vec<String>>,
         use_ts_event_for_ts_init: bool,
     ) -> PyResult<()> {
         let data_type = data_type.into_inner();
-        let subdir = subdirectory.unwrap_or("backtest");
 
         self.inner
             .convert_stream_to_data(
                 instance_id,
                 &data_type,
-                Some(subdir),
+                environment,
                 identifiers.as_deref(),
                 use_ts_event_for_ts_init,
             )
@@ -1886,24 +1874,30 @@ impl PyParquetDataCatalog {
     }
 
     /// Query custom data from Parquet files.
-    #[pyo3(signature = (type_name, identifiers=None, start=None, end=None, where_clause=None))]
+    #[pyo3(signature = (data_type, identifiers=None, start=None, end=None, where_clause=None))]
     #[expect(clippy::needless_pass_by_value)]
     pub fn query_custom_data(
         &mut self,
         py: Python<'_>,
-        type_name: &str,
+        #[gen_stub(override_type(type_repr = "model.NautilusDataType"))] data_type: &Bound<
+            '_,
+            PyAny,
+        >,
         identifiers: Option<Vec<String>>,
         start: Option<u64>,
         end: Option<u64>,
         where_clause: Option<&str>,
     ) -> PyResult<Vec<Py<PyAny>>> {
+        let NautilusDataType::Custom { type_name } = nautilus_data_type_from_py(data_type)? else {
+            return Err(to_pytype_err("data_type must be a custom NautilusDataType"));
+        };
         let start_nanos = start.map(UnixNanos::from);
         let end_nanos = end.map(UnixNanos::from);
 
         let data = py
             .detach(|| {
                 self.inner.query_custom_data_dynamic(
-                    type_name,
+                    &type_name,
                     identifiers.as_deref(),
                     start_nanos,
                     end_nanos,
@@ -1927,4 +1921,57 @@ impl PyParquetDataCatalog {
 
         Ok(python_objects)
     }
+}
+
+/// Reads the sealed Feather files a streaming writer produced for one run, without a catalog.
+///
+/// `writer_path` is the local streaming writer root (`StreamingConfig.writer_path`). The run's
+/// files live under `{writer_path}/{environment}/{instance_id}`.
+///
+/// `data_types` limits the read to those stream families, `identifiers` to the records whose
+/// identifier (instrument ID, bar type, or custom data identifier) contains one of them, and
+/// `start`/`end` to the inclusive `ts_init` range. Every data type is read for every matching
+/// identifier. Records without an identifier pass the identifier filter. Open
+/// `.feather.partial` files are not read.
+/// The result is sorted by `ts_init`.
+///
+/// # Errors
+///
+/// Returns an error if `writer_path` is not local, a requested data type is not a readable stream
+/// family, or listing, reading, or decoding a Feather file fails.
+#[pyfunction]
+#[pyo3_stub_gen::derive::gen_stub_pyfunction(module = "nautilus_trader.persistence")]
+#[pyo3(name = "read_feather_run")]
+#[pyo3(signature = (writer_path, instance_id, environment=Environment::Backtest, data_types=None, identifiers=None, start=None, end=None))]
+#[expect(clippy::needless_pass_by_value)]
+pub fn py_read_feather_run(
+    py: Python<'_>,
+    writer_path: &str,
+    instance_id: &str,
+    environment: Environment,
+    data_types: Option<Vec<PyCatalogDataType>>,
+    identifiers: Option<Vec<String>>,
+    start: Option<u64>,
+    end: Option<u64>,
+) -> PyResult<Vec<Py<PyAny>>> {
+    let data_types = data_types.map(|data_types| {
+        data_types
+            .into_iter()
+            .map(PyCatalogDataType::into_inner)
+            .collect::<Vec<_>>()
+    });
+    let data = read_feather_run(
+        writer_path,
+        environment,
+        instance_id,
+        data_types.as_deref(),
+        identifiers.as_deref(),
+        start.map(UnixNanos::from),
+        end.map(UnixNanos::from),
+    )
+    .map_err(|e| PyIOError::new_err(format!("Failed to read Feather run: {e}")))?;
+
+    data.into_iter()
+        .map(|item| data_to_pyobject(py, item))
+        .collect()
 }

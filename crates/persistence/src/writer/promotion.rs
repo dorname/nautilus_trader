@@ -58,7 +58,8 @@ pub(crate) fn list_session_feather_files(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PromotionSession {
-    pub(crate) catalog_uri: String,
+    /// Writer directory holding the `{kind}/{instance_id}` run session.
+    pub(crate) root_uri: String,
     pub(crate) kind: String,
     pub(crate) instance_id: String,
 }
@@ -88,20 +89,20 @@ impl PromotionSession {
             return None;
         }
 
-        let catalog_segments = &components[..components.len().saturating_sub(2)];
+        let root_segments = &components[..components.len().saturating_sub(2)];
 
-        let catalog_path = if catalog_segments.is_empty() {
+        let root_path = if root_segments.is_empty() {
             "/".to_string()
         } else {
-            format!("/{}", catalog_segments.join("/"))
+            format!("/{}", root_segments.join("/"))
         };
 
-        url.set_path(&catalog_path);
+        url.set_path(&root_path);
         url.set_query(None);
         url.set_fragment(None);
 
         Some(Self {
-            catalog_uri: url.to_string(),
+            root_uri: url.to_string(),
             kind,
             instance_id,
         })
@@ -116,9 +117,9 @@ impl PromotionSession {
             return None;
         }
 
-        let catalog_uri = path.parent()?.parent()?.to_string_lossy().to_string();
+        let root_uri = path.parent()?.parent()?.to_string_lossy().to_string();
         Some(Self {
-            catalog_uri,
+            root_uri,
             kind,
             instance_id,
         })
@@ -1162,7 +1163,7 @@ mod tests {
         let session =
             PromotionSession::from_uri(r"C:\catalog\backtest\run-1").expect("valid run path");
 
-        assert_eq!(session.catalog_uri, "C:/catalog");
+        assert_eq!(session.root_uri, "C:/catalog");
         assert_eq!(session.kind, "backtest");
         assert_eq!(session.instance_id, "run-1");
     }
@@ -1172,7 +1173,7 @@ mod tests {
         let session =
             PromotionSession::from_uri(r"\\server\share\live\run-2").expect("valid UNC run path");
 
-        // catalog_uri is platform-dependent here (Windows retains a trailing
+        // root_uri is platform-dependent here (Windows retains a trailing
         // separator at the UNC prefix+root floor), so only kind/instance_id are asserted.
         assert_eq!(session.kind, "live");
         assert_eq!(session.instance_id, "run-2");
@@ -1183,7 +1184,7 @@ mod tests {
         let session =
             PromotionSession::from_uri("/tmp/catalog/sandbox/run-3").expect("valid run path");
 
-        assert_eq!(session.catalog_uri, "/tmp/catalog");
+        assert_eq!(session.root_uri, "/tmp/catalog");
         assert_eq!(session.kind, "sandbox");
         assert_eq!(session.instance_id, "run-3");
     }

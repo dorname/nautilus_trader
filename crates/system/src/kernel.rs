@@ -45,8 +45,6 @@ use std::{
 
 #[cfg(feature = "streaming")]
 use anyhow::Context;
-#[cfg(feature = "streaming")]
-use jiff::tz::TimeZone;
 use nautilus_common::{
     cache::{Cache, CacheConfig, database::CacheDatabaseAdapter},
     clock::Clock,
@@ -72,12 +70,13 @@ use nautilus_execution::{
 use nautilus_model::identifiers::{ClientId, TraderId};
 #[cfg(feature = "streaming")]
 use nautilus_persistence::{
-    backend::default_writer_factories,
+    backend::{default_catalog_factories, default_writer_factories},
     catalog::traits::NautilusDataTypePrefix,
-    config::StreamingConfig,
+    common::paths::environment_directory,
+    config::{DataCatalogConfig, StreamingConfig},
     writer::{
         factory::{WriterConnectConfig, create_writer, replace_existing_writer_data},
-        feather::{RotationConfig as WriterRotationConfig, WriterClock},
+        feather::WriterClock,
         filter::WriterRecordFilter,
         subscription::StreamingSinkSubscription,
         traits::StreamingDataSink,
@@ -372,6 +371,7 @@ impl NautilusKernel {
         let mut data_engine = data_engine;
         #[cfg(feature = "streaming")]
         {
+            let catalog_factories = default_catalog_factories();
             let mut unnamed_index = 0;
             let mut catalog_names = HashSet::new();
 
@@ -388,7 +388,13 @@ impl NautilusKernel {
                     catalog_names.insert(name.clone()),
                     "Duplicate data catalog name '{name}'",
                 );
-                let catalog = catalog_config.create_catalog().with_context(|| {
+                let catalog_backend = catalog_config.catalog_backend().to_string();
+                let Some(factory) = catalog_factories.get(&catalog_backend) else {
+                    anyhow::bail!(
+                        "Catalog backend factory missing from registry: {catalog_backend}"
+                    );
+                };
+                let catalog = factory(&catalog_config.connect_config()).with_context(|| {
                     format!(
                         "Failed to create data catalog from '{}'",
                         catalog_config.path()
@@ -421,26 +427,23 @@ impl NautilusKernel {
         #[cfg(feature = "streaming")]
         let (streaming_writer, streaming_subscriptions) = match config.streaming() {
             Some(streaming_config) => {
-                let environment = config.environment().to_string().to_ascii_lowercase();
-                let base_uri = match streaming_config.fs_protocol.as_str() {
-                    "file" => streaming_config
-                        .catalog_path
-                        .trim_end_matches('/')
-                        .to_string(),
-                    _ if streaming_config.catalog_path.contains("://") => streaming_config
-                        .catalog_path
-                        .trim_end_matches('/')
-                        .to_string(),
-                    protocol => format!(
-                        "{protocol}://{}",
-                        streaming_config.catalog_path.trim_end_matches('/'),
-                    ),
-                };
-                let uri = format!("{base_uri}/{environment}/{instance_id}");
-                let rotation_config = writer_rotation_config(&streaming_config.rotation_config);
-                let mut connect = WriterConnectConfig::new(&uri, None);
+                streaming_config.validate()?;
+                let environment = environment_directory(config.environment());
+                let writer_path = streaming_config.writer_path.trim_end_matches('/');
+                let uri = format!("{writer_path}/{environment}/{instance_id}");
+                let rotation_config = streaming_config.rotation_config.to_writer_rotation_config();
+                let catalog = streaming_config
+                    .catalog
+                    .as_ref()
+                    .map(DataCatalogConfig::connect_config);
+                let mut connect = WriterConnectConfig::new(&uri, catalog);
                 connect.rotation_config = rotation_config;
                 connect.flush_interval_ms = Some(streaming_config.flush_interval_ms);
+                connect.promotion_interval_ms = streaming_config.promotion_interval_ms;
+                connect.promote_on_close = streaming_config.promote_on_close;
+                connect.delete_feather_after_promotion =
+                    streaming_config.delete_feather_after_promotion;
+                connect.use_ts_event_for_ts_init = streaming_config.use_ts_event_for_ts_init;
                 connect.params.clone_from(&streaming_config.params);
                 connect.record_filter = Self::writer_record_filter(&streaming_config);
                 if streaming_config.replace_existing {
@@ -448,7 +451,7 @@ impl NautilusKernel {
                 }
                 let (writer_clock, bridge) = WriterClock::from_shared_clock(&clock);
                 let writer = Rc::new(RefCell::new(create_writer(
-                    &streaming_config.writer_backend,
+                    &streaming_config.writer_backend(),
                     &connect,
                     writer_clock,
                     &default_writer_factories(),
@@ -1173,27 +1176,6 @@ impl NautilusKernel {
     }
 }
 
-#[cfg(feature = "streaming")]
-fn writer_rotation_config(config: &crate::config::RotationConfig) -> WriterRotationConfig {
-    match config {
-        crate::config::RotationConfig::Size { max_size } => WriterRotationConfig::Size {
-            max_size: *max_size,
-        },
-        crate::config::RotationConfig::Interval { interval_ns } => WriterRotationConfig::Interval {
-            interval_ns: interval_ns.as_u64(),
-        },
-        crate::config::RotationConfig::ScheduledDates {
-            interval_ns,
-            schedule_ns,
-        } => WriterRotationConfig::ScheduledDates {
-            interval_ns: interval_ns.as_u64(),
-            rotation_time: *schedule_ns,
-            rotation_timezone: TimeZone::UTC,
-        },
-        crate::config::RotationConfig::NoRotation => WriterRotationConfig::NoRotation,
-    }
-}
-
 #[cfg(all(test, feature = "python"))]
 mod tests {
     use nautilus_common::messages::system::ShutdownSystem;
@@ -1287,7 +1269,7 @@ mod streaming_tests {
         messages::data::{DataCommand, QuotesResponse, RequestCommand, RequestQuotes},
         msgbus::{self, MStr, ShareableMessageHandler},
     };
-    use nautilus_core::DurationNanos;
+
     use nautilus_model::{
         data::{CustomData, DataType, NautilusDataType, QuoteTick},
         identifiers::InstrumentId,
@@ -1295,7 +1277,7 @@ mod streaming_tests {
     };
     use nautilus_persistence::{
         backend::parquet::catalog::ParquetDataCatalog, config::DataCatalogConfig,
-        test_data::RustTestCustomData, writer::feather::RotationConfig as WriterRotationConfig,
+        test_data::RustTestCustomData,
     };
     use nautilus_serialization::ensure_custom_data_registered;
     use rstest::rstest;
@@ -1303,71 +1285,6 @@ mod streaming_tests {
 
     use super::*;
     use crate::config::{KernelConfig, RotationConfig, StreamingConfig};
-
-    #[rstest]
-    #[case(
-        RotationConfig::Size { max_size: 17 },
-        WriterRotationConfig::Size { max_size: 17 }
-    )]
-    #[case(
-        RotationConfig::Interval {
-            interval_ns: DurationNanos::new(23),
-        },
-        WriterRotationConfig::Interval {
-            interval_ns: 23,
-        }
-    )]
-    #[case(
-        RotationConfig::ScheduledDates {
-            interval_ns: DurationNanos::new(31),
-            schedule_ns: UnixNanos::from(37),
-        },
-        WriterRotationConfig::ScheduledDates {
-            interval_ns: 31,
-            rotation_time: UnixNanos::from(37),
-            rotation_timezone: TimeZone::UTC,
-        }
-    )]
-    #[case(RotationConfig::NoRotation, WriterRotationConfig::NoRotation)]
-    fn test_writer_rotation_config(
-        #[case] config: RotationConfig,
-        #[case] expected: WriterRotationConfig,
-    ) {
-        let actual = writer_rotation_config(&config);
-
-        match (actual, expected) {
-            (
-                WriterRotationConfig::Size { max_size: actual },
-                WriterRotationConfig::Size { max_size: expected },
-            )
-            | (
-                WriterRotationConfig::Interval {
-                    interval_ns: actual,
-                },
-                WriterRotationConfig::Interval {
-                    interval_ns: expected,
-                },
-            ) => assert_eq!(actual, expected),
-            (
-                WriterRotationConfig::ScheduledDates {
-                    interval_ns: actual_interval,
-                    rotation_time: actual_time,
-                    rotation_timezone: actual_timezone,
-                },
-                WriterRotationConfig::ScheduledDates {
-                    interval_ns: expected_interval,
-                    rotation_time: expected_time,
-                    rotation_timezone: expected_timezone,
-                },
-            ) => {
-                assert_eq!(actual_interval, expected_interval);
-                assert_eq!(actual_time, expected_time);
-                assert_eq!(actual_timezone, expected_timezone);
-            }
-            (WriterRotationConfig::NoRotation, WriterRotationConfig::NoRotation) => {}
-            (actual, expected) => panic!("rotation mismatch: {actual:?} != {expected:?}"),
-        }
-    }
 
     #[rstest]
     fn test_configured_catalog_serves_builtin_quotes() {
@@ -1453,7 +1370,7 @@ mod streaming_tests {
         let instance_id = UUID4::new();
         let mut streaming = StreamingConfig::new(
             directory.path().to_string_lossy().into_owned(),
-            "file".to_string(),
+            None,
             1_000,
             false,
             RotationConfig::NoRotation,

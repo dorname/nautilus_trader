@@ -13,6 +13,6 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Native Parquet I/O compatibility exports.
+//! Python bindings shared by the catalog backends.
 
-pub use crate::backend::parquet::io::*;
+pub mod conversion;

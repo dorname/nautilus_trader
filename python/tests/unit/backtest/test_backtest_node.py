@@ -58,6 +58,7 @@ from nautilus_trader.model import StandardMarginModel
 from nautilus_trader.model import Venue
 from nautilus_trader.persistence import DataCatalogConfig
 from nautilus_trader.persistence import ParquetDataCatalog
+from nautilus_trader.persistence import RotationConfig
 from nautilus_trader.persistence import StreamingConfig
 from nautilus_trader.trading import EmaCrossConfig
 from nautilus_trader.trading import ImportableExecutionAlgorithmConfig
@@ -477,12 +478,10 @@ def test_node_streams_output_to_new_or_replaced_directory(
             run_analysis=False,
             instance_id=instance_id,
             streaming=StreamingConfig(
-                catalog_path=str(output_path),
-                fs_protocol="file",
+                writer_path=str(output_path),
                 flush_interval_ms=1,
                 replace_existing=replace_existing,
-                rotation_mode="SIZE",
-                max_file_size=1,
+                rotation_config=RotationConfig.size(1),
             ),
         ),
     )

@@ -13,6 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Python catalog compatibility export.
+//! Python bindings for streaming writers.
 
-pub use super::backend::parquet::catalog::PyParquetDataCatalog;
+pub mod feather;
+pub mod streaming;
+
+pub(crate) mod conversion;

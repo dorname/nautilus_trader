@@ -33,6 +33,7 @@ use datafusion::arrow::{
 };
 use futures::StreamExt;
 use indexmap::IndexMap;
+use nautilus_common::enums::Environment;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::{
     Bar, Data, FundingRateUpdate, HasTsInit, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
@@ -56,8 +57,11 @@ use crate::{
     common::{
         conversion::FeatherConversionSummary,
         custom::decode_custom_batches_to_data,
-        datafusion::identifiers_from_record_batches,
-        paths::{identifier_from_session_feather_path, type_name_from_session_feather_path},
+        datafusion::{filter_record_batch_by_identifier, identifiers_from_record_batches},
+        paths::{
+            environment_directory, identifier_from_session_feather_path, local_writer_directory,
+            type_name_from_session_feather_path,
+        },
     },
     writer::{
         materializer::{
@@ -178,7 +182,7 @@ impl ParquetDataCatalog {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn read_live_run(&self, instance_id: &str) -> anyhow::Result<Vec<Data>> {
-        self.read_run_data("live", instance_id)
+        self.read_run("live", instance_id, None, None, None, None)
     }
 
     /// Reads data from a backtest run instance.
@@ -223,144 +227,182 @@ impl ParquetDataCatalog {
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn read_backtest(&self, instance_id: &str) -> anyhow::Result<Vec<Data>> {
-        self.read_run_data("backtest", instance_id)
+        self.read_run("backtest", instance_id, None, None, None, None)
     }
 
-    /// Helper function to read data from a run instance (backtest or live).
+    /// Reads the sealed Feather files of a run instance (backtest or live).
     ///
-    /// This function reads all data associated with a specific run instance
-    /// from feather files stored in the catalog.
+    /// `data_types` limits the read to those stream families, `identifiers` to the records whose
+    /// identifier (instrument ID, bar type, or custom data identifier) contains one of them, and
+    /// `start`/`end` to the inclusive `ts_init` range. Every data type is read for every matching
+    /// identifier. Records without an identifier pass the identifier filter. Without
+    /// `data_types`, families that do not decode to `Data`, such as order events, are skipped.
     ///
-    /// # Parameters
+    /// # Errors
     ///
-    /// - `subdirectory`: The subdirectory name ("backtest" or "live").
-    /// - `instance_id`: The ID of the run instance to read.
-    ///
-    /// # Returns
-    ///
-    /// Returns a vector of `Data` objects from the run, sorted by timestamp,
-    /// or an error if the operation fails.
-    fn read_run_data(&self, subdirectory: &str, instance_id: &str) -> anyhow::Result<Vec<Data>> {
-        // List all data type directories in the instance directory
-        let data_types = self.list_directory_stems(&format!("{subdirectory}/{instance_id}"))?;
-
-        if data_types.is_empty() {
-            // No data types found - return empty vector
-            return Ok(Vec::new());
-        }
-
+    /// Returns an error if a requested data type is not a readable stream family, or if listing,
+    /// reading, or decoding a Feather file fails.
+    pub(crate) fn read_run(
+        &self,
+        subdirectory: &str,
+        instance_id: &str,
+        data_types: Option<&[CatalogDataType]>,
+        identifiers: Option<&[String]>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+    ) -> anyhow::Result<Vec<Data>> {
+        let data_names = data_types
+            .map(|data_types| {
+                data_types
+                    .iter()
+                    .map(|data_type| {
+                        let data_name = Self::stream_data_name(data_type)?;
+                        // Decoding no batches checks the family without reading a file
+                        if self.decode_run_batches(&data_name, Vec::new())?.is_none() {
+                            anyhow::bail!("Cannot read {data_type} from a Feather run as data");
+                        }
+                        Ok(data_name.into_owned())
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .transpose()?;
+        let feather_files =
+            self.list_feather_files(subdirectory, instance_id, None, identifiers)?;
         let mut all_data: Vec<Data> = Vec::new();
 
-        // Process each persisted data type.
-        for data_cls in data_types {
-            // List all feather files for this data type
-            let feather_files = self.list_feather_files(
-                subdirectory,
-                instance_id,
-                &data_cls,
-                None, // No identifier filtering - read all
-            )?;
+        for file_path in feather_files {
+            let data_name =
+                type_name_from_session_feather_path(&file_path, subdirectory, instance_id)?;
 
-            if feather_files.is_empty() {
-                continue; // Skip if no files found
+            if data_names
+                .as_ref()
+                .is_some_and(|names| !names.contains(&data_name))
+            {
+                continue;
             }
 
-            // Process each feather file
-            for file_path in feather_files {
-                // Read the feather file (may contain multiple batches)
-                let batches = self.read_feather_file(&file_path)?;
+            // A file may hold several batches
+            let mut batches = self.read_feather_file(&file_path)?;
 
-                if batches.is_empty() {
-                    continue; // Skip empty or invalid files
-                }
+            // Catalog writers stage every identifier of a type in one file, so the listing
+            // cannot filter them by folder and rows are filtered by their identifier column
+            if let Some(identifiers) = identifiers {
+                let path_identifier =
+                    identifier_from_session_feather_path(&file_path, subdirectory, instance_id);
+                batches = batches
+                    .iter()
+                    .filter_map(|batch| {
+                        filter_record_batch_by_identifier(
+                            batch,
+                            path_identifier.as_deref(),
+                            |identifier| {
+                                identifier.is_none_or(|identifier| {
+                                    Self::stream_identifier_matches(identifier, identifiers)
+                                })
+                            },
+                        )
+                        .transpose()
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+            }
 
-                let decode_data_cls = Self::canonical_stream_data_name(&data_cls);
+            if batches.is_empty() {
+                continue;
+            }
 
-                // Convert RecordBatches to Data objects based on data_cls
-                let file_data: Vec<Data> = match decode_data_cls {
-                    "quotes" => {
-                        let quotes: Vec<QuoteTick> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        quotes.into_iter().map(Data::from).collect()
-                    }
-                    "trades" => {
-                        let trades: Vec<TradeTick> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        trades.into_iter().map(Data::from).collect()
-                    }
-                    "order_book_deltas" => {
-                        let deltas: Vec<OrderBookDelta> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        deltas.into_iter().map(Data::from).collect()
-                    }
-                    "order_book_depths" => {
-                        let depths: Vec<OrderBookDepth> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        depths.into_iter().map(Data::from).collect()
-                    }
-                    "bars" => {
-                        let bars: Vec<Bar> = self.convert_record_batches_to_data(batches, false)?;
-                        bars.into_iter().map(Data::from).collect()
-                    }
-                    "index_prices" => {
-                        let prices: Vec<IndexPriceUpdate> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        prices.into_iter().map(Data::from).collect()
-                    }
-                    "mark_prices" => {
-                        let prices: Vec<MarkPriceUpdate> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        prices.into_iter().map(Data::from).collect()
-                    }
-                    "option_greeks" => {
-                        let greeks: Vec<OptionGreeks> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        greeks.into_iter().map(Data::from).collect()
-                    }
-                    "funding_rates" => {
-                        let funding_rates: Vec<FundingRateUpdate> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        funding_rates.into_iter().map(Data::from).collect()
-                    }
-                    "instrument_status" => {
-                        let statuses: Vec<InstrumentStatus> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        statuses.into_iter().map(Data::from).collect()
-                    }
-                    "instrument_closes" => {
-                        let closes: Vec<InstrumentClose> =
-                            self.convert_record_batches_to_data(batches, false)?;
-                        closes.into_iter().map(Data::from).collect()
-                    }
-                    _ => {
-                        if decode_data_cls.starts_with("custom/") {
-                            decode_custom_batches_to_data(batches, false)?
-                        } else {
-                            // Unknown data type - skip it
-                            continue;
-                        }
-                    }
-                };
-
+            if let Some(file_data) = self.decode_run_batches(&data_name, batches)? {
                 all_data.extend(file_data);
             }
         }
 
-        // Sort all data by timestamp (ts_init)
+        all_data.retain(|data| {
+            let ts_init = data.ts_init();
+            start.is_none_or(|start| ts_init >= start) && end.is_none_or(|end| ts_init <= end)
+        });
         all_data.sort_by_key(HasTsInit::ts_init);
 
         Ok(all_data)
     }
 
-    /// Lists feather files for a specific data class in a subdirectory.
+    // Returns `None` for stream families that do not decode to `Data`
+    fn decode_run_batches(
+        &self,
+        data_name: &str,
+        batches: Vec<RecordBatch>,
+    ) -> anyhow::Result<Option<Vec<Data>>> {
+        let data = match Self::canonical_stream_data_name(data_name) {
+            "quotes" => self
+                .convert_record_batches_to_data::<QuoteTick>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "trades" => self
+                .convert_record_batches_to_data::<TradeTick>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "order_book_deltas" => self
+                .convert_record_batches_to_data::<OrderBookDelta>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "order_book_depths" => self
+                .convert_record_batches_to_data::<OrderBookDepth>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "bars" => self
+                .convert_record_batches_to_data::<Bar>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "index_prices" => self
+                .convert_record_batches_to_data::<IndexPriceUpdate>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "mark_prices" => self
+                .convert_record_batches_to_data::<MarkPriceUpdate>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "option_greeks" => self
+                .convert_record_batches_to_data::<OptionGreeks>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "funding_rates" => self
+                .convert_record_batches_to_data::<FundingRateUpdate>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "instrument_status" => self
+                .convert_record_batches_to_data::<InstrumentStatus>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            "instrument_closes" => self
+                .convert_record_batches_to_data::<InstrumentClose>(batches, false)?
+                .into_iter()
+                .map(Data::from)
+                .collect(),
+            name if name.starts_with("custom/") => decode_custom_batches_to_data(batches, false)?,
+            _ => return Ok(None),
+        };
+
+        Ok(Some(data))
+    }
+
+    /// Lists feather files in a subdirectory, for one data class or every class when `data_name`
+    /// is `None`.
     ///
     /// This function finds all `.feather` files in the specified subdirectory
-    /// (backtest or live) for the given instance ID and data class.
+    /// (backtest or live) for the given instance ID.
     fn list_feather_files(
         &self,
         subdirectory: &str,
         instance_id: &str,
-        data_name: &str,
+        data_name: Option<&str>,
         identifiers: Option<&[String]>,
     ) -> anyhow::Result<Vec<String>> {
         let base_dir = make_object_store_path(&self.base_path, [subdirectory, instance_id]);
@@ -384,7 +426,7 @@ impl ParquetDataCatalog {
                     continue;
                 };
 
-                if path_data_name != data_name {
+                if data_name.is_some_and(|data_name| path_data_name != data_name) {
                     continue;
                 }
 
@@ -497,7 +539,7 @@ impl ParquetDataCatalog {
     /// - `instance_id`: The ID of the backtest or live run instance.
     /// - `data_cls`: The data class name (e.g., "quotes", "trades", "bars"), or
     ///   `custom/{TypeName}` with the registered type name verbatim for custom data.
-    /// - `subdirectory`: The subdirectory containing the feather files. Either "backtest" or "live" (default: "backtest").
+    /// - `environment`: The environment the run executed in, which names its folder.
     /// - `identifiers`: Optional list of identifiers to filter by (instrument IDs or bar types).
     /// - `use_ts_event_for_ts_init`: If true, replaces the `ts_init` column with `ts_event` column values before deserializing.
     ///
@@ -519,7 +561,7 @@ impl ParquetDataCatalog {
     /// This method converts directly between Arrow IPC stream batches and Parquet batches without
     /// materializing Nautilus data objects. An instance with no staged files for the family
     /// converts nothing and returns success. It requires:
-    /// - Listing feather files in the specified subdirectory
+    /// - Listing feather files in the run folder
     /// - Reading feather files (Arrow IPC stream reading)
     /// - Applying table-only stream conversion transforms
     /// - Writing Arrow batches to the catalog
@@ -527,6 +569,7 @@ impl ParquetDataCatalog {
     /// # Examples
     ///
     /// ```rust,no_run
+    /// use nautilus_common::enums::Environment;
     /// use nautilus_model::data::NautilusDataType;
     /// use nautilus_persistence::backend::parquet::catalog::ParquetDataCatalog;
     ///
@@ -542,7 +585,7 @@ impl ParquetDataCatalog {
     /// catalog.convert_stream_to_data(
     ///     "instance-123",
     ///     &NautilusDataType::QuoteTick.into(),
-    ///     Some("backtest"),
+    ///     Environment::Backtest,
     ///     None,
     ///     false,
     /// )?;
@@ -552,32 +595,20 @@ impl ParquetDataCatalog {
         &mut self,
         instance_id: &str,
         data_type: &CatalogDataType,
-        subdirectory: Option<&str>,
+        environment: Environment,
         identifiers: Option<&[String]>,
         use_ts_event_for_ts_init: bool,
     ) -> anyhow::Result<()> {
-        let subdirectory = subdirectory.unwrap_or("backtest");
-
-        // Streams stage instruments under the single aggregate name,
-        // with the class carried per batch, so a class selector names no staged directory.
-        let stream_data_name: Cow<'static, str> = match data_type {
-            CatalogDataType::Data(data_type) => parquet_data_path_prefix(data_type),
-            CatalogDataType::Record(record_type) => record_path_prefix(record_type),
-            CatalogDataType::Instrument(class) => {
-                anyhow::bail!(
-                    "Stream conversion stages instruments under the aggregate family, not {class}; \
-                     pass the Instrument data type"
-                );
-            }
-        };
-
-        if !Self::is_supported_stream_data_type(&stream_data_name) {
-            anyhow::bail!("Stream conversion does not support {data_type}");
-        }
+        let subdirectory = environment_directory(environment);
+        let stream_data_name = Self::stream_data_name(data_type)?;
 
         // List all feather files for this data class
-        let feather_files =
-            self.list_feather_files(subdirectory, instance_id, &stream_data_name, identifiers)?;
+        let feather_files = self.list_feather_files(
+            subdirectory,
+            instance_id,
+            Some(&stream_data_name),
+            identifiers,
+        )?;
 
         // Process each feather file independently so that each file's identifier
         // (instrument_id or bar_type from schema metadata) is preserved when writing
@@ -868,6 +899,27 @@ impl ParquetDataCatalog {
         identifier_from_session_feather_path(feather_path, subdirectory, instance_id)
     }
 
+    fn stream_data_name(data_type: &CatalogDataType) -> anyhow::Result<Cow<'static, str>> {
+        // Streams stage instruments under the single aggregate name,
+        // with the class carried per batch, so a class selector names no staged directory.
+        let stream_data_name = match data_type {
+            CatalogDataType::Data(data_type) => parquet_data_path_prefix(data_type),
+            CatalogDataType::Record(record_type) => record_path_prefix(record_type),
+            CatalogDataType::Instrument(class) => {
+                anyhow::bail!(
+                    "Streams stage instruments under the aggregate family, not {class}; \
+                     pass the Instrument data type"
+                );
+            }
+        };
+
+        if !Self::is_supported_stream_data_type(&stream_data_name) {
+            anyhow::bail!("Streams do not support {data_type}");
+        }
+
+        Ok(stream_data_name)
+    }
+
     fn canonical_stream_data_name(data_name: &str) -> &str {
         match data_name {
             "quote_tick" => "quotes",
@@ -928,6 +980,43 @@ impl ParquetDataCatalog {
                     | "execution_mass_status"
             )
     }
+}
+
+/// Reads the sealed Feather files a streaming writer produced for one run, without a catalog.
+///
+/// `writer_path` is the local streaming writer root (`StreamingConfig.writer_path`). The run's
+/// files live under `{writer_path}/{environment}/{instance_id}`.
+///
+/// `data_types` limits the read to those stream families, `identifiers` to the records whose
+/// identifier (instrument ID, bar type, or custom data identifier) contains one of them, and
+/// `start`/`end` to the inclusive `ts_init` range. Every data type is read for every matching
+/// identifier. Records without an identifier pass the identifier filter. Open
+/// `.feather.partial` files are not read.
+/// The result is sorted by `ts_init`.
+///
+/// # Errors
+///
+/// Returns an error if `writer_path` is not local, a requested data type is not a readable stream
+/// family, or listing, reading, or decoding a Feather file fails.
+pub fn read_feather_run(
+    writer_path: &str,
+    environment: Environment,
+    instance_id: &str,
+    data_types: Option<&[CatalogDataType]>,
+    identifiers: Option<&[String]>,
+    start: Option<UnixNanos>,
+    end: Option<UnixNanos>,
+) -> anyhow::Result<Vec<Data>> {
+    let root = local_writer_directory(writer_path)?;
+    let catalog = ParquetDataCatalog::new(&root, None, None, None, None);
+    catalog.read_run(
+        environment_directory(environment),
+        instance_id,
+        data_types,
+        identifiers,
+        start,
+        end,
+    )
 }
 
 struct PlannedCatalogWrite {
@@ -1419,5 +1508,374 @@ mod canonical_name_tests {
             ParquetDataCatalog::canonical_stream_data_name(input),
             expected,
         );
+    }
+}
+
+#[cfg(test)]
+mod read_run_tests {
+    use std::{
+        path::Path,
+        sync::{Arc, atomic::AtomicU64},
+    };
+
+    use nautilus_common::enums::Environment;
+    use nautilus_core::UnixNanos;
+    use nautilus_model::data::{
+        Data, NautilusDataType, NautilusRecordType, QuoteTick, TradeTick,
+        stubs::{quote_audusd, quote_ethusdt_binance, stub_trade_ethusdt_buy},
+    };
+    use rstest::rstest;
+    use tempfile::TempDir;
+
+    use super::read_feather_run;
+    use crate::{
+        backend::default_writer_factories,
+        catalog::{factory::CatalogConnectConfig, types::CatalogDataType},
+        writer::{
+            factory::{WriterBackendType, WriterConnectConfig, create_writer},
+            feather::{FeatherWriter, RotationConfig, WriterClock},
+        },
+    };
+
+    fn quote_btc(ts: u64) -> QuoteTick {
+        QuoteTick {
+            instrument_id: "BTCUSDT-PERP.BINANCE".into(),
+            ts_event: UnixNanos::from(ts),
+            ts_init: UnixNanos::from(ts),
+            ..quote_ethusdt_binance()
+        }
+    }
+
+    fn quote_aud(ts: u64) -> QuoteTick {
+        QuoteTick {
+            ts_event: UnixNanos::from(ts),
+            ts_init: UnixNanos::from(ts),
+            ..quote_audusd()
+        }
+    }
+
+    fn quote_eth(ts: u64) -> QuoteTick {
+        QuoteTick {
+            ts_event: UnixNanos::from(ts),
+            ts_init: UnixNanos::from(ts),
+            ..quote_ethusdt_binance()
+        }
+    }
+
+    fn trade_eth(ts: u64) -> TradeTick {
+        TradeTick {
+            ts_event: UnixNanos::from(ts),
+            ts_init: UnixNanos::from(ts),
+            ..stub_trade_ethusdt_buy()
+        }
+    }
+
+    fn write_run(writer_path: &Path, data: Vec<Data>) {
+        let mut writer = FeatherWriter::new(
+            writer_path.join("backtest").join("run-001"),
+            WriterClock::Test(Arc::new(AtomicU64::new(0))),
+            RotationConfig::NoRotation,
+            None,
+            Some(FeatherWriter::default_per_instrument_types()),
+            None,
+        );
+
+        for item in data {
+            writer.write_data(item).unwrap();
+        }
+        writer.close().unwrap();
+    }
+
+    fn written_run() -> TempDir {
+        let temp_dir = TempDir::new().unwrap();
+        write_run(
+            temp_dir.path(),
+            vec![
+                Data::Quote(quote_eth(3_000)),
+                Data::Quote(quote_aud(1_000)),
+                Data::Trade(trade_eth(2_000)),
+                Data::Quote(quote_aud(4_000)),
+                Data::Quote(quote_btc(5_000)),
+            ],
+        );
+        temp_dir
+    }
+
+    #[rstest]
+    fn read_feather_run_returns_every_record_sorted_by_ts_init() {
+        let temp_dir = written_run();
+
+        let data = read_feather_run(
+            temp_dir.path().to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            data,
+            vec![
+                Data::Quote(quote_aud(1_000)),
+                Data::Trade(trade_eth(2_000)),
+                Data::Quote(quote_eth(3_000)),
+                Data::Quote(quote_aud(4_000)),
+                Data::Quote(quote_btc(5_000)),
+            ],
+        );
+    }
+
+    #[rstest]
+    #[case::data_type(
+        Some(vec![CatalogDataType::from(NautilusDataType::TradeTick)]),
+        None,
+        None,
+        None,
+        vec![Data::Trade(trade_eth(2_000))],
+    )]
+    #[case::identifier(
+        None,
+        Some(vec!["AUD/USD.SIM".to_string()]),
+        None,
+        None,
+        vec![Data::Quote(quote_aud(1_000)), Data::Quote(quote_aud(4_000))],
+    )]
+    #[case::inclusive_range(
+        None,
+        None,
+        Some(2_000),
+        Some(3_000),
+        vec![Data::Trade(trade_eth(2_000)), Data::Quote(quote_eth(3_000))],
+    )]
+    #[case::types_by_identifiers(
+        Some(vec![
+            CatalogDataType::from(NautilusDataType::QuoteTick),
+            CatalogDataType::from(NautilusDataType::TradeTick),
+        ]),
+        Some(vec!["AUD/USD.SIM".to_string(), "ETHUSDT-PERP.BINANCE".to_string()]),
+        None,
+        None,
+        vec![
+            Data::Quote(quote_aud(1_000)),
+            Data::Trade(trade_eth(2_000)),
+            Data::Quote(quote_eth(3_000)),
+            Data::Quote(quote_aud(4_000)),
+        ],
+    )]
+    #[case::combined(
+        Some(vec![CatalogDataType::from(NautilusDataType::QuoteTick)]),
+        Some(vec!["ETHUSDT-PERP.BINANCE".to_string()]),
+        Some(1_000),
+        None,
+        vec![Data::Quote(quote_eth(3_000))],
+    )]
+    fn read_feather_run_applies_filters(
+        #[case] data_types: Option<Vec<CatalogDataType>>,
+        #[case] identifiers: Option<Vec<String>>,
+        #[case] start: Option<u64>,
+        #[case] end: Option<u64>,
+        #[case] expected: Vec<Data>,
+    ) {
+        let temp_dir = written_run();
+
+        let data = read_feather_run(
+            temp_dir.path().to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            data_types.as_deref(),
+            identifiers.as_deref(),
+            start.map(UnixNanos::from),
+            end.map(UnixNanos::from),
+        )
+        .unwrap();
+
+        assert_eq!(data, expected);
+    }
+
+    // The standalone Feather writer stages a file per identifier, while the Parquet writer stages
+    // one file per type with an identifier column, so the filters must select rows in both layouts
+    #[rstest]
+    #[case::feather(WriterBackendType::Feather, false)]
+    #[case::parquet(WriterBackendType::Parquet, true)]
+    fn read_feather_run_filters_every_writer_layout(
+        #[case] backend: WriterBackendType,
+        #[case] needs_catalog: bool,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let writer_path = temp_dir.path().join("stream");
+        let catalog = needs_catalog.then(|| {
+            CatalogConnectConfig::new(temp_dir.path().join("catalog").to_str().unwrap(), None)
+        });
+        let mut config = WriterConnectConfig::new(
+            writer_path
+                .join("backtest")
+                .join("run-001")
+                .to_str()
+                .unwrap(),
+            catalog,
+        );
+        config.promote_on_close = false;
+        let mut writer = create_writer(
+            &backend,
+            &config,
+            WriterClock::Test(Arc::new(AtomicU64::new(0))),
+            &default_writer_factories(),
+        )
+        .unwrap();
+
+        for data in [
+            Data::Quote(quote_eth(3_000)),
+            Data::Quote(quote_aud(1_000)),
+            Data::Trade(trade_eth(2_000)),
+            Data::Quote(quote_aud(4_000)),
+            Data::Quote(quote_btc(2_500)),
+        ] {
+            writer.write_data(data).unwrap();
+        }
+        writer.close().unwrap();
+        let data_types = [
+            CatalogDataType::from(NautilusDataType::QuoteTick),
+            CatalogDataType::from(NautilusDataType::TradeTick),
+        ];
+        let identifiers = [
+            "AUD/USD.SIM".to_string(),
+            "ETHUSDT-PERP.BINANCE".to_string(),
+        ];
+
+        let data = read_feather_run(
+            writer_path.to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            Some(&data_types),
+            Some(&identifiers),
+            None,
+            Some(UnixNanos::from(3_000)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            data,
+            vec![
+                Data::Quote(quote_aud(1_000)),
+                Data::Trade(trade_eth(2_000)),
+                Data::Quote(quote_eth(3_000)),
+            ],
+        );
+    }
+
+    #[rstest]
+    fn read_feather_run_skips_partial_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut writer = FeatherWriter::new(
+            temp_dir.path().join("backtest").join("run-001"),
+            WriterClock::Test(Arc::new(AtomicU64::new(0))),
+            RotationConfig::NoRotation,
+            None,
+            Some(FeatherWriter::default_per_instrument_types()),
+            None,
+        );
+        writer.write_data(Data::Quote(quote_aud(1_000))).unwrap();
+        writer.flush().unwrap();
+
+        let data = read_feather_run(
+            temp_dir.path().to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data, Vec::<Data>::new());
+        writer.close().unwrap();
+    }
+
+    #[rstest]
+    fn read_feather_run_rejects_requested_family_without_data_decoding() {
+        let temp_dir = written_run();
+        let data_types = [CatalogDataType::from(NautilusRecordType::AccountState)];
+
+        let error = read_feather_run(
+            temp_dir.path().to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            Some(&data_types),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Cannot read AccountState from a Feather run as data",
+        );
+    }
+
+    #[rstest]
+    fn read_feather_run_rejects_remote_writer_path() {
+        let error = read_feather_run(
+            "s3://bucket/stream",
+            Environment::Backtest,
+            "run-001",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Streaming writers append to local files, writer path must be local, was s3://bucket/stream",
+        );
+    }
+
+    #[rstest]
+    #[cfg(feature = "python")]
+    fn read_feather_run_reads_custom_data() {
+        use nautilus_model::{
+            data::{CustomData, DataType},
+            identifiers::InstrumentId,
+        };
+        use nautilus_serialization::ensure_custom_data_registered;
+
+        use crate::test_data::RustTestCustomData;
+
+        ensure_custom_data_registered::<RustTestCustomData>();
+        let instrument_id = InstrumentId::from("RUST.TEST");
+        let custom = Data::Custom(CustomData::new(
+            Arc::new(RustTestCustomData {
+                instrument_id,
+                value: 1.23,
+                flag: true,
+                ts_event: UnixNanos::from(5_000),
+                ts_init: UnixNanos::from(5_000),
+            }),
+            DataType::new("RustTestCustomData", None, Some(instrument_id.to_string())),
+        ));
+        let temp_dir = TempDir::new().unwrap();
+        write_run(
+            temp_dir.path(),
+            vec![Data::Quote(quote_aud(1_000)), custom.clone()],
+        );
+
+        let data = read_feather_run(
+            temp_dir.path().to_str().unwrap(),
+            Environment::Backtest,
+            "run-001",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(data, vec![Data::Quote(quote_aud(1_000)), custom]);
     }
 }

@@ -53,7 +53,6 @@ pub struct RustTestCustomData {
 }
 
 /// Rust custom data type that exercises raw byte field support.
-#[arrow_custom_data]
 #[custom_data]
 pub struct RustTestBytesCustomData {
     pub value: Vec<u8>,

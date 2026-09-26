@@ -57,6 +57,7 @@ from nautilus_trader.model import OmsType
 from nautilus_trader.model import OtoTriggerMode
 from nautilus_trader.model import PriceType
 from nautilus_trader.model import StandardMarginModel
+from nautilus_trader.persistence import CatalogBackend
 from nautilus_trader.persistence import DataCatalogConfig
 from nautilus_trader.persistence import RotationConfig
 from nautilus_trader.persistence import StreamingConfig
@@ -178,8 +179,8 @@ def test_engine_config_accepts_streaming_and_catalog_configs(
     Test engine config retains streaming and catalog configs.
     """
     streaming = StreamingConfig(
-        catalog_path="/data/output",
-        fs_protocol="s3",
+        writer_path="/data/output",
+        catalog=DataCatalogConfig(path="bucket/output", fs_protocol="s3", name="output"),
         flush_interval_ms=250,
         replace_existing=True,
     )
@@ -188,11 +189,16 @@ def test_engine_config_accepts_streaming_and_catalog_configs(
     config = config_type(streaming=streaming, catalogs=[catalog])
 
     assert type(config.streaming) is StreamingConfig
-    assert config.streaming.catalog_path == "/data/output"
-    assert config.streaming.fs_protocol == "s3"
+    assert config.streaming.writer_path == "/data/output"
+    assert config.streaming.catalog.path == "bucket/output"
+    assert config.streaming.catalog.fs_protocol == "s3"
+    assert config.streaming.catalog.name == "output"
+    assert config.streaming.writer_backend == "Parquet"
     assert config.streaming.flush_interval_ms == 250
     assert config.streaming.replace_existing is True
-    assert config.catalogs == [catalog]
+    assert len(config.catalogs) == 1
+    assert config.catalogs[0].path == "/data/input"
+    assert config.catalogs[0].name == "history"
 
 
 def test_streaming_config_consumes_rotation_inputs() -> None:
@@ -200,51 +206,34 @@ def test_streaming_config_consumes_rotation_inputs() -> None:
     Test streaming config converts public rotation inputs to typed values.
     """
     config = StreamingConfig(
-        catalog_path="bucket/output",
-        fs_protocol="s3",
+        writer_path="/data/output",
         flush_interval_ms=250,
         replace_existing=True,
-        rotation_mode="SCHEDULED_DATES",
-        rotation_interval_ns=5_000,
-        schedule_ns=750,
+        rotation_config=RotationConfig.scheduled_dates(5_000, 750),
     )
 
-    assert config.catalog_path == "bucket/output"
-    assert config.fs_protocol == "s3"
+    assert config.writer_path == "/data/output"
+    assert config.catalog is None
+    assert config.writer_backend == "Feather"
     assert config.flush_interval_ms == 250
     assert config.replace_existing is True
-    assert config.rotation_mode == "SCHEDULED_DATES"
-    assert config.rotation_interval_ns == 5_000
-    assert config.schedule_ns == 750
+    assert config.rotation_config.mode == "scheduled_dates"
+    assert config.rotation_config.interval_ns == 5_000
+    assert config.rotation_config.schedule_ns == 750
 
 
 def test_streaming_config_exposes_shared_rotation() -> None:
     """
-    Retain shared rotation and legacy readback properties.
+    Retain shared rotation properties.
     """
     config = StreamingConfig(
-        catalog_path="catalog",
+        writer_path="stream",
+        catalog=DataCatalogConfig(path="catalog", catalog_backend=CatalogBackend.Parquet),
         rotation_config=RotationConfig.interval(17),
-        writer_backend="parquet",
     )
     assert config.rotation_config.mode == "interval"
     assert config.rotation_config.interval_ns == 17
-    assert config.rotation_mode == "INTERVAL"
-    assert config.rotation_interval_ns == 17
     assert config.writer_backend == "Parquet"
-
-
-def test_streaming_config_rejects_ambiguous_rotation() -> None:
-    """
-    Reject conflicting rotation representations.
-    """
-    with pytest.raises(ValueError, match="cannot be combined"):
-        StreamingConfig(
-            catalog_path="catalog",
-            rotation_config=RotationConfig.size(17),
-            rotation_mode="SIZE",
-            max_file_size=23,
-        )
 
 
 def test_venue_config_required_params() -> None:

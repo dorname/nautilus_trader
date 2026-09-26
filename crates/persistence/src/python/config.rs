@@ -16,9 +16,7 @@
 //! Python bindings for persistence configuration types.
 
 use nautilus_core::{
-    DurationNanos, UnixNanos,
-    datetime::NANOSECONDS_IN_DAY,
-    from_pydict,
+    UnixNanos, from_pydict,
     python::{params::params_to_pydict, to_pytype_err, to_pyvalue_err},
 };
 use nautilus_model::{
@@ -34,12 +32,9 @@ use pyo3::{
     types::{PyAnyMethods, PyDict},
 };
 
-use crate::{
-    config::{
-        CatalogBackendType, DataCatalogConfig, RotationConfig, StreamingConfig,
-        StreamingRecordFilterConfig, default_fs_protocol,
-    },
-    writer::factory::WriterBackendType,
+use crate::config::{
+    CatalogBackendType, DataCatalogConfig, RotationConfig, StreamingConfig,
+    StreamingRecordFilterConfig,
 };
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -205,9 +200,7 @@ impl PyRotationConfig {
     #[staticmethod]
     fn interval(interval_ns: u64) -> Self {
         Self {
-            inner: RotationConfig::Interval {
-                interval_ns: nautilus_core::DurationNanos::new(interval_ns),
-            },
+            inner: RotationConfig::Interval { interval_ns },
         }
     }
 
@@ -215,7 +208,7 @@ impl PyRotationConfig {
     fn scheduled_dates(interval_ns: u64, schedule_ns: u64) -> Self {
         Self {
             inner: RotationConfig::ScheduledDates {
-                interval_ns: nautilus_core::DurationNanos::new(interval_ns),
+                interval_ns,
                 schedule_ns: UnixNanos::from(schedule_ns),
             },
         }
@@ -243,7 +236,7 @@ impl PyRotationConfig {
     fn interval_ns(&self) -> Option<u64> {
         match self.inner {
             RotationConfig::Interval { interval_ns }
-            | RotationConfig::ScheduledDates { interval_ns, .. } => Some(interval_ns.as_u64()),
+            | RotationConfig::ScheduledDates { interval_ns, .. } => Some(interval_ns),
             _ => None,
         }
     }
@@ -261,99 +254,82 @@ impl PyRotationConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+#[pyo3::pyclass(
+    frozen,
+    name = "StreamingConfig",
+    module = "nautilus_trader.persistence",
+    from_py_object
+)]
+#[pyo3_stub_gen::derive::gen_stub_pyclass(module = "nautilus_trader.persistence")]
+pub struct PyStreamingConfig {
+    inner: StreamingConfig,
+}
+
+impl From<PyStreamingConfig> for StreamingConfig {
+    fn from(config: PyStreamingConfig) -> Self {
+        config.inner
+    }
+}
+
+impl From<StreamingConfig> for PyStreamingConfig {
+    fn from(config: StreamingConfig) -> Self {
+        Self { inner: config }
+    }
+}
+
 #[pyo3_stub_gen::derive::gen_stub_pymethods]
 #[pyo3::pymethods]
-impl StreamingConfig {
-    /// Configuration streaming live or backtest runs to a persistence writer.
+impl PyStreamingConfig {
     #[new]
     #[expect(
         clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
         reason = "the PyO3 constructor mirrors the public Python configuration signature"
     )]
     #[pyo3(signature = (
-        catalog_path,
-        fs_protocol = None,
+        writer_path,
+        catalog = None,
         flush_interval_ms = 1000,
         replace_existing = false,
         rotation_config = None,
-        writer_backend = None,
+        promotion_interval_ms = None,
+        promote_on_close = true,
+        delete_feather_after_promotion = false,
+        use_ts_event_for_ts_init = false,
         data_types = None,
         record_types = None,
         instrument_types = None,
         record_filters = None,
         params = None,
-        rotation_mode = None,
-        max_file_size = None,
-        rotation_interval_ns = None,
-        schedule_ns = None,
     ))]
     fn py_new(
-        catalog_path: String,
-        fs_protocol: Option<String>,
+        writer_path: String,
+        catalog: Option<DataCatalogConfig>,
         flush_interval_ms: u64,
         replace_existing: bool,
         rotation_config: Option<PyRotationConfig>,
-        writer_backend: Option<String>,
+        promotion_interval_ms: Option<u64>,
+        promote_on_close: bool,
+        delete_feather_after_promotion: bool,
+        use_ts_event_for_ts_init: bool,
         data_types: Option<&Bound<'_, PyAny>>,
         record_types: Option<&Bound<'_, PyAny>>,
         instrument_types: Option<&Bound<'_, PyAny>>,
         record_filters: Option<&Bound<'_, PyAny>>,
         params: Option<Py<PyDict>>,
-        rotation_mode: Option<&str>,
-        max_file_size: Option<u64>,
-        rotation_interval_ns: Option<u64>,
-        schedule_ns: Option<u64>,
     ) -> pyo3::PyResult<Self> {
-        let rotation_config = if let Some(config) = rotation_config {
-            if rotation_mode.is_some()
-                || max_file_size.is_some()
-                || rotation_interval_ns.is_some()
-                || schedule_ns.is_some()
-            {
-                return Err(to_pyvalue_err(
-                    "rotation_config cannot be combined with legacy rotation options",
-                ));
-            }
-
-            config.into()
-        } else {
-            match rotation_mode
-                .unwrap_or("NO_ROTATION")
-                .to_ascii_uppercase()
-                .as_str()
-            {
-                "SIZE" => {
-                    let max_size = max_file_size.unwrap_or(1_073_741_824);
-                    if max_size == 0 {
-                        return Err(to_pyvalue_err("max_file_size must be positive"));
-                    }
-
-                    RotationConfig::Size { max_size }
-                }
-                "INTERVAL" => RotationConfig::Interval {
-                    interval_ns: positive_interval(rotation_interval_ns)?,
-                },
-                "SCHEDULED_DATES" => RotationConfig::ScheduledDates {
-                    interval_ns: positive_interval(rotation_interval_ns)?,
-                    schedule_ns: UnixNanos::from(schedule_ns.unwrap_or(0)),
-                },
-                "NO_ROTATION" => RotationConfig::NoRotation,
-                mode => return Err(to_pyvalue_err(format!("Invalid rotation_mode: '{mode}'"))),
-            }
-        };
-
-        let mut config = Self::new(
-            catalog_path,
-            fs_protocol.unwrap_or_else(default_fs_protocol),
+        let mut inner = StreamingConfig::new(
+            writer_path,
+            catalog,
             flush_interval_ms,
             replace_existing,
-            rotation_config,
+            rotation_config.map_or(RotationConfig::NoRotation, Into::into),
         );
-        config.writer_backend = writer_backend
-            .map(|backend| backend.parse::<WriterBackendType>())
-            .transpose()
-            .map_err(to_pyvalue_err)?
-            .unwrap_or_default();
+        inner.promotion_interval_ms = promotion_interval_ms;
+        inner.promote_on_close = promote_on_close;
+        inner.delete_feather_after_promotion = delete_feather_after_promotion;
+        inner.use_ts_event_for_ts_init = use_ts_event_for_ts_init;
         let mut parsed_types = py_streaming_types_from_any(data_types)?;
         parsed_types
             .records
@@ -361,73 +337,74 @@ impl StreamingConfig {
         parsed_types
             .instruments
             .extend(py_instrument_types_from_any(instrument_types)?.unwrap_or_default());
-        config.data_types = (!parsed_types.data.is_empty()).then_some(parsed_types.data);
-        config.record_types = (!parsed_types.records.is_empty()).then_some(parsed_types.records);
-        config.instrument_types =
+        inner.data_types = (!parsed_types.data.is_empty()).then_some(parsed_types.data);
+        inner.record_types = (!parsed_types.records.is_empty()).then_some(parsed_types.records);
+        inner.instrument_types =
             (!parsed_types.instruments.is_empty()).then_some(parsed_types.instruments);
-        config.record_filters = py_record_filters_from_any(record_filters)?;
-        config.params = Python::attach(|py| match params {
+        inner.record_filters = py_record_filters_from_any(record_filters)?;
+        inner.params = Python::attach(|py| match params {
             Some(params) => from_pydict(py, &params),
             None => Ok(None),
         })?;
 
-        Ok(config)
+        Ok(Self { inner })
     }
 
     #[getter]
-    fn catalog_path(&self) -> &str {
-        &self.catalog_path
+    fn writer_path(&self) -> &str {
+        &self.inner.writer_path
     }
 
     #[getter]
-    fn fs_protocol(&self) -> &str {
-        &self.fs_protocol
+    fn catalog(&self) -> Option<DataCatalogConfig> {
+        self.inner.catalog.clone()
     }
 
     #[getter]
     const fn flush_interval_ms(&self) -> u64 {
-        self.flush_interval_ms
+        self.inner.flush_interval_ms
     }
 
     #[getter]
     const fn replace_existing(&self) -> bool {
-        self.replace_existing
+        self.inner.replace_existing
     }
 
     #[getter]
     fn rotation_config(&self) -> PyRotationConfig {
-        self.rotation_config.clone().into()
+        self.inner.rotation_config.clone().into()
     }
 
     #[getter]
-    fn rotation_mode(&self) -> String {
-        self.rotation_config().mode().to_ascii_uppercase()
+    const fn promotion_interval_ms(&self) -> Option<u64> {
+        self.inner.promotion_interval_ms
     }
 
     #[getter]
-    fn max_file_size(&self) -> Option<u64> {
-        self.rotation_config().max_size()
+    const fn promote_on_close(&self) -> bool {
+        self.inner.promote_on_close
     }
 
     #[getter]
-    fn rotation_interval_ns(&self) -> Option<u64> {
-        self.rotation_config().interval_ns()
+    const fn delete_feather_after_promotion(&self) -> bool {
+        self.inner.delete_feather_after_promotion
     }
 
     #[getter]
-    fn schedule_ns(&self) -> Option<u64> {
-        self.rotation_config().schedule_ns()
+    const fn use_ts_event_for_ts_init(&self) -> bool {
+        self.inner.use_ts_event_for_ts_init
     }
 
     #[getter]
     fn writer_backend(&self) -> String {
-        self.writer_backend.to_string()
+        self.inner.writer_backend().to_string()
     }
 
     #[getter]
     #[pyo3(name = "params")]
     fn py_params(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        self.params
+        self.inner
+            .params
             .as_ref()
             .map(|params| params_to_pydict(py, params))
             .transpose()
@@ -435,28 +412,31 @@ impl StreamingConfig {
 
     #[getter]
     fn data_types(&self) -> Option<Vec<String>> {
-        self.data_types
+        self.inner
+            .data_types
             .clone()
             .map(|values| values.into_iter().map(|value| value.to_string()).collect())
     }
 
     #[getter]
     fn record_types(&self) -> Option<Vec<String>> {
-        self.record_types
+        self.inner
+            .record_types
             .clone()
             .map(|values| values.into_iter().map(|value| value.to_string()).collect())
     }
 
     #[getter]
     fn instrument_types(&self) -> Option<Vec<String>> {
-        self.instrument_types
+        self.inner
+            .instrument_types
             .clone()
             .map(|values| values.into_iter().map(|value| value.to_string()).collect())
     }
 
     #[getter]
     fn record_filters(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        let Some(filters) = &self.record_filters else {
+        let Some(filters) = &self.inner.record_filters else {
             return Ok(None);
         };
 
@@ -469,7 +449,7 @@ impl StreamingConfig {
     }
 
     fn __repr__(&self) -> String {
-        format!("{self:?}")
+        format!("{:?}", self.inner)
     }
 }
 
@@ -478,7 +458,7 @@ impl StreamingConfig {
 impl DataCatalogConfig {
     /// Configuration for a catalog available to request-time historical data loading.
     #[new]
-    #[pyo3(signature = (path, fs_protocol = None, catalog_backend = None, params = None, name = None, read_only = false, fs_rust_storage_options = None))]
+    #[pyo3(signature = (path, fs_protocol = None, catalog_backend = None, params = None, name = None, read_only = false))]
     fn py_new(
         path: String,
         fs_protocol: Option<String>,
@@ -486,7 +466,6 @@ impl DataCatalogConfig {
         params: Option<Py<PyDict>>,
         name: Option<String>,
         read_only: bool,
-        fs_rust_storage_options: Option<std::collections::HashMap<String, String>>,
     ) -> pyo3::PyResult<Self> {
         let catalog_backend = catalog_backend.map(|backend| backend.inner());
 
@@ -498,10 +477,7 @@ impl DataCatalogConfig {
         Ok(Self::new(path, fs_protocol, catalog_backend)
             .with_params(params)
             .with_name(name)
-            .with_read_only(read_only)
-            .with_storage_options(
-                fs_rust_storage_options.map(|options| options.into_iter().collect()),
-            ))
+            .with_read_only(read_only))
     }
 
     /// Returns the path to the data catalog.
@@ -546,15 +522,6 @@ impl DataCatalogConfig {
         self.params()
             .map(|params| params_to_pydict(py, params))
             .transpose()
-    }
-
-    #[getter]
-    fn fs_rust_storage_option_keys(&self) -> Option<Vec<String>> {
-        self.fs_rust_storage_options().map(|options| {
-            let mut keys = options.keys().cloned().collect::<Vec<_>>();
-            keys.sort();
-            keys
-        })
     }
 
     fn __repr__(&self) -> String {
@@ -711,13 +678,4 @@ fn py_record_filters_from_any(
     }
 
     Ok((!filters.is_empty()).then_some(filters))
-}
-
-fn positive_interval(interval_ns: Option<u64>) -> PyResult<DurationNanos> {
-    let interval_ns = interval_ns.unwrap_or(NANOSECONDS_IN_DAY);
-    if interval_ns == 0 {
-        return Err(to_pyvalue_err("rotation_interval_ns must be positive"));
-    }
-
-    Ok(DurationNanos::new(interval_ns))
 }

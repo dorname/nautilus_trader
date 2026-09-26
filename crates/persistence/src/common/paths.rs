@@ -25,6 +25,10 @@
 //! so parsing behaves identically on every platform. Call sites must use these
 //! helpers instead of splitting raw paths on `/`.
 
+use std::path::PathBuf;
+
+use nautilus_common::enums::Environment;
+
 /// Persistence-owned static path prefix used by streaming/session writers.
 pub trait CatalogPathPrefix {
     /// Returns the record family prefix.
@@ -178,6 +182,33 @@ pub fn normalize_path_to_uri(path: &str) -> anyhow::Result<String> {
 
         let absolute_path = current_dir.join(path);
         Ok(path_to_file_uri(&absolute_path.to_string_lossy()))
+    }
+}
+
+/// Returns the local directory a streaming writer appends its Feather files to.
+///
+/// Streaming writers append to open local files, so remote storage URIs are rejected.
+///
+/// # Errors
+///
+/// Returns an error if `path` is not a local path or `file://` URI, or if a relative path cannot
+/// be resolved against the current directory.
+pub fn local_writer_directory(path: &str) -> anyhow::Result<PathBuf> {
+    let uri = normalize_path_to_uri(path)?;
+    anyhow::ensure!(
+        uri.starts_with("file://"),
+        "Streaming writers append to local files, writer path must be local, was {path}"
+    );
+    Ok(PathBuf::from(file_uri_to_native_path(&uri)))
+}
+
+/// Returns the folder a streaming writer groups `environment` runs under, below its writer path.
+#[must_use]
+pub const fn environment_directory(environment: Environment) -> &'static str {
+    match environment {
+        Environment::Backtest => "backtest",
+        Environment::Sandbox => "sandbox",
+        Environment::Live => "live",
     }
 }
 
