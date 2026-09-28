@@ -9,7 +9,7 @@
 - [x] 产出 deltas/test/astock/astock-test-cases.md — 测试用例规格
 
 ## [code] 代码实现
-- [ ] 实现 python/nautilus_trader/adapters/astock/tdx_loader.py — 通达信 .day 解析
-- [ ] 实现 python/nautilus_trader/adapters/astock/tickflow_client.py — TickFlow 客户端
-- [ ] 实现 python/nautilus_trader/adapters/astock/catalog_writer.py — catalog 写入与双源合并
-- [ ] 编写 test_data/astock 样例与单元测试（按 astock-test-cases.md）
+- [x] 实现 python/nautilus_trader/adapters/astock/tdx_loader.py — 通达信 .day 解析
+- [x] 实现 python/nautilus_trader/adapters/astock/tickflow_client.py — TickFlow 客户端
+- [x] 实现 python/nautilus_trader/adapters/astock/catalog_writer.py — catalog 写入与双源合并
+- [x] 编写 test_data/astock 样例与单元测试（按 astock-test-cases.md）
