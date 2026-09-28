@@ -78,6 +78,26 @@ resource_index:
   desc: 规格文档总索引（主入口）：四类文档（需求6/设计2/技术6/其他规格14）的一站式导航与验收状态
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/00-scenario-implementation-map.md
   desc: 场景→实现组件映射：ST-01~08 对应的 crate 链路与编排规格索引
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/00-diagram-index.md
+  desc: 图集总览：总-分导航与使用约定
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/01-system-context.md
+  desc: 总图D-01 系统上下文：节点边界/外部系统/可选backing
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/02-kernel-components.md
+  desc: 分图D-02 内核六组件架构：官方组件连接关系
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/03-adapter-architecture.md
+  desc: 分图D-03 端口与适配器：18 venue 统一接入
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/04-backtest-loop.md
+  desc: 流程D-04 回测主循环：官方三阶段+级联结算
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/05-live-message-flow.md
+  desc: 流程D-05 实盘消息处理：行情→订单→回报+重连对账分支
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/06-crash-recovery.md
+  desc: 流程D-06 崩溃恢复：crash-only 事件重放重建
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/07-seq-order-lifecycle.md
+  desc: 时序D-07 订单全生命周期：提交→预检→成交事件链
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/08-seq-backtest-tick.md
+  desc: 时序D-08 回测逐数据点：官方三阶段消息时序
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/09-seq-live-reconciliation.md
+  desc: 时序D-09 实盘对账：引擎与 venue 状态对齐
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

@@ -31,6 +31,7 @@
 | 2-scenario-implementation/00-scenario-implementation-map.md | 场景→实现组件映射（ST-01~08） |
 | 3-deployment/01-deployment-model.md | 部署模型（wheel/cargo/源码三形态） |
 | 3-deployment/02-smoke-test-spec.md | 冒烟测试规格 SMK-01~05 |
+| 1-architecture/diagrams/00~09（10 张） | 图集：架构×3 + 流程×3 + 时序×3 + 总览（总-分结构） |
 
 ## 四、其他规格（14 件）
 
