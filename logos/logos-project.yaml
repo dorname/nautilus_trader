@@ -74,6 +74,10 @@ resource_index:
   desc: ST-08 纯Rust节点旅程编排规格
 - path: logos/resources/database/00-no-database-decision.sql
   desc: 决策记录：引擎无自有数据库，事件溯源+外置backing，本目录不产出DDL
+- path: logos/resources/index.md
+  desc: 规格文档总索引（主入口）：四类文档（需求6/设计2/技术6/其他规格14）的一站式导航与验收状态
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/00-scenario-implementation-map.md
+  desc: 场景→实现组件映射：ST-01~08 对应的 crate 链路与编排规格索引
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案
