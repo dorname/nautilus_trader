@@ -1,57 +1,48 @@
-# 单元测试用例规格（Unit Test Cases Spec）
+# 单元测试用例规格（Unit Test Cases）
 
-> 状态：基线 · 对接既有 `cargo test` 体系（logos.config.json verify 预跑命令）
-> 本文档定义单元层的用例规格框架与代表性用例；完整执行以仓库测试为准
+> 状态：基线 · 对接 `cargo test` 既有体系（logos verify 预跑）
+> 变更提案：add-baseline-docs · 本文件为 OpenLogos verify 兼容格式
 
-## 1. 测试体系现状（事实）
+## 一、单元测试用例
 
-- 预跑命令：`cargo test`（全 workspace，OpenLogos verify 直接消费其结果）
-- 覆盖位置：各 crate `#[cfg(test)]` 模块 + python/tests（Python 侧）
-- 质量门：CI + pre-commit（clippy/rustfmt/codespell 等，NFR-011）
+用例 ID 规则：UT-〈域〉-〈序号〉；本基线阶段以人工文档审查方式验收。
 
-## 2. 用例规格模板
+| 用例 ID | 关联需求 | 用例描述 | 前置/步骤 | 期望结果 |
+|---|---|---|---|---|
+| UT-MODEL-01 | FR-003 | 订单状态机合法迁移覆盖 | 检查 crates/model 状态机实现与测试 | 状态机合法转移集内每个转移可达且事件产出正确 |
+| UT-MODEL-02 | FR-003 | 非法状态迁移拒绝 | 构造状态机外迁移 | 返回错误且不产生事件 |
+| UT-MODEL-03 | FR-001 | 多资产工具精度换算 | 各资产类别 Instrument（现货/期货/期权/预测市场） | 精度与最小变动单位换算正确 |
+| UT-RISK-01 | FR-008 | 超额度拒单 | 订单超预设额度提交 | OrderRejected 事件产生，命令不下发 venue |
+| UT-RISK-02 | FR-008 | 价格偏离拒单 | 限价超出带状范围 | 订单被拒且有事件记录 |
+| UT-RISK-03 | FR-008 | 预检读取最新状态 | 预检触发时查询 Cache/Portfolio | 使用最新订单/仓位/账户状态 |
+| UT-EXEC-01 | FR-003 | 命令分发路由 | 提交多场所订单命令 | 命令正确路由到目标 ExecutionClient |
+| UT-EXEC-02 | FR-003, FR-011 | 执行事件回写 | venue 回报到达 | Cache 更新且事件发布到总线 |
+| UT-PORT-01 | FR-009 | 成交核算 | OrderFilled 事件驱动 | 仓位与已实现/未实现盈亏增量正确 |
+| UT-PORT-02 | FR-009 | 多币种换算 | 跨币种账户成交 | 换算与核算正确 |
+| UT-BUS-01 | FR-011 | 三消息模式 | pub/sub、req/resp、p2p 各自收发 | 语义正确、无串扰 |
+| UT-BT-01 | NFR-003 | 回测确定性 | 同一输入两次运行 | 事件流逐一致 |
+| UT-BT-02 | FR-002 | 撮合仿真 | 限价/市价单进订单簿 | 成交价与数量正确 |
+| UT-DATA-01 | FR-014 | 订阅分发 | 多订阅者多场所订阅 | 订阅者只收到所订阅数据 |
+| UT-DATA-02 | FR-015 | 自定义数据注入 | 注册自定义类型并发布 | 数据进入引擎并被消费 |
+| UT-ADV-01 | FR-013 | venue 报文解析 | 各适配器样例报文 | 解析为标准领域对象 |
+| UT-ADV-02 | FR-013, FR-016 | sandbox 模板验证 | sandbox 适配器测试链路 | 作为适配器测试模板可复用 |
+| UT-SER-01 | FR-004 | 事件序列化往返 | 事件序列化后反序列化 | 内容无损 |
 
-每个用例：`ID / 前置 / 步骤 / 期望 / 关联需求`
+## 二、自动化现状说明
 
-## 3. 代表性用例规格（按能力域）
+以上用例的自动化载体为仓库既有 `cargo test`（各 crate `#[cfg(test)]`）与 python/tests；
+本基线阶段的验收方式为人工审查规格与既有测试的对应关系，
+后续代码类变更提案应逐步将对应用例转为自动结果（写入 test-results.jsonl）。
 
-### UT-MODEL 领域模型（crates/model）
-- UT-MODEL-01 订单状态机合法迁移：合法迁移集内每个转移可达且事件产出正确（FR-003）
-- UT-MODEL-02 非法迁移拒绝：状态机外迁移返回错误不产生事件（FR-003）
-- UT-MODEL-03 工具定义：各资产类别（现货/期货/期权/预测市场）Instrument 精度与最小变动单位换算正确（FR-001）
+## 三、覆盖度校验
 
-### UT-RISK 风控引擎（crates/risk）
-- UT-RISK-01 超额度拒单：订单超预设额度 → OrderRejected + 事件（FR-008）
-- UT-RISK-02 价格偏离拒单：限价超出带状范围 → 拒绝（FR-008）
-- UT-RISK-03 状态读取：预检读取 Cache/Portfolio 最新状态（FR-008）
+- [x] UT 用例覆盖全部 P0 功能需求域（model/risk/execution/portfolio/bus/backtest/data/adapter/serialization）
+- [x] 每条用例标注关联需求（FR/NFR）
+- [x] 用例 ID 全局唯一且符合 UT-〈域〉-〈序号〉格式
 
-### UT-EXEC 执行引擎（crates/execution）
-- UT-EXEC-01 命令分发：命令正确路由到目标 ExecutionClient（FR-003）
-- UT-EXEC-02 事件回写：执行事件更新 Cache 并发布到总线（FR-003/FR-011）
+## 四、验收条件追溯
 
-### UT-PORTFOLIO 组合核算（crates/portfolio）
-- UT-PORT-01 成交核算：成交事件驱动仓位/盈亏增量正确（FR-009）
-- UT-PORT-02 多币种换算：跨币种账户核算正确（FR-009）
-
-### UT-BUS 消息总线（crates/common）
-- UT-BUS-01 三消息模式：pub/sub、req/resp、p2p 各自语义正确（FR-011）
-
-### UT-BACKTEST 回测（crates/backtest）
-- UT-BT-01 确定性：同一输入两次运行事件流一致（NFR-003）
-- UT-BT-02 撮合仿真：限价/市价单在订单簿上的成交价格与数量正确（FR-002）
-
-### UT-DATA 数据引擎（crates/data）
-- UT-DATA-01 订阅分发：订阅者只收到所订阅类型/场所的数据（FR-014）
-- UT-DATA-02 自定义数据注册与注入（FR-015）
-
-### UT-ADAPTER 适配器（crates/adapters/*）
-- UT-ADV-01 消息解析：各 venue 行情/回报报文解析为标准领域对象（FR-013）
-- UT-ADV-02 sandbox 适配器作为各适配器测试模板（FR-013/FR-016）
-
-### UT-SER 事件序列化（crates/serialization）
-- UT-SER-01 事件序列化/反序列化往返无损（FR-004）
-
-## 4. 验收
-
-`cargo test` 全绿 = 单元层验收通过（OpenLogos verify 的 pre_run 即此命令）。
-新增功能类提案必须在其 delta 中扩充对应 UT 规格并在 code 任务中实现。
+| AC ID | 验收条件 | 关联用例 |
+|---|---|---|
+| S01-AC-01 | 单元测试规格覆盖 P0 需求域 | UT-MODEL-01, UT-RISK-01, UT-EXEC-01, UT-PORT-01, UT-BUS-01, UT-BT-01, UT-DATA-01, UT-ADV-01, UT-SER-01 |
+| S01-AC-02 | 每条用例可追溯到需求编号 | UT-MODEL-02, UT-MODEL-03, UT-RISK-02, UT-RISK-03, UT-EXEC-02, UT-PORT-02, UT-BT-02, UT-DATA-02, UT-ADV-02 |
