@@ -1,0 +1,81 @@
+# 公共接口索引（Interface Index）
+# Public Interface Index — YAML 形式
+#
+# 说明：本项目是引擎/库而非服务，OpenAPI（HTTP 端点）不适用。
+# logos.config.json 中 api 文档目录的 pattern 为 **/*.{yaml,yml,json}，
+# 本文件以 YAML 形式索引两级公共接口面，作为 api/ 目录的规格载体。
+# 详尽 API 参考见 docs/api_reference/（站点）与各 crate/python 包 docstring。
+
+version: "2.0.0rc6-baseline"
+date: 2026-09-28
+kind: library-interface-index
+scope:
+  - python-public-api      # 用户主入口（控制面）
+  - rust-public-api        # 数据面/纯 Rust 路径
+  - cli                    # 命令行工具
+
+python_public_api:
+  package: nautilus_trader
+  install: "pip install nautilus_trader"
+  top_level_modules:
+    - name: system
+      exposes: [BacktestNode, LiveExecNode, TradingNode]
+      spec: 节点组装与运行入口（FR-002/FR-010）
+    - name: config
+      exposes: [TradingNodeConfig, BacktestRunConfig, ImportableStrategyConfig, ...]
+      spec: 全部配置对象，JSON 可序列化
+    - name: trading
+      exposes: [Strategy, Actor, Algorithm]
+      spec: 策略/组件基类与生命周期钩子（FR-007）
+    - name: model
+      exposes: [OrderFactory 产物类, Instrument 系列, events 系列]
+      spec: 领域模型（FR-001/FR-003）
+    - name: data
+      exposes: [DataEngine 配套类型, catalog, wranglers]
+      spec: 数据引擎与历史数据（FR-014/FR-015）
+    - name: risk / execution / portfolio
+      exposes: [RiskEngine, ExecutionEngine, Portfolio 配套类型]
+      spec: 内核引擎的 Python 可配面（FR-008/FR-003/FR-009）
+    - name: indicators
+      exposes: [EMA, RSI, ...]
+      spec: 技术指标库（FR-006）
+    - name: analysis
+      exposes: [PortfolioAnalyzer, 统计器]
+      spec: 绩效分析（FR-012）
+    - name: backtest / live
+      exposes: [BacktestEngine, LiveExecEngine 配套类型]
+      spec: 环境引擎（FR-002/FR-010）
+    - name: adapters
+      exposes: [binance, bybit, okx, coinbase, deribit, interactive_brokers, databento, tardis, sandbox, ...18 venues]
+      spec: venue 接入（FR-013）
+    - name: testkit
+      exposes: [TestDataProviderStub 等回放工具]
+      spec: 测试工具（FR-016）
+  quickstart: docs/getting_started/quickstart.py
+
+rust_public_api:
+  registry: crates.io（workspace 0.65.0）
+  key_crates:
+    - crate: nautilus-system
+      spec: Kernel/节点组装（Rust 路径入口）
+    - crate: nautilus-model
+      spec: 领域模型与值类型（value_types.md）
+    - crate: nautilus-trading
+      spec: Strategy/Actor/Algorithm Rust 实现（FR-007）
+    - crate: nautilus-backtest / nautilus-live
+      spec: 回测/实盘引擎
+    - crate: nautilus-data / nautilus-risk / nautilus-execution / nautilus-portfolio
+      spec: 四引擎 Rust API
+    - crate: nautilus-common
+      spec: MessageBus/Component 基础（FR-011）
+    - crate: nautilus-testkit
+      spec: 测试工具（FR-016）
+  docs: https://nautilustrader.io/docs（api_reference）
+
+cli:
+  crate: crates/cli
+  spec: 命令行辅助工具（构建期/开发期）
+
+conventions:
+  versioning: "语义化版本；master/nightly/develop 三发布线"
+  stability: "公共 API 遵循 MIGRATION_V2.md 与 RELEASES.md 记录的迁移策略"
