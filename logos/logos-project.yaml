@@ -98,6 +98,18 @@ resource_index:
   desc: 时序D-08 回测逐数据点：官方三阶段消息时序
 - path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/09-seq-live-reconciliation.md
   desc: 时序D-09 实盘对账：引擎与 venue 状态对齐
+- path: logos/resources/prd/1-product-requirements/07-astock-requirements.md
+  desc: A股数据需求 FR-A1~A8/NFR-A1~A4：双源日线（通达信静态+TickFlow在线）
+- path: logos/resources/prd/3-technical-plan/1-architecture/04-astock-data-architecture.md
+  desc: A股双源数据架构：catalog汇聚、五项设计决策、TDX .day布局、TickFlow映射
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/10-astock-data-flow.md
+  desc: 图D-10 A股双源数据流：导入/增量/合并/验证全流程
+- path: logos/resources/prd/3-technical-plan/1-architecture/diagrams/11-astock-merge-seq.md
+  desc: 图D-11 双源合并时序：首次建库与每日维护两链路
+- path: logos/resources/api/tickflow-klines.yaml
+  desc: TickFlow K线接口契约（OpenAPI摘要，官方文档2026-09-28抓取）
+- path: logos/resources/test/astock/astock-test-cases.md
+  desc: A股测试用例：UT-AST-01~11 + ST-A1/A2 + AC溯源
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

@@ -6,10 +6,10 @@
 
 | Metric | Value |
 |--------|-------|
-| Defined cases | 26 |
+| Defined cases | 39 |
 | Manual cases (excluded) | 0 |
-| Executed cases | 26 |
-| Passed | 26 |
+| Executed cases | 39 |
+| Passed | 39 |
 | Failed | 0 |
 | Skipped | 0 |
 | Uncovered | 0 |
@@ -23,6 +23,9 @@
 
 | Status | Assertion | Source |
 |--------|-----------|--------|
+| ✅ | 用例覆盖 FR-A1~A8 全部功能性需求 | astock/astock-test-cases.md |
+| ✅ | 用例覆盖 NFR-A1/A2/A4 | astock/astock-test-cases.md |
+| ✅ | 用例 ID 全局唯一（UT-AST-*/ST-A* 前缀，与既有 26 例不冲突） | astock/astock-test-cases.md |
 | ✅ | ST 用例覆盖全部 10 条用户故事（US-001~US-010）的主旅程 | scenario/scenario-test-cases.md |
 | ✅ | 每条场景标注关联需求与验收标准 | scenario/scenario-test-cases.md |
 | ✅ | 用例 ID 全局唯一且符合 ST-〈序号〉格式 | scenario/scenario-test-cases.md |
@@ -30,7 +33,7 @@
 | ✅ | 每条用例标注关联需求（FR/NFR） | unit/unit-test-cases.md |
 | ✅ | 用例 ID 全局唯一且符合 UT-〈域〉-〈序号〉格式 | unit/unit-test-cases.md |
 
-**6/6** assertions confirmed.
+**9/9** assertions confirmed.
 
 ## Acceptance Criteria Traceability (Layer 3)
 
@@ -38,11 +41,15 @@
 
 | AC ID | Description | Linked Cases | Runtime Status |
 |-------|-------------|-------------|----------------|
+| S10-AC-01 | 双源解析与映射正确 | UT-AST-01:✅, UT-AST-03:✅ | ✅ PASS |
+| S10-AC-02 | 合并与幂等正确 | UT-AST-05:✅, UT-AST-06:✅, UT-AST-11:✅ | ✅ PASS |
+| S10-AC-03 | 产出符合 Nautilus 规范 | UT-AST-07:✅, UT-AST-08:✅ | ✅ PASS |
+| S10-AC-04 | 端到端建库可用 | ST-A1:✅, ST-A2:✅ | ✅ PASS |
 | S02-AC-01 | 场景覆盖回测→实盘全旅程 | ST-01:✅, ST-04:✅, ST-08:✅ | ✅ PASS |
 | S02-AC-02 | 场景覆盖状态与恢复链路 | ST-02:✅, ST-03:✅, ST-05:✅ | ✅ PASS |
 | S02-AC-03 | 场景覆盖数据接入与扩展 | ST-06:✅, ST-07:✅ | ✅ PASS |
 | S01-AC-01 | 单元测试规格覆盖 P0 需求域 | UT-MODEL-01:✅, UT-RISK-01:✅, UT-EXEC-01:✅, UT-PORT-01:✅, UT-BUS-01:✅, UT-BT-01:✅, UT-DATA-01:✅, UT-ADV-01:✅, UT-SER-01:✅ | ✅ PASS |
 | S01-AC-02 | 每条用例可追溯到需求编号 | UT-MODEL-02:✅, UT-MODEL-03:✅, UT-RISK-02:✅, UT-RISK-03:✅, UT-EXEC-02:✅, UT-PORT-02:✅, UT-BT-02:✅, UT-DATA-02:✅, UT-ADV-02:✅ | ✅ PASS |
 
-**5/5** acceptance criteria passed.
+**9/9** acceptance criteria passed.
 

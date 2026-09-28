@@ -1,0 +1,71 @@
+# TickFlow K线接口契约（摘要）
+# 来源：https://docs.tickflow.org/zh-Hans/api-reference/k线数据/查询-k线数据.md（2026-09-28 抓取）
+# 用途：a-stock 分支 tickflow_client 的实现依据；完整 schema 见官方 openapi.json
+
+openapi: 3.1.0
+info:
+  title: TickFlow K线（摘要）
+  version: "1.0.0"
+  description: |
+    高性能行情数据服务，支持 A股、ETF、美股、港股。
+    认证：x-api-key 请求头。速率限制按 API Key 权限配置。
+    K线周期：1m,5m,10m,15m,30m,60m,1d,1w,1M,1Q,1Y
+    （日内周期从 1m 聚合；周月季年从日线聚合；intraday 为 Beta）
+servers:
+  - url: https://api.tickflow.org
+security:
+  - api_key: []
+paths:
+  /v1/klines:
+    get:
+      tags: [K线数据]
+      operationId: get_klines
+      parameters:
+        - {name: symbol, in: query, required: true, schema: {type: string}, description: "标的代码, 例如 600000.SH"}
+        - {name: period, in: query, required: false, schema: {$ref: "#/components/schemas/Period"}}
+        - {name: count, in: query, required: false, schema: {type: integer, minimum: 0}, description: "返回数量，默认100，最大10000"}
+        - {name: start_time, in: query, required: false, schema: {type: [integer, "null"], format: int64}, description: "毫秒时间戳"}
+        - {name: end_time, in: query, required: false, schema: {type: [integer, "null"], format: int64}, description: "毫秒时间戳"}
+        - {name: adjust, in: query, required: false, schema: {$ref: "#/components/schemas/AdjustType"}}
+      responses:
+        "200": {description: 查询成功, content: {application/json: {schema: {$ref: "#/components/schemas/KlinesResponse"}}}}
+        "400": {description: 参数错误}
+        "401": {description: 认证失败}
+        "403": {description: 无权限}
+        "404": {description: 标的不存在}
+  /v1/klines/batch:
+    post:
+      tags: [K线数据]
+      operationId: batch_klines
+      summary: 批量查询 K线（POST JSON Body，适合大批量，不受 URL 长度限制）
+      responses:
+        "200": {description: 查询成功}
+components:
+  securitySchemes:
+    api_key: {type: apiKey, in: header, name: x-api-key}
+  schemas:
+    Period:
+      type: string
+      enum: [1m, 5m, 10m, 15m, 30m, 60m, 1d, 1w, 1M, 1Q, 1Y]
+    AdjustType:
+      type: string
+      description: 复权类型
+      enum: [none, qfq, hfq]
+    KlinesResponse:
+      type: object
+      properties:
+        symbol: {type: string}
+        period: {$ref: "#/components/schemas/Period"}
+        adjust: {$ref: "#/components/schemas/AdjustType"}
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              open:  {type: number, description: 元}
+              high:  {type: number}
+              low:   {type: number}
+              close: {type: number}
+              volume: {type: integer, description: 股}
+              amount: {type: number, description: 元}
+              timestamp: {type: integer, format: int64, description: 毫秒}
