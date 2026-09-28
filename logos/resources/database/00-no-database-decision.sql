@@ -1,0 +1,13 @@
+-- ============================================================
+-- 决策记录：NautilusTrader 无自有数据库（ADR）
+-- ============================================================
+-- 本目录（logos/resources/database/，OpenLogos SQL DDL 位）有意为"仅本决策文件"。
+--
+-- 架构事实（见 3-technical-plan/1-architecture/01-architecture-overview.md）：
+--   1. 引擎是嵌入式库，进程内运行，无自有 RDBMS schema。
+--   2. 状态存储 = Cache（进程内），可选外置 backing（如 Redis）。
+--   3. 事件持久化 = 事件溯源（crates/event_store）+ 序列化（msgpack/parquet catalog）。
+--   4. 恢复 = 事件重放（crash-only），不依赖 SQL 数据库。
+--
+-- 结论：不产出任何表结构 DDL。若未来引入 SQL backing，须经需求级变更提案评审。
+-- ============================================================

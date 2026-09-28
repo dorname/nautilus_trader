@@ -1,64 +1,79 @@
 project:
-  name: "nautilus_trader"
-  description: ""
-  methodology: "OpenLogos"
-
+  name: nautilus_trader
+  description: ''
+  methodology: OpenLogos
 tech_stack: {}
-
 scenario_counter:
   next_id: 1
-
 modules:
-  - id: core
-    name: 核心功能
-    lifecycle: launched
-    bootstrap: adopted
-    skip_phases: [api, database, scenario]
-    deployment_required: true
-
+- id: core
+  name: 核心功能
+  lifecycle: launched
+  bootstrap: adopted
+  skip_phases:
+  - api
+  - database
+  - scenario
+  deployment_required: true
 deployment_gates:
   core:
     deployment_required: true
     smoke_required: true
     environments:
-      - staging
-
+    - staging
 resource_index:
-  - path: logos/resources/prd/1-product-requirements/01-overview.md
-    desc: 产品定位与价值主张。AI 在需要理解"产品是什么/解决什么问题/边界"时读取（回测-实盘割裂痛点、引擎+库形态、非 SaaS 非 GUI）
-  - path: logos/resources/prd/1-product-requirements/02-user-personas.md
-    desc: 四类用户画像 P1-P4（研究员/量化开发者/自营团队/适配器贡献者）及反画像。AI 在做需求决策、优先级取舍、UX 判断时读取
-  - path: logos/resources/prd/1-product-requirements/03-user-stories.md
-    desc: 用户故事 US-001~US-010 及验收条件。AI 在编写变更提案影响分析、测试用例、功能规格时读取
-  - path: logos/resources/prd/1-product-requirements/04-functional-requirements.md
-    desc: 功能性需求 FR-001~FR-018（含优先级与仓库事实来源）。需求级变更的追踪锚点，任何功能变更提案必须对照更新
-  - path: logos/resources/prd/1-product-requirements/05-non-functional-requirements.md
-    desc: 非功能性需求 NFR-001~NFR-012（性能/可靠性/兼容/安全/工程质量）。性能、安全、平台支持类变更提案必读
-  - path: logos/resources/prd/1-product-requirements/06-competitor-landscape.md
-    desc: 竞品对比（Lean/Backtrader/Freqtrade 等）与差异化定位。产品定位类讨论与路线图决策时读取
-  - path: logos/resources/prd/2-product-design/1-feature-specs/01-information-architecture.md
-    desc: 信息架构：能力域↔crate↔Python包↔需求追踪矩阵、节点类型、引擎组件协议、适配器规格。理解产品功能组成时读取
-  - path: logos/resources/prd/2-product-design/2-page-design/01-no-gui-design-decision.md
-    desc: ADR：产品无 GUI，2-page-design 阶段不适用。任何 GUI 类提案须走需求级变更
-  - path: logos/resources/prd/3-technical-plan/1-architecture/01-architecture-overview.md
-    desc: 架构总览：DDD/事件驱动/端口适配器/crash-only 四风格、NautilusKernel 六组件图、事件溯源与持久化决策。架构级变更必读
-  - path: logos/resources/prd/3-technical-plan/1-architecture/02-technology-stack.md
-    desc: 技术选型：Rust 1.98.1/edition2024 + Python 3.12-3.14 + PyO3、依赖治理、测试工具链、选型权衡。引入新依赖/工具时读取
-  - path: logos/resources/prd/3-technical-plan/1-architecture/03-runtime-dataflow.md
-    desc: 运行时数据流：回测/实盘事件链路、订单命令与事件状态机、恢复路径、数据类型流与并发模型。理解执行路径时读取
-  - path: logos/resources/prd/3-technical-plan/3-deployment/01-deployment-model.md
-    desc: 部署模型：wheel/cargo/源码三形态、环境要求、回测与实盘部署场景、OpenLogos 部署阶段映射与回滚。部署类提案必读
-  - path: logos/resources/prd/3-technical-plan/3-deployment/02-smoke-test-spec.md
-    desc: 冒烟用例 SMK-01~05（安装/回测/sandbox 实盘链路/崩溃恢复/凭证安全）。部署后 openlogos smoke 的用例依据
-  - path: logos/resources/test/unit/unit-test-cases.md
-    desc: 单元测试用例规格 UT-*（按能力域），对接 cargo test 预跑体系。功能变更提案须对照扩充
-  - path: logos/resources/test/scenario/scenario-test-cases.md
-    desc: 端到端场景用例 ST-01~08（用户旅程级，回测/多场所/风控/恢复等）。verify 阶段与冒烟子集的依据
-  - path: logos/resources/api/01-interface-index.yaml
-    desc: 公共接口索引（替代 OpenAPI，引擎为库）：Python API/Rust crates/CLI 三面与需求映射。接口级变更提案的影响面清单
-  - path: logos/resources/implementation/01-implementation-inventory.md
-    desc: 实现清单基线：26 个 Rust crate、18 个 venue 适配器、Python 包镜像与需求支撑映射。变更提案定位影响代码时读取
-
+- path: logos/resources/prd/1-product-requirements/01-overview.md
+  desc: 产品定位与价值主张。AI 在需要理解"产品是什么/解决什么问题/边界"时读取（回测-实盘割裂痛点、引擎+库形态、非 SaaS 非 GUI）
+- path: logos/resources/prd/1-product-requirements/02-user-personas.md
+  desc: 四类用户画像 P1-P4（研究员/量化开发者/自营团队/适配器贡献者）及反画像。AI 在做需求决策、优先级取舍、UX 判断时读取
+- path: logos/resources/prd/1-product-requirements/03-user-stories.md
+  desc: 用户故事 US-001~US-010 及验收条件。AI 在编写变更提案影响分析、测试用例、功能规格时读取
+- path: logos/resources/prd/1-product-requirements/04-functional-requirements.md
+  desc: 功能性需求 FR-001~FR-018（含优先级与仓库事实来源）。需求级变更的追踪锚点，任何功能变更提案必须对照更新
+- path: logos/resources/prd/1-product-requirements/05-non-functional-requirements.md
+  desc: 非功能性需求 NFR-001~NFR-012（性能/可靠性/兼容/安全/工程质量）。性能、安全、平台支持类变更提案必读
+- path: logos/resources/prd/1-product-requirements/06-competitor-landscape.md
+  desc: 竞品对比（Lean/Backtrader/Freqtrade 等）与差异化定位。产品定位类讨论与路线图决策时读取
+- path: logos/resources/prd/2-product-design/1-feature-specs/01-information-architecture.md
+  desc: 信息架构：能力域↔crate↔Python包↔需求追踪矩阵、节点类型、引擎组件协议、适配器规格。理解产品功能组成时读取
+- path: logos/resources/prd/2-product-design/2-page-design/01-no-gui-design-decision.md
+  desc: ADR：产品无 GUI，2-page-design 阶段不适用。任何 GUI 类提案须走需求级变更
+- path: logos/resources/prd/3-technical-plan/1-architecture/01-architecture-overview.md
+  desc: 架构总览：DDD/事件驱动/端口适配器/crash-only 四风格、NautilusKernel 六组件图、事件溯源与持久化决策。架构级变更必读
+- path: logos/resources/prd/3-technical-plan/1-architecture/02-technology-stack.md
+  desc: 技术选型：Rust 1.98.1/edition2024 + Python 3.12-3.14 + PyO3、依赖治理、测试工具链、选型权衡。引入新依赖/工具时读取
+- path: logos/resources/prd/3-technical-plan/1-architecture/03-runtime-dataflow.md
+  desc: 运行时数据流：回测/实盘事件链路、订单命令与事件状态机、恢复路径、数据类型流与并发模型。理解执行路径时读取
+- path: logos/resources/prd/3-technical-plan/3-deployment/01-deployment-model.md
+  desc: 部署模型：wheel/cargo/源码三形态、环境要求、回测与实盘部署场景、OpenLogos 部署阶段映射与回滚。部署类提案必读
+- path: logos/resources/prd/3-technical-plan/3-deployment/02-smoke-test-spec.md
+  desc: 冒烟用例 SMK-01~05（安装/回测/sandbox 实盘链路/崩溃恢复/凭证安全）。部署后 openlogos smoke 的用例依据
+- path: logos/resources/test/unit/unit-test-cases.md
+  desc: 单元测试用例规格 UT-*（按能力域），对接 cargo test 预跑体系。功能变更提案须对照扩充
+- path: logos/resources/test/scenario/scenario-test-cases.md
+  desc: 端到端场景用例 ST-01~08（用户旅程级，回测/多场所/风控/恢复等）。verify 阶段与冒烟子集的依据
+- path: logos/resources/api/01-interface-index.yaml
+  desc: 公共接口索引（替代 OpenAPI，引擎为库）：Python API/Rust crates/CLI 三面与需求映射。接口级变更提案的影响面清单
+- path: logos/resources/implementation/01-implementation-inventory.md
+  desc: 实现清单基线：26 个 Rust crate、18 个 venue 适配器、Python 包镜像与需求支撑映射。变更提案定位影响代码时读取
+- path: logos/resources/scenario/st-01.json
+  desc: ST-01 首次回测旅程编排规格（机器可读）
+- path: logos/resources/scenario/st-02.json
+  desc: ST-02 多场所组合回测编排规格
+- path: logos/resources/scenario/st-03.json
+  desc: ST-03 风控拦截端到端编排规格
+- path: logos/resources/scenario/st-04.json
+  desc: ST-04 回测转实盘零改动编排规格
+- path: logos/resources/scenario/st-05.json
+  desc: ST-05 崩溃恢复端到端编排规格
+- path: logos/resources/scenario/st-06.json
+  desc: ST-06 历史数据研究工作流编排规格
+- path: logos/resources/scenario/st-07.json
+  desc: ST-07 自定义数据融合编排规格
+- path: logos/resources/scenario/st-08.json
+  desc: ST-08 纯Rust节点旅程编排规格
+- path: logos/resources/database/00-no-database-decision.sql
+  desc: 决策记录：引擎无自有数据库，事件溯源+外置backing，本目录不产出DDL
 conventions:
-  - "遵循 OpenLogos 三层推进模型（Why → What → How）"
-  - "每次变更必须先创建 logos/changes/ 变更提案"
+- 遵循 OpenLogos 三层推进模型（Why → What → How）
+- 每次变更必须先创建 logos/changes/ 变更提案

@@ -1,0 +1,18 @@
+{
+  "id": "ST-06",
+  "title": "历史数据研究工作流",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-014",
+    "FR-013"
+  ],
+  "steps": [
+    "加载数据供应商历史数据(databento/tardis)",
+    "回放回测",
+    "断言数据完整回放且时间推进正确",
+    "断言事件计数与源数据一致"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

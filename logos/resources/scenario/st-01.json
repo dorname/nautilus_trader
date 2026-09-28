@@ -1,0 +1,20 @@
+{
+  "id": "ST-01",
+  "title": "首次回测旅程",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-002",
+    "FR-006",
+    "NFR-003"
+  ],
+  "steps": [
+    "安装nautilus_trader",
+    "配置EMA cross策略与历史catalog",
+    "运行BacktestNode完整区间",
+    "断言订单事件链完整且绩效报告产出",
+    "重复运行断言结果一致"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

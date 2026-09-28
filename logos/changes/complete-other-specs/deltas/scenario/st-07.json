@@ -1,0 +1,17 @@
+{
+  "id": "ST-07",
+  "title": "自定义数据融合",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-015"
+  ],
+  "steps": [
+    "注册自定义数据类型",
+    "注入信号数据",
+    "策略消费信号生成订单",
+    "断言自定义数据与行情按时间序交错处理"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

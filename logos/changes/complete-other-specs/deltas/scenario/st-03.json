@@ -1,0 +1,17 @@
+{
+  "id": "ST-03",
+  "title": "风控拦截端到端",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-008"
+  ],
+  "steps": [
+    "配置RiskEngine额度上限",
+    "提交超限订单",
+    "断言OrderRejected事件到达策略",
+    "断言venue未收到命令"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

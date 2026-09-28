@@ -1,0 +1,17 @@
+{
+  "id": "ST-08",
+  "title": "纯Rust节点旅程",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-007",
+    "NFR-001"
+  ],
+  "steps": [
+    "以Rust API组装最小回测节点",
+    "以Rust API组装sandbox实盘节点",
+    "断言与Python路径功能等价"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

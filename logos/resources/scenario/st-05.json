@@ -1,0 +1,19 @@
+{
+  "id": "ST-05",
+  "title": "崩溃恢复端到端",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-004",
+    "FR-005",
+    "NFR-004"
+  ],
+  "steps": [
+    "LiveExecNode+sandbox运行中kill -9",
+    "重启节点触发事件重放恢复",
+    "断言订单/仓位/账户状态与崩溃前一致",
+    "继续提交订单断言可正常处理"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

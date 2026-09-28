@@ -1,0 +1,21 @@
+{
+  "id": "ST-02",
+  "title": "多场所组合回测",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-001",
+    "FR-003",
+    "FR-009",
+    "FR-013"
+  ],
+  "steps": [
+    "配置两场所(如Binance+Bybit)数据与账户",
+    "单Strategy订阅两场所行情",
+    "向两场所分别下单",
+    "断言订单生命周期独立完整",
+    "断言Portfolio汇总两场所仓位盈亏"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}

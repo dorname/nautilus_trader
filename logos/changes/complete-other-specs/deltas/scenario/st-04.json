@@ -1,0 +1,19 @@
+{
+  "id": "ST-04",
+  "title": "回测转实盘零改动",
+  "kind": "component-orchestration",
+  "requirements": [
+    "FR-002",
+    "FR-010",
+    "FR-013"
+  ],
+  "steps": [
+    "编写Strategy类",
+    "BacktestNode+sandbox数据运行",
+    "LiveExecNode+sandbox适配器运行同一Strategy",
+    "断言代码零修改且事件语义一致"
+  ],
+  "expect": "全部步骤断言通过",
+  "source_spec": "logos/resources/test/scenario/scenario-test-cases.md",
+  "verification": "manual-doc-review（基线）；待自动化执行器对接"
+}
