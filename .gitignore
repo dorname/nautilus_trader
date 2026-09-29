@@ -205,3 +205,6 @@ tests/unit_tests/persistence/catalog/
 /python/nautilus_trader/_libnautilus.so
 *.pyc
 __pycache__/
+
+# --- TDX raw data dumps (135MB, re-importable via build_astock_catalog) ---
+/examples/tongxindadata/
