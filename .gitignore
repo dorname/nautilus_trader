@@ -208,3 +208,4 @@ __pycache__/
 
 # --- TDX raw data dumps (135MB, re-importable via build_astock_catalog) ---
 /examples/tongxindadata/
+.git/cursor/
