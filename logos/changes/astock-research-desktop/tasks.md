@@ -29,3 +29,7 @@
 - [x] 产出 `deltas/test/core-S13-test-cases.md` — 完成本场景的细化规格。
 - [x] 产出 `deltas/test/core-S14-test-cases.md` — 完成本场景的细化规格。
 - [x] 产出 `deltas/test/core-S15-test-cases.md` — 完成本场景的细化规格。
+
+## [delta] 高保真原型补充
+- [x] 产出 `deltas/prd/2-product-design/2-page-design/core-03-research-design.md` — 明确原型范围与交互检查。
+- [x] 产出 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 交付可离线打开的五页面交互原型。

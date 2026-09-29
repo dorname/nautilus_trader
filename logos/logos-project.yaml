@@ -152,6 +152,10 @@ resource_index:
   desc: S15 测试用例；A股Rust桌面研究设计，尚未实现验收
 - path: logos/resources/test/smoke/core-desktop-smoke-test-cases.md
   desc: 双平台部署后冒烟设计；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/2-product-design/2-page-design/core-03-research-design.md
+  desc: 高保真桌面原型范围、视觉规范和UI-P01～06交互检查；Rust GUI设计参考
+- path: logos/resources/prd/2-product-design/2-page-design/core-03-research-prototype.html
+  desc: 可离线打开的五页面高保真交互原型；演示数据、筛选、图表、取消与CSV导出
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案
