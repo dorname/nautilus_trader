@@ -4,7 +4,7 @@ project:
   methodology: OpenLogos
 tech_stack: {}
 scenario_counter:
-  next_id: 16
+  next_id: 17
 modules:
 - id: core
   name: 核心功能
@@ -155,7 +155,9 @@ resource_index:
 - path: logos/resources/prd/2-product-design/2-page-design/core-03-research-design.md
   desc: 高保真桌面原型范围、视觉规范和UI-P01～06交互检查；Rust GUI设计参考
 - path: logos/resources/prd/2-product-design/2-page-design/core-03-research-prototype.html
-  desc: 可离线打开的五页面高保真交互原型；演示数据、筛选、图表、取消与CSV导出
+  desc: 可离线打开的六页面高保真交互原型；含策略开发、版本绑定、筛选、图表及导出
+- path: logos/resources/prd/2-product-design/2-page-design/core-04-strategy-development-design.md
+  desc: S16策略开发原型；源码与参数编辑、检查、不可变版本、研究绑定及UI-P07～11
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

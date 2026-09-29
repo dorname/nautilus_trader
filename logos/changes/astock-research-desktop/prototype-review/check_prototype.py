@@ -20,7 +20,7 @@ with sync_playwright() as pw:
  js=[];page.on('pageerror',lambda e:js.append(str(e)))
  page.goto(html.as_uri());page.screenshot(path=str(out/'research.png'),full_page=True)
  def navigation():
-  for key,title in [('data','数据中心'),('pool','股票池'),('research','策略研究'),('compare','回测对比'),('plan','交易计划')]:
+  for key,title in [('data','数据中心'),('pool','股票池'),('develop','策略开发'),('research','策略研究'),('compare','回测对比'),('plan','交易计划')]:
    page.locator('nav [data-nav="'+key+'"]').click();assert page.locator('h1').inner_text()==title
   assert not js,js
  check('UI-P01',navigation)
@@ -51,11 +51,61 @@ with sync_playwright() as pw:
  def layouts():
   for width in [1100,1440]:
    page.set_viewport_size({'width':width,'height':1200})
-   for key in ['data','pool','research','compare','plan']:
+   for key in ['data','pool','develop','research','compare','plan']:
     page.locator('nav [data-nav="'+key+'"]').click();assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'),(key,width)
   page.locator('[data-action="theme"]').click();assert page.locator('body').evaluate('(el)=>el.classList.contains("dark")')
   page.locator('nav [data-nav="research"]').click();page.screenshot(path=str(out/'research-dark.png'),full_page=True)
   assert not js,js
  check('UI-P06',layouts)
+
+ def development():
+  page.locator('nav [data-nav="develop"]').click()
+  if page.locator('body').evaluate('(e)=>e.classList.contains("dark")'):page.locator('[data-action="theme"]').click()
+  page.locator('[data-dev="create"]').click();page.locator('#newstrategyname').fill('测试动量');page.locator('[data-dev="confirm-create"]').click()
+  page.locator('#deveditor').fill(page.locator('#deveditor').input_value()+'\n# 编辑保留检查\n')
+  text=page.locator('#deveditor').input_value()
+  page.locator('nav [data-nav="pool"]').click();page.locator('nav [data-nav="develop"]').click();assert page.locator('#deveditor').input_value()==text
+  page.locator('[data-dev="duplicate"]').click();page.locator('#deveditor').fill(text+'# 独立副本\n')
+  assert page.evaluate('dev.strategies.find(x=>x.name==="测试动量").source')==text
+  page.locator('[data-dev-select="d3"]').click();assert page.locator('#deveditor').input_value()==text
+  page.screenshot(path=str(out/'development.png'),full_page=True)
+ check('UI-P07',development)
+ def validation():
+  source=page.locator('#deveditor').input_value();page.locator('#deveditor').fill('没有入口')
+  page.locator('[data-dev="check"]').click();assert '缺少入口' in page.locator('#devlogs').inner_text();assert page.locator('[data-dev="save"]').is_disabled()
+  page.locator('#deveditor').fill(source);page.locator('[data-dev-tab="schema"]').click();schema=page.locator('#deveditor').input_value();page.locator('#deveditor').fill('{')
+  page.locator('[data-dev="check"]').click();assert '参数定义' in page.locator('#devlogs').inner_text()
+  page.locator('#deveditor').fill(schema);page.locator('[data-dev="check"]').click();assert '未编译、未执行 Python' in page.locator('#devlogs').inner_text();assert page.locator('[data-dev="save"]').is_enabled()
+ check('UI-P08',validation)
+ def versions():
+  page.locator('[data-dev-tab="source"]').click();page.locator('#deveditor').fill(page.locator('#deveditor').input_value()+'# 新改动\n');assert page.locator('[data-dev="save"]').is_disabled()
+  page.locator('[data-dev="check"]').click();page.locator('[data-dev="save"]').click();assert page.evaluate('currentDraft().versions.length')==1
+  frozen=page.evaluate('currentDraft().versions[0].source');page.locator('#deveditor').fill(frozen+'# 尚未保存的新草稿\n')
+  page.locator('[data-version="1"]').click();assert page.locator('#modal .codepreview').first.inner_text()==frozen.rstrip('\n') or page.locator('#modal .codepreview').first.inner_text()==frozen
+  assert page.locator('#modal textarea').count()==0;page.locator('[data-action="close-modal"]').click();assert page.evaluate('currentDraft().versions[0].source')==frozen
+ check('UI-P09',versions)
+ def binding():
+  page.locator('[data-dev="send"]').click();assert page.locator('h1').inner_text()=='策略研究';assert '测试动量' in page.locator('.devbinding').inner_text();assert 'v1' in page.locator('.devbinding').inner_text()
+  frozen=page.evaluate('dev.binding.source');assert page.locator('[data-config="window"]').count()==0
+  page.locator('.devbinding [data-dev="return"]').click();page.locator('#deveditor').fill(page.locator('#deveditor').input_value()+'# 再次修改\n')
+  page.locator('nav [data-nav="research"]').click();assert page.evaluate('dev.binding.source')==frozen
+  page.locator('[data-action="run"]').first.click();page.wait_for_function('state.task === null');assert page.evaluate('dev.lastRunBinding.source')==frozen
+  page.screenshot(path=str(out/'development-binding.png'),full_page=True)
+ check('UI-P10',binding)
+ def source_export():
+  page.locator('nav [data-nav="develop"]').click();expected=page.locator('#deveditor').input_value()
+  with page.expect_download() as item:page.locator('[data-dev="download"]').click()
+  file=out/'demo-strategy.py';item.value.save_as(str(file));assert file.read_text()==expected
+  for width in [1100,1440]:
+   page.set_viewport_size({'width':width,'height':1200});assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+  page.locator('[data-action="theme"]').click();assert page.locator('#deveditor').is_visible();page.screenshot(path=str(out/'development-dark.png'),full_page=True)
+  page.locator('[data-action="theme"]').click();page.locator('[data-dev="check"]').click();page.screenshot(path=str(out/'development.png'),full_page=True)
+  assert not js,js
+ check('UI-P11',source_export)
+
+ page.goto(html.as_uri()+'#develop')
+ page.locator('[data-dev="check"]').click();page.locator('[data-dev="save"]').click()
+ page.wait_for_timeout(3400)
+ page.screenshot(path=str(out/'development.png'),full_page=True)
  browser.close()
 if errors:raise SystemExit(1)

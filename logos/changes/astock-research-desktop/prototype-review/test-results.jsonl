@@ -1,6 +1,11 @@
-{"id": "UI-P01", "status": "pass", "duration_ms": 199, "timestamp": "2026-09-29T16:23:29.584258+00:00", "source": "HTML原型交互检查，非业务验收"}
-{"id": "UI-P02", "status": "pass", "duration_ms": 221, "timestamp": "2026-09-29T16:23:29.805777+00:00", "source": "HTML原型交互检查，非业务验收"}
-{"id": "UI-P03", "status": "pass", "duration_ms": 165, "timestamp": "2026-09-29T16:23:29.970609+00:00", "source": "HTML原型交互检查，非业务验收"}
-{"id": "UI-P04", "status": "pass", "duration_ms": 3059, "timestamp": "2026-09-29T16:23:33.029531+00:00", "source": "HTML原型交互检查，非业务验收"}
-{"id": "UI-P05", "status": "pass", "duration_ms": 301, "timestamp": "2026-09-29T16:23:33.330238+00:00", "source": "HTML原型交互检查，非业务验收"}
-{"id": "UI-P06", "status": "pass", "duration_ms": 502, "timestamp": "2026-09-29T16:23:33.832365+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P01", "status": "pass", "duration_ms": 285, "timestamp": "2026-09-29T16:34:29.908872+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P02", "status": "pass", "duration_ms": 195, "timestamp": "2026-09-29T16:34:30.104400+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P03", "status": "pass", "duration_ms": 138, "timestamp": "2026-09-29T16:34:30.242836+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P04", "status": "pass", "duration_ms": 3059, "timestamp": "2026-09-29T16:34:33.302404+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P05", "status": "pass", "duration_ms": 300, "timestamp": "2026-09-29T16:34:33.602555+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P06", "status": "pass", "duration_ms": 569, "timestamp": "2026-09-29T16:34:34.172111+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P07", "status": "pass", "duration_ms": 463, "timestamp": "2026-09-29T16:34:34.635703+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P08", "status": "pass", "duration_ms": 205, "timestamp": "2026-09-29T16:34:34.840775+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P09", "status": "pass", "duration_ms": 196, "timestamp": "2026-09-29T16:34:35.036812+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P10", "status": "pass", "duration_ms": 3320, "timestamp": "2026-09-29T16:34:38.357018+00:00", "source": "HTML原型交互检查，非业务验收"}
+{"id": "UI-P11", "status": "pass", "duration_ms": 297, "timestamp": "2026-09-29T16:34:38.654351+00:00", "source": "HTML原型交互检查，非业务验收"}

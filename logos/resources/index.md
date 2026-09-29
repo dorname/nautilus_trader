@@ -79,11 +79,13 @@
 - `test/core-S15-test-cases.md`
 - `test/smoke/core-desktop-smoke-test-cases.md`
 
-本组规格与资源索引已同步；保留next_id=16及S11～S15编号。原验收状态仅适用于原基线，不可沿用为桌面工具验收。
+本组规格与资源索引已同步；保留next_id=17及S11～S16编号。原验收状态仅适用于原基线，不可沿用为桌面工具验收。
 
 
 ## 高保真桌面原型入口
 
 - [打开交互原型](prd/2-product-design/2-page-design/core-03-research-prototype.html)：浏览器直接打开，离线运行，刷新重置演示状态。
 - [原型设计说明](prd/2-product-design/2-page-design/core-03-research-design.md)：视觉、交互范围和原型检查用例。
-- 原型已在Chromium检查UI-P01～06，全部通过；这是HTML交互检查，不代表Rust应用或业务回测已实现。
+- 原型已在Chromium检查UI-P01～11，全部通过；这是HTML交互检查，不代表Rust应用或业务回测已实现。
+
+- [策略开发设计](prd/2-product-design/2-page-design/core-04-strategy-development-design.md)：新增第六页，支持草稿、源码与参数编辑、版本冻结和研究绑定；可在HTML地址后加 `#develop` 直接进入。

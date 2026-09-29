@@ -33,3 +33,7 @@
 ## [delta] 高保真原型补充
 - [x] 产出 `deltas/prd/2-product-design/2-page-design/core-03-research-design.md` — 明确原型范围与交互检查。
 - [x] 产出 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 交付可离线打开的五页面交互原型。
+
+## [delta] 策略开发原型补充
+- [x] 产出 `deltas/prd/2-product-design/2-page-design/core-04-strategy-development-design.md` — 定义S16开发流程、版本语义和原型检查。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 增加策略开发页及研究绑定。
