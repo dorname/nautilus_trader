@@ -195,11 +195,48 @@ class AstockCatalogWriter:
     # ---- Nautilus 写出（惰性 import）--------------------------------
 
     def _write_nautilus(self, merged: list[AstockMergedBar]) -> None:
-        from nautilus_trader.core.nautilus_pyo3 import InstrumentId  # 惰性：需编译内核
+        """写出引擎刻度的 Parquet catalog（FR-A5、D1 汇聚点）。"""
+        from nautilus_trader.model import Bar, BarType, Currency, Equity, InstrumentId, Price, Quantity, Symbol
+        from nautilus_trader.persistence import ParquetDataCatalog
 
-        _ = InstrumentId  # 触发 import 校验
-        raise NotImplementedError(
-            "nautilus=True 需要编译好的 nautilus_trader 内核（当前环境未构建）。"
-            "规格阶段以 nautilus=False 的 JSONL 输出验证合并逻辑；"
-            "内核可用后按 04-astock-data-architecture.md 的映射补 write_data 调用。",
-        )
+        self.catalog_path.mkdir(parents=True, exist_ok=True)
+        catalog = ParquetDataCatalog(str(self.catalog_path))
+
+        # 1) Instruments：按 iid 去重构造（精度2/手数100，规格 FR-A5）
+        instruments: dict[str, Equity] = {}
+        for bar in merged:
+            if bar.instrument_id in instruments:
+                continue
+            iid = InstrumentId.from_str(bar.instrument_id)
+            ts = bar.ts_event_ns
+            instruments[bar.instrument_id] = Equity(
+                instrument_id=iid,
+                raw_symbol=Symbol(iid.symbol.value),
+                currency=Currency.from_str("CNY"),
+                price_precision=_PRICE_PRECISION,
+                price_increment=Price(0.01, _PRICE_PRECISION),
+                lot_size=Quantity(_LOT_SIZE, 0),
+                ts_event=ts,
+                ts_init=ts,
+            )
+        catalog.write_instruments(list(instruments.values()))
+
+        # 2) Bars：按 bar_type 分组写出（catalog API 要求同类型同批）
+        by_type: dict[str, list[Bar]] = {}
+        for bar in merged:
+            iid = InstrumentId.from_str(bar.instrument_id)
+            bar_type = BarType.from_str(f"{iid}-1-DAY-LAST-EXTERNAL")
+            by_type.setdefault(str(bar_type), []).append(
+                Bar(
+                    bar_type=bar_type,
+                    open=Price(bar.open, _PRICE_PRECISION),
+                    high=Price(bar.high, _PRICE_PRECISION),
+                    low=Price(bar.low, _PRICE_PRECISION),
+                    close=Price(bar.close, _PRICE_PRECISION),
+                    volume=Quantity(bar.volume, 0),
+                    ts_event=bar.ts_event_ns,
+                    ts_init=bar.ts_event_ns,
+                ),
+            )
+        for bars in by_type.values():
+            catalog.write_bars(bars)
