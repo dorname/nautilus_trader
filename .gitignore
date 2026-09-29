@@ -198,3 +198,10 @@ tests/unit_tests/persistence/catalog/
 !/test_data/nautilus/*/**.parquet
 !tests/integration_tests/adapters/betfair/responses/*.log
 !/nautilus_core/adapters/src/databento/test_data/*
+
+# --- nautilus astock: build toolchain & artifacts (2026-09-29 cleanup) ---
+/.tools/
+/data/
+/python/nautilus_trader/_libnautilus.so
+*.pyc
+__pycache__/
