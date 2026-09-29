@@ -4,7 +4,7 @@ project:
   methodology: OpenLogos
 tech_stack: {}
 scenario_counter:
-  next_id: 1
+  next_id: 16
 modules:
 - id: core
   name: 核心功能
@@ -23,7 +23,7 @@ deployment_gates:
     - staging
 resource_index:
 - path: logos/resources/prd/1-product-requirements/01-overview.md
-  desc: 产品定位与价值主张。AI 在需要理解"产品是什么/解决什么问题/边界"时读取（回测-实盘割裂痛点、引擎+库形态、非 SaaS 非 GUI）
+  desc: 产品定位与价值主张。AI 在需要理解"产品是什么/解决什么问题/边界"时读取（引擎与库形态、A股桌面研究应用边界）
 - path: logos/resources/prd/1-product-requirements/02-user-personas.md
   desc: 四类用户画像 P1-P4（研究员/量化开发者/自营团队/适配器贡献者）及反画像。AI 在做需求决策、优先级取舍、UX 判断时读取
 - path: logos/resources/prd/1-product-requirements/03-user-stories.md
@@ -37,7 +37,7 @@ resource_index:
 - path: logos/resources/prd/2-product-design/1-feature-specs/01-information-architecture.md
   desc: 信息架构：能力域↔crate↔Python包↔需求追踪矩阵、节点类型、引擎组件协议、适配器规格。理解产品功能组成时读取
 - path: logos/resources/prd/2-product-design/2-page-design/01-no-gui-design-decision.md
-  desc: ADR：产品无 GUI，2-page-design 阶段不适用。任何 GUI 类提案须走需求级变更
+  desc: ADR：引擎保持无 GUI；A股桌面研究应用使用独立 Rust GUI 页面设计
 - path: logos/resources/prd/3-technical-plan/1-architecture/01-architecture-overview.md
   desc: 架构总览：DDD/事件驱动/端口适配器/crash-only 四风格、NautilusKernel 六组件图、事件溯源与持久化决策。架构级变更必读
 - path: logos/resources/prd/3-technical-plan/1-architecture/02-technology-stack.md
@@ -110,6 +110,48 @@ resource_index:
   desc: TickFlow K线接口契约（OpenAPI摘要，官方文档2026-09-28抓取）
 - path: logos/resources/test/astock/astock-test-cases.md
   desc: A股测试用例：UT-AST-01~11 + ST-A1/A2 + AC溯源
+- path: logos/resources/api/core-research-contracts.yaml
+  desc: 桌面本地命令契约；12个接口来自S11～S15时序，非HTTP服务
+- path: logos/resources/database/core-01-research-storage.sql
+  desc: 桌面研究SQLite元数据DDL；快照、任务、实验、计划与幂等回执
+- path: logos/resources/prd/1-product-requirements/core-08-research-requirements.md
+  desc: 定位与用户旅程；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/2-product-design/1-feature-specs/core-02-research-workflow.md
+  desc: 全流程与版本；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/2-product-design/2-page-design/core-02-research-pages.md
+  desc: 界面结构；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/1-architecture/core-05-research-architecture.md
+  desc: 架构决策；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md
+  desc: 场景编号与调用索引；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S11-data-snapshot.md
+  desc: S11 数据维护；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S12-universe.md
+  desc: S12 股票池筛选；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S13-research-run.md
+  desc: S13 策略研究；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S14-compare.md
+  desc: S14 回测比较；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S15-trade-plan.md
+  desc: S15 人工交易计划；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md
+  desc: 双平台交付目标；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/scenario/core-research-orchestration.json
+  desc: S11～S15研究编排测试规格；固定样本与11项场景断言，待实现
+- path: logos/resources/test/core-09-research-test-cases.md
+  desc: 测试总览与固定样本；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/core-S11-test-cases.md
+  desc: S11 测试用例；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/core-S12-test-cases.md
+  desc: S12 测试用例；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/core-S13-test-cases.md
+  desc: S13 测试用例；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/core-S14-test-cases.md
+  desc: S14 测试用例；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/core-S15-test-cases.md
+  desc: S15 测试用例；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/test/smoke/core-desktop-smoke-test-cases.md
+  desc: 双平台部署后冒烟设计；A股Rust桌面研究设计，尚未实现验收
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

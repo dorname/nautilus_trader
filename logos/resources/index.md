@@ -50,3 +50,33 @@
 - `openlogos verify`：Gate 3.6 **PASS**（覆盖 26/26，通过率 100%，AC 追溯 5/5）
 - 提案归档：`changes/archive/20260928-0833-add-baseline-docs/`、`changes/archive/20260928-0931-complete-other-specs/`
 - 全部 8 类声明目录非空；每件文档在 `logos-project.yaml` resource_index 中有索引条目
+
+## A股低频研究桌面设计
+
+本组设计属于 astock-research-desktop，规格已合并，应用尚未实现或验收。
+
+- `api/core-research-contracts.yaml`
+- `database/core-01-research-storage.sql`
+- `prd/1-product-requirements/01-overview.md`
+- `prd/1-product-requirements/core-08-research-requirements.md`
+- `prd/2-product-design/1-feature-specs/core-02-research-workflow.md`
+- `prd/2-product-design/2-page-design/01-no-gui-design-decision.md`
+- `prd/2-product-design/2-page-design/core-02-research-pages.md`
+- `prd/3-technical-plan/1-architecture/core-05-research-architecture.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-S11-data-snapshot.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-S12-universe.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-S13-research-run.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-S14-compare.md`
+- `prd/3-technical-plan/2-scenario-implementation/core-S15-trade-plan.md`
+- `prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md`
+- `scenario/core-research-orchestration.json`
+- `test/core-09-research-test-cases.md`
+- `test/core-S11-test-cases.md`
+- `test/core-S12-test-cases.md`
+- `test/core-S13-test-cases.md`
+- `test/core-S14-test-cases.md`
+- `test/core-S15-test-cases.md`
+- `test/smoke/core-desktop-smoke-test-cases.md`
+
+本组规格与资源索引已同步；保留next_id=16及S11～S15编号。原验收状态仅适用于原基线，不可沿用为桌面工具验收。

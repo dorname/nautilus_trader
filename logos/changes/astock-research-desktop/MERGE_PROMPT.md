@@ -1,0 +1,221 @@
+# 合并指令
+
+## 变更提案
+- 提案名称：astock-research-desktop
+- 提案目录：logos/changes/astock-research-desktop/
+
+## 提案内容
+
+# 变更提案：A 股低频研究桌面工具
+
+> 模块：core；分支：a-stock；状态：用户已确认，详细设计已产出，待审阅合并。
+
+## 变更原因
+用户要求基于当前分支设计股票池筛选和日线策略研究工具，必须使用 Rust GUI。已确认首版为 A 股研究、不自动下单，支持 Windows 和 Linux。
+当前分支已有日线接入、筛选代码和回测示例，但有效规格仍定义为无 GUI 的引擎／库，需要补齐桌面研究应用设计。
+
+## 变更类型
+需求级变更，本次交付完整设计规格，不执行代码实现或部署。后续实现以合并后的规格为依据，另建实现提案，逐批交付业务代码、UT/ST 和 OpenLogos reporter。
+
+## 变更概述
+设计本地中文桌面应用，贯通“数据准备 → 股票池 → 策略研究 → 回测比较 → 人工交易计划”。界面使用 Rust 编写；既有 Python 数据适配器和 Rust 引擎的复用边界在架构阶段确定。GUI 框架根据官方资料、双平台打包和图表／表格需求完成选型，不预先锁定未经核验的版本。
+研究产物保存数据快照、股票池规则及成员、策略参数、成本与成交假设、引擎版本和结果。支持离线使用已有数据；数据更新与回测在后台执行，界面可查看进度、取消任务和读取失败原因。
+
+## 拟议页面
+| 页面 | 首版能力 |
+|---|---|
+| 数据中心 | 通达信导入、TickFlow 更新、数据覆盖与质量检查、复权口径和快照管理 |
+| 股票池 | 市场板块、上市时长、价格、流动性筛选；数据具备时的财务筛选；展示入选／排除原因，保存规则及历史成员 |
+| 策略研究 | 均线趋势、横截面动量排序模板；日／周／月调仓，持仓数与权重、成本、基准、样本内外区间；有限参数批量实验 |
+| 回测对比 | 净值、回撤、收益风险指标、换手成本、持仓成交；比较多个实验与基准，提示数据与假设差异 |
+| 交易计划 | 根据完整日线生成信号和目标权重；手工输入现有持仓，计算参考调整量，导出 CSV；无自动下单 |
+
+## 变更范围
+- 需求：修改 `prd/1-product-requirements/01-overview.md` 产品定位与边界；新增 `core-08-research-requirements.md`，包含用户故事、需求及验收矩阵，关联既有 FR-A1～A8。
+- 功能：新增 `prd/2-product-design/1-feature-specs/core-02-research-workflow.md`。
+- 页面：修改 `prd/2-product-design/2-page-design/01-no-gui-design-decision.md` 的决策适用范围；新增 `core-02-research-pages.md`，包含页面原型、中文文案和完整交互状态。
+- 架构：新增 `prd/3-technical-plan/1-architecture/core-05-research-architecture.md`，定义 GUI、研究任务、数据接入、引擎与存储边界。
+- 场景：新增 `prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md`，覆盖数据维护、股票池、研究运行、比较、导出五类场景。分配编号前核对全局场景和 `scenario_counter.next_id`，不重用已有编号。
+- API：新增 `api/core-research-contracts.yaml`，从场景时序推导命令、查询、事件、错误和版本契约；关联原公共接口索引。按实际本地协议描述，不虚构 HTTP 服务。
+- DB：新增 `database/core-01-research-storage.sql`，定义存储决策及必要 DDL；研究元数据与行情 catalog 分离。具体表结构在时序设计后确定，若采用 SQLite，仅作为桌面应用元数据依赖。
+- 交付：新增 `prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md`，设计双平台安装、依赖、中文字体、数据目录、升级和回滚规则。
+- 编排测试：新增 `test/core-09-research-test-cases.md` 与 `scenario/core-research-orchestration.json`，覆盖 GUI 到研究服务和引擎的调用、实际计算与异常断言。
+- smoke 测试：新增 `test/smoke/core-desktop-smoke-test-cases.md`，设计后续双平台安装后的完整研究旅程。
+- 索引：更新 `resources/index.md`；合并阶段同步 `logos-project.yaml` 的资源和场景编号。本次不直接修改有效规格。
+
+## 设计验收条件
+1. 五个页面形成完整研究流程，每步明确输入、输出、持久化和失败状态。
+2. Windows 和 Linux 都有 Rust GUI 构建、安装和验收方案；后台导入、筛选及回测不阻塞界面，取消与恢复语义明确。
+3. 历史选股仅使用当时可见信息，定义历史成员、退市、ST 状态和财务公告时间的来源与缺失处理。现有财务模型只有报告期，不能直接视为历史可见时间；必要数据缺失时阻止相关严格回测或明确限制，不静默使用最新信息。
+4. 区分复权研究价格与实际成交价格；定义公司行为、交易日历、停牌、涨跌停、交易单位、可卖限制、税费与滑点的建模边界。具体规则在正式设计时查验官方来源，不将日线 OHLC 当作保证成交的盘口。
+5. 明确收盘信号与后续模拟成交时点，保存运行版本，隔离样本内参数搜索与样本外评估；定义指标公式、无成交和基准缺失的处理。
+6. 交易计划保留数据截至日期、信号解释、目标持仓及参考假设；人工登记成交不得伪装为自动执行成功。
+7. 所有 API 源自场景时序；测试覆盖计算、编排、GUI、导出及失败恢复。后续 reporter 必须依据真实断言写入 `logos/resources/verify/test-results.jsonl`，不能固定写入通过状态。
+
+## 部署影响
+- 是否需要部署：否
+- 部署原因：本次仅交付规格；新增桌面交付规则与后续冒烟设计，不安装应用。
+- 影响环境：无运行环境变更；设计目标为 Windows 和 Linux 本地桌面。
+- 是否涉及数据迁移：否（本次不执行，未来迁移机制纳入设计）。
+- 是否需要回滚预案：否（本次无部署，未来升级回滚纳入设计）。
+- 是否需要 smoke：否（本次无部署，后续实现／部署提案重新明确门禁）。
+
+## 后续确认点
+用户确认本提案后产出 delta；全部设计完成后另行请求明确授权 `openlogos merge astock-research-desktop`。市场和平台确认不等同于批准尚未审阅的提案或授权 merge、verify、实现与部署。
+
+## 设计细化登记
+已按场景文件命名规范细化S11～S15，各自新增core-SXX场景实现文件和core-SXX-test-cases.md；总览文件保留导航。编号计数器从遗留1修正为16，预留说明见场景索引。
+
+
+## 需要合并的 Delta 文件
+
+### 1. deltas/api/core-research-contracts.yaml
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/api/core-research-contracts.yaml`
+- 目标目录：`logos/resources/api/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 2. deltas/database/core-01-research-storage.sql
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/database/core-01-research-storage.sql`
+- 目标目录：`logos/resources/database/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 3. deltas/prd/1-product-requirements/01-overview.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/1-product-requirements/01-overview.md`
+- 目标目录：`logos/resources/prd/1-product-requirements/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 4. deltas/prd/1-product-requirements/core-08-research-requirements.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/1-product-requirements/core-08-research-requirements.md`
+- 目标目录：`logos/resources/prd/1-product-requirements/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 5. deltas/prd/2-product-design/1-feature-specs/core-02-research-workflow.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/2-product-design/1-feature-specs/core-02-research-workflow.md`
+- 目标目录：`logos/resources/prd/2-product-design/1-feature-specs/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 6. deltas/prd/2-product-design/2-page-design/01-no-gui-design-decision.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/2-product-design/2-page-design/01-no-gui-design-decision.md`
+- 目标目录：`logos/resources/prd/2-product-design/2-page-design/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 7. deltas/prd/2-product-design/2-page-design/core-02-research-pages.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/2-product-design/2-page-design/core-02-research-pages.md`
+- 目标目录：`logos/resources/prd/2-product-design/2-page-design/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 8. deltas/prd/3-technical-plan/1-architecture/core-05-research-architecture.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/1-architecture/core-05-research-architecture.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/1-architecture/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 9. deltas/prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 10. deltas/prd/3-technical-plan/2-scenario-implementation/core-S11-data-snapshot.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-S11-data-snapshot.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 11. deltas/prd/3-technical-plan/2-scenario-implementation/core-S12-universe.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-S12-universe.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 12. deltas/prd/3-technical-plan/2-scenario-implementation/core-S13-research-run.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-S13-research-run.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 13. deltas/prd/3-technical-plan/2-scenario-implementation/core-S14-compare.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-S14-compare.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 14. deltas/prd/3-technical-plan/2-scenario-implementation/core-S15-trade-plan.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/2-scenario-implementation/core-S15-trade-plan.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/2-scenario-implementation/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 15. deltas/prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md`
+- 目标目录：`logos/resources/prd/3-technical-plan/3-deployment/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 16. deltas/scenario/core-research-orchestration.json
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/scenario/core-research-orchestration.json`
+- 目标目录：`logos/resources/scenario/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 17. deltas/test/core-09-research-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-09-research-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 18. deltas/test/core-S11-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-S11-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 19. deltas/test/core-S12-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-S12-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 20. deltas/test/core-S13-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-S13-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 21. deltas/test/core-S14-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-S14-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 22. deltas/test/core-S15-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/core-S15-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+### 23. deltas/test/smoke/core-desktop-smoke-test-cases.md
+
+- Delta 文件：`logos/changes/astock-research-desktop/deltas/test/smoke/core-desktop-smoke-test-cases.md`
+- 目标目录：`logos/resources/test/smoke/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+## 执行要求
+
+1. 逐个 Delta 文件处理，每处理完一个报告修改摘要
+2. 对于 ADDED 标记：在主文档的指定位置插入新内容
+3. 对于 MODIFIED 标记：替换主文档中同名章节的内容
+4. 对于 REMOVED 标记：从主文档中删除对应章节
+5. 保持主文档的原有格式和风格
+6. 如果主文档有"最后更新"时间戳，同步更新
+7. 所有变更完成后，列出修改清单
+8. 所有变更合并完成后，自动执行 git commit（告知用户，无需确认）：
+   git add -A && git commit -m "docs(astock-research-desktop): merge spec deltas"
+   然后提示用户：按更新后的规格实现代码，代码完成后运行 `openlogos verify` 验收，验收通过后明确授权执行 `openlogos archive astock-research-desktop`。

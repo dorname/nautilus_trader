@@ -1,0 +1,183 @@
+{
+  "delta": {
+    "operation": "ADDED",
+    "section": "研究编排"
+  },
+  "kind": "component-orchestration-spec",
+  "version": 1,
+  "description": "这是测试执行器的设计输入，不是已运行结果。步骤经场景命令进入真实计算。",
+  "fixtures": {
+    "F-RUN": {
+      "capital": "2000",
+      "bars": [
+        [
+          "2024-01-02",
+          "10",
+          "10",
+          "10",
+          "10"
+        ],
+        [
+          "2024-01-03",
+          "10",
+          "11",
+          "10",
+          "11"
+        ],
+        [
+          "2024-01-04",
+          "12",
+          "13",
+          "12",
+          "13"
+        ]
+      ],
+      "volume": 100000,
+      "warmup": "20个交易日价格均10；日历按测试夹具明确列出",
+      "strategy": {
+        "template": "ema",
+        "fast": 1,
+        "slow": 2,
+        "top_k": 1
+      },
+      "expected": {
+        "fill_date": "2024-01-04",
+        "quantity": 100,
+        "price": "12",
+        "cash": "800",
+        "final_equity": "2100",
+        "total_return": "0.05"
+      }
+    },
+    "F-POOL": {
+      "pass": 1,
+      "exclude": 1,
+      "unknown": 1
+    }
+  },
+  "flows": [
+    {
+      "id": "ST-S11-01",
+      "scenario": "S11",
+      "acceptance": [
+        "S11-AC-01"
+      ],
+      "steps": "ImportData→GetTask→ListSnapshots，固定两股各3日",
+      "assertions": "完成任务的快照有6条行情，分页可读，日志无凭证",
+      "status": "待实现",
+      "reporter_id": "ST-S11-01"
+    },
+    {
+      "id": "ST-S11-02",
+      "scenario": "S11",
+      "acceptance": [
+        "S11-AC-02"
+      ],
+      "steps": "在线失败及导入取消后打开既有快照",
+      "assertions": "旧快照仍可研究，失败／取消产物不出现在可选列表",
+      "status": "待实现",
+      "reporter_id": "ST-S11-02"
+    },
+    {
+      "id": "ST-S12-01",
+      "scenario": "S12",
+      "acceptance": [
+        "S12-AC-01"
+      ],
+      "steps": "三只股票A满足、B不满足、C缺数据，预览→保存→查询",
+      "assertions": "命中／排除／未知均为1；保存哈希与预览一致",
+      "status": "待实现",
+      "reporter_id": "ST-S12-01"
+    },
+    {
+      "id": "ST-S12-02",
+      "scenario": "S12",
+      "acceptance": [
+        "S12-AC-02"
+      ],
+      "steps": "预览后修改规则再用旧preview_hash保存",
+      "assertions": "返回STALE_PREVIEW；原已保存池不变",
+      "status": "待实现",
+      "reporter_id": "ST-S12-02"
+    },
+    {
+      "id": "ST-S13-01",
+      "scenario": "S13",
+      "acceptance": [
+        "S13-AC-01",
+        "S13-AC-02",
+        "S13-AC-03"
+      ],
+      "steps": "使用下述F-RUN执行真实Nautilus编排",
+      "assertions": "唯一成交日2024-01-04，100股价格12，现金800，末净值2100，总收益0.05；禁止同bar成交",
+      "status": "待实现",
+      "reporter_id": "ST-S13-01"
+    },
+    {
+      "id": "ST-S13-02",
+      "scenario": "S13",
+      "acceptance": [
+        "S13-AC-04"
+      ],
+      "steps": "SubmitRun→CancelTask→GetTask，并模拟应用崩溃重启",
+      "assertions": "取消无完整结果；崩溃遗留running变interrupted；重试新task_id",
+      "status": "待实现",
+      "reporter_id": "ST-S13-02"
+    },
+    {
+      "id": "ST-S13-03",
+      "scenario": "S13",
+      "acceptance": [
+        "S13-AC-03"
+      ],
+      "steps": "网格2配置，取消第二项，查询父任务",
+      "assertions": "首项结果保留；未完成项取消；不得将整个网格标全部成功",
+      "status": "待实现",
+      "reporter_id": "ST-S13-03"
+    },
+    {
+      "id": "ST-S14-01",
+      "scenario": "S14",
+      "acceptance": [
+        "S14-AC-01"
+      ],
+      "steps": "CompareRuns选择不同费用的两个已完成实验",
+      "assertions": "列出费用差异；分别展示指标；不无提示直接排名",
+      "status": "待实现",
+      "reporter_id": "ST-S14-01"
+    },
+    {
+      "id": "ST-S15-01",
+      "scenario": "S15",
+      "acceptance": [
+        "S15-AC-01"
+      ],
+      "steps": "GeneratePlan→GetTask→ExportPlan→SaveManualNote",
+      "assertions": "导出哈希一致、股数正确、数据版本和限制齐全；备注不更改回测fills",
+      "status": "待实现",
+      "reporter_id": "ST-S15-01"
+    },
+    {
+      "id": "ST-S15-02",
+      "scenario": "S15",
+      "acceptance": [
+        "S15-AC-02"
+      ],
+      "steps": "Windows GUI用固定数据完成五页、取消、重开、中文输入和150%缩放",
+      "assertions": "业务结果与F-RUN一致，无自动下单入口，附运行日志和截图",
+      "status": "待实现",
+      "reporter_id": "ST-S15-02"
+    },
+    {
+      "id": "ST-S15-03",
+      "scenario": "S15",
+      "acceptance": [
+        "S15-AC-02"
+      ],
+      "steps": "Linux Wayland／X11分别执行同旅程",
+      "assertions": "两会话均可输入／导入／运行／导出，结果与Windows一致，附证据",
+      "status": "待实现",
+      "reporter_id": "ST-S15-03"
+    }
+  ]
+}

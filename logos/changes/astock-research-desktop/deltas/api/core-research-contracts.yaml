@@ -1,0 +1,404 @@
+{
+  "x-delta": {
+    "operation": "ADDED",
+    "section": "本地研究契约",
+    "merge": "新文件按完整内容合并，保留协议说明"
+  },
+  "kind": "local-command-contract",
+  "version": "1.0.0",
+  "description": "Rust界面到协调器的类型化命令；工作进程使用等价JSONL，非HTTP接口。",
+  "wire": {
+    "encoding": "UTF-8 JSONL",
+    "max_message_bytes": 1048576,
+    "decimal": "金额、价格和比例使用十进制字符串；股数使用非负整数",
+    "time": "UTC RFC3339；trade_date为上海交易日YYYY-MM-DD",
+    "id": "UUID字符串；内容哈希为SHA256小写十六进制",
+    "envelope": {
+      "required": [
+        "version",
+        "request_id",
+        "method",
+        "payload"
+      ],
+      "optional": [
+        "idempotency_key"
+      ],
+      "response": "request_id加result或error，二者互斥"
+    },
+    "paging": "limit默认200、最大500；cursor绑定对象版本、排序、过滤哈希，不允许偏移到另一版本",
+    "timeouts": "命令确认3秒，超时查询request_id对应任务，不盲目重建；后台任务无默认墙钟终止，用户可取消"
+  },
+  "operations": [
+    {
+      "name": "ImportData",
+      "scenario": "S11",
+      "request": "ImportSpec",
+      "response": "TaskRef",
+      "description": "解析、检查并提交不可变快照",
+      "idempotency_required": true
+    },
+    {
+      "name": "ListSnapshots",
+      "scenario": "S11",
+      "request": "PageRequest",
+      "response": "SnapshotPage",
+      "description": "只返回已提交的快照",
+      "idempotency_required": false
+    },
+    {
+      "name": "PreviewUniverse",
+      "scenario": "S12",
+      "request": "UniverseSpec",
+      "response": "TaskRef",
+      "description": "异步返回预览产物",
+      "idempotency_required": true
+    },
+    {
+      "name": "SaveUniverse",
+      "scenario": "S12",
+      "request": "SaveUniverseSpec",
+      "response": "UniverseRef",
+      "description": "保存请求哈希匹配的预览与规则版本",
+      "idempotency_required": true
+    },
+    {
+      "name": "SubmitRun",
+      "scenario": "S13",
+      "request": "RunSpec",
+      "response": "TaskRef",
+      "description": "单次或参数网格运行，子运行各自存档",
+      "idempotency_required": true
+    },
+    {
+      "name": "GetTask",
+      "scenario": "S13",
+      "request": "TaskQuery",
+      "response": "TaskView",
+      "description": "也供S11/S12/S15读取任务状态与事件",
+      "idempotency_required": false
+    },
+    {
+      "name": "CancelTask",
+      "scenario": "S13",
+      "request": "TaskQuery",
+      "response": "TaskView",
+      "description": "也供S11/S12/S15取消后台任务",
+      "idempotency_required": false
+    },
+    {
+      "name": "CompareRuns",
+      "scenario": "S14",
+      "request": "CompareSpec",
+      "response": "Comparison",
+      "description": "比较已完成结果",
+      "idempotency_required": false
+    },
+    {
+      "name": "QueryRows",
+      "scenario": "S14",
+      "request": "RowsQuery",
+      "response": "RowsPage",
+      "description": "也供S12/S15分页读取成员、成交、计划",
+      "idempotency_required": false
+    },
+    {
+      "name": "GeneratePlan",
+      "scenario": "S15",
+      "request": "PlanSpec",
+      "response": "TaskRef",
+      "description": "复用策略产生计划，不调用下单通道",
+      "idempotency_required": true
+    },
+    {
+      "name": "ExportPlan",
+      "scenario": "S15",
+      "request": "ExportSpec",
+      "response": "ExportReceipt",
+      "description": "临时文件写入并原子替换，记录哈希",
+      "idempotency_required": true
+    },
+    {
+      "name": "SaveManualNote",
+      "scenario": "S15",
+      "request": "ManualNote",
+      "response": "NoteRef",
+      "description": "追加人工备注，不更改模拟成交",
+      "idempotency_required": true
+    }
+  ],
+  "events": {
+    "sequence": "每个task_id递增seq，重复seq忽略；断档通过GetTask恢复，不依赖无限事件缓存",
+    "types": [
+      "TaskQueued",
+      "TaskStarted",
+      "TaskProgress",
+      "SnapshotReady",
+      "PreviewReady",
+      "RunCompleted",
+      "PlanReady",
+      "TaskFailed",
+      "TaskCancelled"
+    ],
+    "required_fields": [
+      "task_id",
+      "seq",
+      "type",
+      "timestamp"
+    ],
+    "progress": "done/total可为空，total未知时显示阶段，不伪造百分比",
+    "terminal": "只有TaskView的持久化state为succeeded且artifact_hash存在才显示成功"
+  },
+  "errors": {
+    "INVALID_ARGUMENT": "字段路径与中文原因",
+    "NOT_FOUND": "对象不存在",
+    "STALE_PREVIEW": "输入改变，重新预览",
+    "MISSING_CAPABILITY": "缺少严格模式所需字段，列出清单",
+    "EMPTY_UNIVERSE": "空池不能运行",
+    "IDEMPOTENCY_CONFLICT": "相同键对应不同请求",
+    "ALREADY_TERMINAL": "已结束，不重复取消",
+    "RUN_NOT_READY": "运行尚未完成",
+    "CORRUPT_ARTIFACT": "哈希不符，停止读取",
+    "NO_OVERLAP": "比较区间无交集",
+    "STALE_DATA": "历史计划需要明确确认",
+    "PATH_CONFLICT": "目标存在且无覆盖确认",
+    "BUSY": "工作区占用或数据库忙，可重试",
+    "DISK_FULL": "空间不足",
+    "WORKER_EXITED": "进程异常，任务中断",
+    "PROTOCOL_VERSION": "协议主版本不兼容"
+  },
+  "compatibility": "主版本不匹配拒绝；同主版本忽略未知响应字段，未知请求字段拒绝；导出和运行保留完整协议版本。",
+  "definitions": {
+    "ImportSpec": {
+      "source": "tdx|tickflow|auxiliary",
+      "paths": "只读源路径数组",
+      "symbols": "可选代码集合",
+      "start/end": "可选交易日",
+      "price_basis": "raw|qfq|hfq，禁止混合",
+      "auxiliary_kind": "可选 master|status|financial|actions|calendar|rules",
+      "policy": "同口径冲突优先tickflow，保留差异；非法行整批拒绝"
+    },
+    "PageRequest": {
+      "limit": "1..500",
+      "cursor": "可空字符串"
+    },
+    "SnapshotPage": {
+      "items": "SnapshotRef数组",
+      "next_cursor": "可空"
+    },
+    "SnapshotRef": {
+      "snapshot_id": "UUID",
+      "manifest_hash": "SHA256",
+      "as_of": "最后完整交易日",
+      "capabilities": "能力数组",
+      "limitations": "限制数组"
+    },
+    "UniverseSpec": {
+      "snapshot_id": "UUID",
+      "as_of": "交易日",
+      "mode": "strict|exploratory",
+      "membership": "dynamic|fixed",
+      "rule": "RuleAST",
+      "missing_policy": "exclude|ignore_condition，后者只能探索模式"
+    },
+    "RuleAST": {
+      "root": "AND，children≤20",
+      "child": "条件或OR组；最大深度2",
+      "field": "board|listed_days|close|avg_amount|roe|eps|bps|net_profit|revenue_growth|debt_ratio",
+      "op": "gte|lte|between|in",
+      "value": "有单位的数值字符串或枚举集合",
+      "window": "avg_amount必需正整数≤2500",
+      "constraints": "between下界≤上界；board只能in；财务必须available_at"
+    },
+    "SaveUniverseSpec": {
+      "preview_task_id": "已成功任务UUID",
+      "preview_hash": "SHA256",
+      "input_hash": "与UniverseSpec规范化哈希一致",
+      "name": "1..80字符"
+    },
+    "UniverseRef": {
+      "universe_id": "UUID",
+      "version_hash": "SHA256",
+      "rule_hash": "SHA256",
+      "snapshot_id": "UUID",
+      "as_of": "交易日",
+      "count": "非负整数"
+    },
+    "RunSpec": {
+      "snapshot_id": "UUID",
+      "universe_id": "UUID",
+      "strategy": "StrategySpec",
+      "start/end": "含首尾的交易日，start≤end",
+      "training_end": "网格训练结束交易日",
+      "test_start": "若有样本外则>training_end",
+      "capital_cny": "正十进制字符串",
+      "costs": "CostSpec",
+      "rules_hash": "SHA256",
+      "benchmark_snapshot_id": "可空UUID",
+      "mode": "strict|exploratory",
+      "grid": "可空参数枚举，笛卡尔积≤100",
+      "seed": "固定整数，默认0"
+    },
+    "StrategySpec": {
+      "template": "ema|momentum",
+      "version": "固定语义版本",
+      "fast/slow": "ema要求1≤fast<slow≤2500",
+      "lookback/skip": "momentum要求1≤lookback≤2500，0≤skip≤250",
+      "top_k": "1..500",
+      "rebalance": "daily|weekly|monthly",
+      "weight": "equal_slots",
+      "signal_basis": "point_in_time_adjusted"
+    },
+    "CostSpec": {
+      "commission_rate": "0..1",
+      "min_commission_cny": "非负",
+      "sell_tax_rate": "0..1",
+      "other_fee_rate": "0..1",
+      "slippage_bps": "0..1000",
+      "participation_rate": "0..1",
+      "effective_schedule": "按日期区间覆盖整个实验，税费不允许静默缺省",
+      "confirmed": "必须true；研究假设并非券商报价"
+    },
+    "TaskRef": {
+      "task_id": "UUID",
+      "request_id": "UUID",
+      "state": "queued|running|succeeded"
+    },
+    "TaskQuery": {
+      "task_id": "UUID",
+      "after_seq": "非负整数，默认0"
+    },
+    "TaskView": {
+      "task_id": "UUID",
+      "state": "queued|running|cancelling|succeeded|failed|cancelled|interrupted",
+      "last_seq": "整数",
+      "progress": "阶段、done、total",
+      "artifact_id/hash": "成功时必需",
+      "error": "失败时必需code/message/field/retryable",
+      "children": "网格子task_id数组",
+      "artifact_types": "snapshot_ref|universe_preview|run_result|trade_plan，须按任务kind验证"
+    },
+    "CompareSpec": {
+      "run_ids": "2..5个不同UUID，全部succeeded",
+      "view": "full|intersection",
+      "benchmark_snapshot_id": "可空UUID"
+    },
+    "Comparison": {
+      "runs": "每个run的指标、曲线对象引用及版本",
+      "differences": "区间／费用／数据／模式差异",
+      "overlap": "可空日期范围",
+      "metrics": "收益、年化、回撤、波动、Sharpe、换手、成本；不可计算为null并附reason",
+      "calculation": "同步读取预计算指标，曲线返回内容对象引用；超过3秒返回BUSY可重试，不能占用GUI线程"
+    },
+    "RowsQuery": {
+      "object_id": "预览／运行／计划UUID",
+      "table": "members|excluded|unknown|equity|holdings|fills|plan",
+      "limit": "1..500",
+      "cursor": "可空，绑定对象哈希",
+      "sort": "允许列与asc/desc，不接受SQL片段"
+    },
+    "RowsPage": {
+      "rows": "按table定义的有类型记录数组",
+      "next_cursor": "可空",
+      "object_hash": "SHA256",
+      "total": "整数",
+      "row_types": {
+        "members/excluded/unknown": [
+          "instrument_id",
+          "name",
+          "as_of",
+          "verdict",
+          "reasons[]",
+          "field_values",
+          "available_at"
+        ],
+        "equity": [
+          "trade_date",
+          "cash_cny",
+          "positions_value_cny",
+          "receivables_cny",
+          "equity_cny",
+          "stale_marks[]"
+        ],
+        "holdings": [
+          "trade_date",
+          "instrument_id",
+          "quantity",
+          "sellable_quantity",
+          "mark_price",
+          "market_value_cny"
+        ],
+        "fills": [
+          "fill_id",
+          "instrument_id",
+          "trade_date",
+          "side",
+          "quantity",
+          "raw_price",
+          "fees_cny",
+          "reason"
+        ],
+        "plan": [
+          "instrument_id",
+          "name",
+          "target_weight",
+          "current_quantity",
+          "sellable_quantity",
+          "target_quantity",
+          "delta_quantity",
+          "reference_price",
+          "reason",
+          "limitations[]"
+        ]
+      }
+    },
+    "PlanSpec": {
+      "strategy": "StrategySpec",
+      "snapshot_id": "UUID",
+      "universe_id": "UUID",
+      "as_of": "完整交易日",
+      "holding_version_id": "UUID或同请求内新增HoldingInput",
+      "holdings": "可选HoldingInput",
+      "costs": "CostSpec",
+      "rules_hash": "SHA256",
+      "allow_historical": "布尔，默认false",
+      "mode": "strict|exploratory"
+    },
+    "HoldingInput": {
+      "as_of": "用户持仓时点",
+      "cash_cny": "非负",
+      "positions": "[{instrument_id,quantity,sellable_quantity}]，整数，0≤sellable≤quantity",
+      "total_assets_cny": "正数，需与现金及参考估值对账；差异需显式确认"
+    },
+    "ExportSpec": {
+      "plan_id": "UUID",
+      "destination": "文件对话框选定绝对路径",
+      "overwrite_confirmed": "布尔，默认false",
+      "format": "csv_utf8_bom"
+    },
+    "ExportReceipt": {
+      "export_id": "UUID",
+      "path": "目标路径",
+      "sha256": "SHA256",
+      "rows": "整数"
+    },
+    "ManualNote": {
+      "plan_id": "UUID",
+      "text": "1..2000字符",
+      "timestamp": "UTC",
+      "kind": "备注|已人工处理|放弃，不作自动成交"
+    },
+    "NoteRef": {
+      "note_id": "UUID",
+      "plan_id": "UUID"
+    },
+    "UniversePreview": {
+      "preview_hash": "SHA256",
+      "input_hash": "SHA256",
+      "pass/exclude/unknown": "非负整数",
+      "rows_object_id": "UUID",
+      "rule": "RuleAST",
+      "snapshot_id": "UUID",
+      "as_of": "交易日"
+    }
+  }
+}
