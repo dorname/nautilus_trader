@@ -1,1 +1,8 @@
-已差量合并36份设计delta，含原六页原型与S17～S19 AI工作台；next_id=20。新工作台8项浏览器检查通过，原原型11项检查记录保留。尚未实现生产Agent、策略运行时或Rust GUI。
+统一入口与对话交互补充已按用户授权合并。
+规格提交：f773ea880a
+合并范围：16项增量（含两份原型）及资源索引；next_id=21。
+正式入口：logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html
+主原型SHA-256：7f38b87720b3bf91d3b3de47e3d22cc3bd4df6514ad9fc2f2dacfeff508ce820
+检查证据：prototype-review/unified-test-results.jsonl，13项原型检查通过；正式原型与被检版本逐字节一致。
+状态边界：规格与离线原型已合并；未执行生产verify、部署、smoke、archive或git push。
+完成时间：2026-09-30T07:44:15.629774+00:00
