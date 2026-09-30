@@ -1,0 +1,916 @@
+{
+  "kind": "AI研究工作台演示结果",
+  "disclaimer": "合成样本与预置模拟器，非真实A股回测",
+  "fixture": [
+    {
+      "symbol": "SYN-A",
+      "amount": 2000,
+      "signal": true,
+      "close": 10,
+      "open": 10.1,
+      "marks": [
+        10,
+        10.4,
+        10.8
+      ]
+    },
+    {
+      "symbol": "SYN-B",
+      "amount": 1500,
+      "signal": false,
+      "close": 20,
+      "open": 20,
+      "marks": [
+        20,
+        20,
+        20
+      ]
+    },
+    {
+      "symbol": "SYN-C",
+      "amount": 500,
+      "signal": false,
+      "close": 8,
+      "open": 8,
+      "marks": [
+        8,
+        8,
+        8
+      ]
+    }
+  ],
+  "simulator": "1.0",
+  "runs": [
+    {
+      "id": 1,
+      "version": {
+        "id": 1,
+        "variant": 1,
+        "source": "# 研究策略代码示意；由预置模拟器映射，不执行 Python\ndef generate_targets(history, parameters, execution, simulation):\n    data = history.visible_at(\"2026-01-05 15:00\")\n    # 仅使用信号日已知数据\n    pool = data.filter(amount_min=parameters[\"amount_min\"])\n    # 示例：仅 SYN-A 满足量价信号\n    signal = pool.match(\"SYN-A\")\n    cash = 10000\n    budget = cash * parameters[\"allocation\"]\n    quantity = int(budget / signal.close / 100) * 100\n    # 下一交易日开盘；固定演示费用 5 元\n    # v1：旧逻辑，未检查跳空与费用\n    fill = simulation.buy(quantity, fee=5)\n    # 结果来自成交及账户事件\n    return simulation.mark_to_market(fill)\n",
+        "req": {
+          "id": 2,
+          "text": "验证成交阶段资金约束；保留修复前后实验。",
+          "allocation": 1,
+          "amount": 1000
+        },
+        "flow": {
+          "id": 3,
+          "req": 2,
+          "amount": 1000,
+          "allocation": 0.5
+        },
+        "data": "SYN-202601",
+        "simulator": "1.0"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 10,
+            "amount": 2000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 2,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 2000,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 3,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 10
+          },
+          "output": {
+            "target": true
+          },
+          "status": "形成目标"
+        },
+        {
+          "seq": 4,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 20,
+            "amount": 1500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 5,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 1500,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 6,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 20
+          },
+          "output": {
+            "target": false
+          },
+          "status": "无信号"
+        },
+        {
+          "seq": 7,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 8,
+            "amount": 500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 8,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 500,
+            "min": 1000
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 9,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "size",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 10,
+          "input": {
+            "cash": 10000,
+            "budget": 5000,
+            "referenceClose": 10,
+            "executionOpen": 10.1,
+            "fee": 5
+          },
+          "output": {
+            "quantity": 500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 10,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "fill",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 13,
+          "input": {
+            "quantity": 500,
+            "price": 10.1,
+            "cost": 5055
+          },
+          "output": {
+            "filled": 500,
+            "cash": 4945
+          },
+          "status": "成交"
+        },
+        {
+          "seq": 11,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-06 15:00",
+          "line": 15,
+          "input": {
+            "cash": 4945,
+            "held": 500,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10145
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 12,
+          "date": "2026-01-07",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-07 15:00",
+          "line": 15,
+          "input": {
+            "cash": 4945,
+            "held": 500,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10345
+          },
+          "status": "完成"
+        }
+      ],
+      "equity": [
+        10000,
+        10145,
+        10345
+      ],
+      "cash": 4945,
+      "held": 500,
+      "rejected": 0,
+      "quantity": 500,
+      "final": 10345,
+      "returnPct": 3.4499999999999975,
+      "drawdownPct": 0,
+      "created": "2026-09-30T01:16:38.335Z"
+    },
+    {
+      "id": 2,
+      "version": {
+        "id": 2,
+        "variant": 1,
+        "source": "# 研究策略代码示意；由预置模拟器映射，不执行 Python\ndef generate_targets(history, parameters, execution, simulation):\n    data = history.visible_at(\"2026-01-05 15:00\")\n    # 仅使用信号日已知数据\n    pool = data.filter(amount_min=parameters[\"amount_min\"])\n    # 示例：仅 SYN-A 满足量价信号\n    signal = pool.match(\"SYN-A\")\n    cash = 10000\n    budget = cash * parameters[\"allocation\"]\n    quantity = int(budget / signal.close / 100) * 100\n    # 下一交易日开盘；固定演示费用 5 元\n    # v1：旧逻辑，未检查跳空与费用\n    fill = simulation.buy(quantity, fee=5)\n    # 结果来自成交及账户事件\n    return simulation.mark_to_market(fill)\n",
+        "req": {
+          "id": 2,
+          "text": "验证成交阶段资金约束；保留修复前后实验。",
+          "allocation": 1,
+          "amount": 1000
+        },
+        "flow": {
+          "id": 4,
+          "req": 2,
+          "amount": 2500,
+          "allocation": 0.5
+        },
+        "data": "SYN-202601",
+        "simulator": "1.0"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 10,
+            "amount": 2000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 2,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 2000,
+            "min": 2500
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 3,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 20,
+            "amount": 1500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 4,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 1500,
+            "min": 2500
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 5,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 8,
+            "amount": 500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 6,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 500,
+            "min": 2500
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 7,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-06 15:00",
+          "line": 15,
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 8,
+          "date": "2026-01-07",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-07 15:00",
+          "line": 15,
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10000
+          },
+          "status": "完成"
+        }
+      ],
+      "equity": [
+        10000,
+        10000,
+        10000
+      ],
+      "cash": 10000,
+      "held": 0,
+      "rejected": 0,
+      "quantity": 0,
+      "final": 10000,
+      "returnPct": 0,
+      "drawdownPct": 0,
+      "created": "2026-09-30T01:16:38.566Z"
+    },
+    {
+      "id": 3,
+      "version": {
+        "id": 3,
+        "variant": 1,
+        "source": "# 研究策略代码示意；由预置模拟器映射，不执行 Python\ndef generate_targets(history, parameters, execution, simulation):\n    data = history.visible_at(\"2026-01-05 15:00\")\n    # 仅使用信号日已知数据\n    pool = data.filter(amount_min=parameters[\"amount_min\"])\n    # 示例：仅 SYN-A 满足量价信号\n    signal = pool.match(\"SYN-A\")\n    cash = 10000\n    budget = cash * parameters[\"allocation\"]\n    quantity = int(budget / signal.close / 100) * 100\n    # 下一交易日开盘；固定演示费用 5 元\n    # v1：旧逻辑，未检查跳空与费用\n    fill = simulation.buy(quantity, fee=5)\n    # 结果来自成交及账户事件\n    return simulation.mark_to_market(fill)\n",
+        "req": {
+          "id": 2,
+          "text": "验证成交阶段资金约束；保留修复前后实验。",
+          "allocation": 1,
+          "amount": 1000
+        },
+        "flow": {
+          "id": 5,
+          "req": 2,
+          "amount": 1000,
+          "allocation": 1
+        },
+        "data": "SYN-202601",
+        "simulator": "1.0"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 10,
+            "amount": 2000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 2,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 2000,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 3,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 10
+          },
+          "output": {
+            "target": true
+          },
+          "status": "形成目标"
+        },
+        {
+          "seq": 4,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 20,
+            "amount": 1500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 5,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 1500,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 6,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 20
+          },
+          "output": {
+            "target": false
+          },
+          "status": "无信号"
+        },
+        {
+          "seq": 7,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 8,
+            "amount": 500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 8,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 500,
+            "min": 1000
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 9,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "size",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 10,
+          "input": {
+            "cash": 10000,
+            "budget": 10000,
+            "referenceClose": 10,
+            "executionOpen": 10.1,
+            "fee": 5
+          },
+          "output": {
+            "quantity": 1000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 10,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "fill",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 13,
+          "input": {
+            "quantity": 1000,
+            "price": 10.1,
+            "cost": 10105,
+            "cash": 10000
+          },
+          "output": {
+            "reason": "资金不足",
+            "filled": 0,
+            "cash": 10000
+          },
+          "status": "拒绝"
+        },
+        {
+          "seq": 11,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-06 15:00",
+          "line": 15,
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 12,
+          "date": "2026-01-07",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-07 15:00",
+          "line": 15,
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10000
+          },
+          "status": "完成"
+        }
+      ],
+      "equity": [
+        10000,
+        10000,
+        10000
+      ],
+      "cash": 10000,
+      "held": 0,
+      "rejected": 1,
+      "quantity": 1000,
+      "final": 10000,
+      "returnPct": 0,
+      "drawdownPct": 0,
+      "created": "2026-09-30T01:16:38.999Z"
+    },
+    {
+      "id": 4,
+      "version": {
+        "id": 4,
+        "variant": 2,
+        "source": "# 研究策略代码示意；由预置模拟器映射，不执行 Python\ndef generate_targets(history, parameters, execution, simulation):\n    data = history.visible_at(\"2026-01-05 15:00\")\n    # 仅使用信号日已知数据\n    pool = data.filter(amount_min=parameters[\"amount_min\"])\n    # 示例：仅 SYN-A 满足量价信号\n    signal = pool.match(\"SYN-A\")\n    cash = 10000\n    budget = cash * parameters[\"allocation\"]\n    quantity = int(max(0, budget - 5) / execution.open / 100) * 100\n    # 下一交易日开盘；固定演示费用 5 元\n    # v2：修复，在成交阶段校验可买数量\n    fill = simulation.buy(quantity, fee=5)\n    # 结果来自成交及账户事件\n    return simulation.mark_to_market(fill)\n",
+        "req": {
+          "id": 2,
+          "text": "验证成交阶段资金约束；保留修复前后实验。",
+          "allocation": 1,
+          "amount": 1000
+        },
+        "flow": {
+          "id": 5,
+          "req": 2,
+          "amount": 1000,
+          "allocation": 1
+        },
+        "data": "SYN-202601",
+        "simulator": "1.0"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 10,
+            "amount": 2000
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 2,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 2000,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 3,
+          "date": "2026-01-05",
+          "symbol": "SYN-A",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 10
+          },
+          "output": {
+            "target": true
+          },
+          "status": "形成目标"
+        },
+        {
+          "seq": 4,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 20,
+            "amount": 1500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 5,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 1500,
+            "min": 1000
+          },
+          "output": {
+            "pass": true
+          },
+          "status": "通过"
+        },
+        {
+          "seq": 6,
+          "date": "2026-01-05",
+          "symbol": "SYN-B",
+          "node": "signal",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 7,
+          "input": {
+            "close": 20
+          },
+          "output": {
+            "target": false
+          },
+          "status": "无信号"
+        },
+        {
+          "seq": 7,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "data",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 3,
+          "input": {
+            "snapshot": "SYN-202601"
+          },
+          "output": {
+            "close": 8,
+            "amount": 500
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 8,
+          "date": "2026-01-05",
+          "symbol": "SYN-C",
+          "node": "filter",
+          "visibleAt": "2026-01-05 15:00",
+          "line": 5,
+          "input": {
+            "amount": 500,
+            "min": 1000
+          },
+          "output": {
+            "pass": false
+          },
+          "status": "过滤"
+        },
+        {
+          "seq": 9,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "size",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 10,
+          "input": {
+            "cash": 10000,
+            "budget": 10000,
+            "referenceClose": 10,
+            "executionOpen": 10.1,
+            "fee": 5
+          },
+          "output": {
+            "quantity": 900
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 10,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "fill",
+          "visibleAt": "2026-01-06 09:30",
+          "line": 13,
+          "input": {
+            "quantity": 900,
+            "price": 10.1,
+            "cost": 9095
+          },
+          "output": {
+            "filled": 900,
+            "cash": 905
+          },
+          "status": "成交"
+        },
+        {
+          "seq": 11,
+          "date": "2026-01-06",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-06 15:00",
+          "line": 15,
+          "input": {
+            "cash": 905,
+            "held": 900,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10265
+          },
+          "status": "完成"
+        },
+        {
+          "seq": 12,
+          "date": "2026-01-07",
+          "symbol": "SYN-A",
+          "node": "metric",
+          "visibleAt": "2026-01-07 15:00",
+          "line": 15,
+          "input": {
+            "cash": 905,
+            "held": 900,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10625
+          },
+          "status": "完成"
+        }
+      ],
+      "equity": [
+        10000,
+        10265,
+        10625
+      ],
+      "cash": 905,
+      "held": 900,
+      "rejected": 0,
+      "quantity": 900,
+      "final": 10625,
+      "returnPct": 6.25,
+      "drawdownPct": 0,
+      "created": "2026-09-30T01:16:39.249Z"
+    }
+  ]
+}

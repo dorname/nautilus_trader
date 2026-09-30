@@ -4,7 +4,7 @@ project:
   methodology: OpenLogos
 tech_stack: {}
 scenario_counter:
-  next_id: 17
+  next_id: 20
 modules:
 - id: core
   name: 核心功能
@@ -158,6 +158,24 @@ resource_index:
   desc: 可离线打开的六页面高保真交互原型；含策略开发、版本绑定、筛选、图表及导出
 - path: logos/resources/prd/2-product-design/2-page-design/core-04-strategy-development-design.md
   desc: S16策略开发原型；源码与参数编辑、检查、不可变版本、研究绑定及UI-P07～11
+- path: logos/resources/test/core-S17-test-cases.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/test/core-S19-test-cases.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/test/core-S18-test-cases.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S19-ai-debug.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S17-ai-project.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S18-ai-development.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
+- path: logos/resources/prd/1-product-requirements/core-09-ai-workspace-requirements.md
+  desc: S17～S19 AI工作台原型；需求、协作、流程、开发、调试与实验设计或检查依据，非生产验收
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

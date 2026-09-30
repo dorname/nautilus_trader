@@ -37,3 +37,8 @@
 ## [delta] 策略开发原型补充
 - [x] 产出 `deltas/prd/2-product-design/2-page-design/core-04-strategy-development-design.md` — 定义S16开发流程、版本语义和原型检查。
 - [x] 更新 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 增加策略开发页及研究绑定。
+
+## [delta] AI 工作台原型
+- [x] 完成补充需求、S17～S19时序、工作台设计与原型检查标准。
+- [x] 交付项目式工作台，贯通需求、Agent产物、流程、代码修复、调试与实验。
+- [x] 执行浏览器检查、核对截图与数值、保存报告并差量合并索引。

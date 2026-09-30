@@ -79,7 +79,7 @@
 - `test/core-S15-test-cases.md`
 - `test/smoke/core-desktop-smoke-test-cases.md`
 
-本组规格与资源索引已同步；保留next_id=17及S11～S16编号。原验收状态仅适用于原基线，不可沿用为桌面工具验收。
+本组规格与资源索引已同步；保留next_id=20及S11～S19编号。原验收状态仅适用于原基线，不可沿用为桌面工具验收。
 
 
 ## 高保真桌面原型入口
@@ -89,3 +89,10 @@
 - 原型已在Chromium检查UI-P01～11，全部通过；这是HTML交互检查，不代表Rust应用或业务回测已实现。
 
 - [策略开发设计](prd/2-product-design/2-page-design/core-04-strategy-development-design.md)：新增第六页，支持草稿、源码与参数编辑、版本冻结和研究绑定；可在HTML地址后加 `#develop` 直接进入。
+
+## AI 策略研究工作台
+
+- [打开新版工作台](prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html)：需求→多Agent协作→处理流程→开发→事件调试→回测比较。
+- [工作台设计](prd/2-product-design/2-page-design/core-05-ai-workspace-design.md)：角色分工、版本与可见事件、原生GUI实现方向和演示边界。
+- [补充需求](prd/1-product-requirements/core-09-ai-workspace-requirements.md)：FR-R13～17与S17～S19。
+- 8项原型编排检查通过；Agent为预设演示，实验由固定合成样本计算。没有接入真实模型或生产回测引擎。
