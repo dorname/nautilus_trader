@@ -1,7 +1,11 @@
 # S20 原型编排检查
 
-ST-S20-01：无验证通过版本时，交易计划页锁定并引导至验证页；验证清单全部「通过」后解锁。
-ST-S20-02：录入现金与持仓生成计划：买入核对现金与100股整手及5元费用，卖出不超过现有持仓；目标股数按期末参考价与投入比例计算。
-ST-S20-03：导出 CSV 含演示标识、版本（v/R/F/快照）与数据截至日期；计划页不产生净值曲线，文案明示这不是回测。
+本节替代旧原型检查；检查对象是离线统一HTML，不是生产API或Nautilus引擎。
 
-检查对象是离线 HTML 原型。执行浏览器交互并断言实际状态，reporter 写入 prototype-review/ai-test-results.jsonl，使用标准id/status/duration_ms/timestamp/error字段，source标明原型检查。不得据此声明生产业务验收。
+| ID | 操作 | 断言 |
+|---|---|---|
+| ST-S20-11 | 计划账户核算 | 现金+持仓市值作总资产；预留费用；参考快照区别于实验数据 |
+| ST-S20-12 | 失败阻断与过期 | 可卖不足、快照过期阻断；账户或资源修改后禁止旧计划导出 |
+| ST-S20-13 | 确认导出 | 仅核对通过且确认后CSV可下载；含演示标识、版本、日期与调整数量 |
+
+浏览器编排通过真实点击、输入和下载断言。OpenLogos reporter 使用 id/status/duration_ms/timestamp/error 字段，写入 prototype-review/unified-test-results.jsonl，source 标明原型检查，不污染生产验收结果。

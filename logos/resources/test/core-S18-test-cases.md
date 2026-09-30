@@ -1,7 +1,11 @@
 # S18 原型编排检查
 
-ST-S18-01：节点点选显示输入输出与源码映射，修改投入比例保存新流程。
-ST-S18-02：预置源码检查通过，任意源码禁止演示执行；应用修复保存v2，v1不变。
-ST-S18-03：设计页展示由当前流程生成的调仓周期时序图：六条生命线、消息编号①–⑥、信号日与执行日分隔线；未生成流程时显示空态引导。
+本节替代旧原型检查；检查对象是离线统一HTML，不是生产API或Nautilus引擎。
 
-检查对象是离线 HTML 原型。执行浏览器交互并断言实际状态，reporter 写入 prototype-review/ai-test-results.jsonl，使用标准id/status/duration_ms/timestamp/error字段，source标明原型检查。不得据此声明生产业务验收。
+| ID | 操作 | 断言 |
+|---|---|---|
+| ST-S18-11 | 设计图与说明 | 同源六节点、信号/执行时点可见；节点可定位源码 |
+| ST-S18-12 | 代码修复和版本 | 先显示差异再应用；自定义源码不能运行；保存不可变v1/v2 |
+| ST-S18-13 | 上游过期 | 需求、设计或资源更新阻止旧版本新运行；历史实验不变 |
+
+浏览器编排通过真实点击、输入和下载断言。OpenLogos reporter 使用 id/status/duration_ms/timestamp/error 字段，写入 prototype-review/unified-test-results.jsonl，source 标明原型检查，不污染生产验收结果。

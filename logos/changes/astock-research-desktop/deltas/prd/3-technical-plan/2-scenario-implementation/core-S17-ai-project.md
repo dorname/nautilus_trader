@@ -1,24 +1,24 @@
+## MODIFIED — S17 需求到协作产物
+
 # S17 需求到协作产物
 
-需求来源：core-09-ai-workspace-requirements.md；交互详见 core-05-ai-workspace-design.md。
+## 需求、对话与项目隔离
 
 ```mermaid
 sequenceDiagram
-    actor U as 研究员
-    participant G as 工作台
-    participant W as 协调器
-    U->>G: 确认需求版本
-    G->>G: 校验与冻结上游引用
-    G->>W: 提交当前版本任务
-    W-->>G: 进度与可观察事件
-    alt 成功
-        W-->>G: 角色产物
-        G-->>U: 展示版本、依据与后续入口
-    else 取消或校验失败
-        G-->>U: 保留历史，展示错误或取消状态
-    end
+    actor U as 用户
+    participant G as 统一工作区
+    participant P as 项目状态
+    participant W as 演示计算器
+    U->>G: 提交研究目标
+    G->>P: 保存对话与需求草稿
+    G->>U: 打开需求产物供编辑
+    U->>G: 确认需求
+    G->>P: 保存需求新版本并标记下游过期
+    P->>G: 返回冻结引用
+    G->>U: 产物卡片与下一步
 ```
 
-本轮仅实现本地内存交互；无生产接口新增。过期输入不能启动新实验，已有结果仍可查看。测试见 core-S17-test-cases.md。
+输入为空或比例越界不提交。项目切换保存各自对话和草稿；后台任务绑定原项目，取消清除待提交任务。角色和预算不出现在主交互。
 
-工程台重构后页面映射：需求页承载需求文档维护（正文、验收标准、结构化参数与版本历史），Agent 协作并入该页侧栏的协作记录。
+本地原型动作不构成生产 API。正式接口须由后续运行时时序推导；本次无 API、DB、部署变更。对应检查见 core-S17-test-cases.md。

@@ -42,3 +42,21 @@
 - [x] 完成补充需求、S17～S19时序、工作台设计与原型检查标准。
 - [x] 交付项目式工作台，贯通需求、Agent产物、流程、代码修复、调试与实验。
 - [x] 执行浏览器检查、核对截图与数值、保存报告并差量合并索引。
+
+## [delta] 统一入口与对话交互补充（已确认，已完成，待授权合并）
+- [x] 更新 `deltas/prd/1-product-requirements/core-09-ai-workspace-requirements.md` — 定义对话主入口、统一项目上下文与证据边界。
+- [x] 更新 `deltas/prd/2-product-design/1-feature-specs/core-02-research-workflow.md` — 统一工程流程、产物版本与计划核对语义。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md` — 定义主应用壳、对话与产物并列、两种图及黑色玻璃视觉。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-03-research-design.md` — 定义资源与实验能力迁入、旧入口兼容。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-04-strategy-development-design.md` — 统一开发编辑器、代码差异确认与版本绑定。
+- [x] 更新 `deltas/prd/3-technical-plan/2-scenario-implementation/core-S17-ai-project.md` — 项目对话、需求编辑确认与后台任务状态时序。
+- [x] 更新 `deltas/prd/3-technical-plan/2-scenario-implementation/core-S18-ai-development.md` — 设计图、源码差异、版本关联与过期时序。
+- [x] 更新 `deltas/prd/3-technical-plan/2-scenario-implementation/core-S19-ai-debug.md` — 调试、回测实验与策略验证证据时序。
+- [x] 更新 `deltas/prd/3-technical-plan/2-scenario-implementation/core-S20-plan-bridge.md` — 当前账户与数据快照、计划草稿、核对和导出时序。
+- [x] 更新 `deltas/test/core-S17-test-cases.md` — 统一入口、项目隔离、对话状态与资源切换检查规格。
+- [x] 更新 `deltas/test/core-S18-test-cases.md` — 文档与图同步、代码编辑、确认及版本过期检查规格。
+- [x] 更新 `deltas/test/core-S19-test-cases.md` — 调试定位、实验比较、失败取消与验证证据检查规格。
+- [x] 更新 `deltas/test/core-S20-test-cases.md` — 计划版本引用、账户约束、过期阻断与导出检查规格。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html` — 交付统一入口、共享状态、对话与产物工作区的离线交互原型。
+- [x] 更新 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 将旧入口和锚点导向统一原型，提供兼容说明。
+- [x] 更新 `deltas/index.md` — 标注唯一原型入口及完整研究旅程。

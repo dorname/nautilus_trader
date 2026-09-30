@@ -1,0 +1,13 @@
+{"id": "ST-S17-11", "status": "pass", "timestamp": "2026-09-30T07:36:31.322735+00:00", "scenario": "S17", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 801}
+{"id": "ST-S17-12", "status": "pass", "timestamp": "2026-09-30T07:36:31.656340+00:00", "scenario": "S17", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 429}
+{"id": "ST-S17-13", "status": "pass", "timestamp": "2026-09-30T07:36:31.421347+00:00", "scenario": "S17", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 3073}
+{"id": "ST-S17-14", "status": "pass", "timestamp": "2026-09-30T07:36:34.494270+00:00", "scenario": "S17", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 949}
+{"id": "ST-S18-11", "status": "pass", "timestamp": "2026-09-30T07:36:35.443250+00:00", "scenario": "S18", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 2811}
+{"id": "ST-S18-12", "status": "pass", "timestamp": "2026-09-30T07:36:38.254299+00:00", "scenario": "S18", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 2731}
+{"id": "ST-S18-13", "status": "pass", "timestamp": "2026-09-30T07:36:40.985922+00:00", "scenario": "S18", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 5710}
+{"id": "ST-S19-11", "status": "pass", "timestamp": "2026-09-30T07:36:46.696543+00:00", "scenario": "S19", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 4423}
+{"id": "ST-S19-12", "status": "pass", "timestamp": "2026-09-30T07:36:51.119430+00:00", "scenario": "S19", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 6446}
+{"id": "ST-S19-13", "status": "pass", "timestamp": "2026-09-30T07:36:57.565925+00:00", "scenario": "S19", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 10320}
+{"id": "ST-S20-11", "status": "pass", "timestamp": "2026-09-30T07:37:06.784878+00:00", "scenario": "S20", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 7043}
+{"id": "ST-S20-12", "status": "pass", "timestamp": "2026-09-30T07:37:13.828014+00:00", "scenario": "S20", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 8373}
+{"id": "ST-S20-13", "status": "pass", "timestamp": "2026-09-30T07:37:22.201008+00:00", "scenario": "S20", "source": "统一离线HTML原型编排检查，非生产API或引擎验收", "duration_ms": 7460}

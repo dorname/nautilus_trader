@@ -117,7 +117,7 @@ resource_index:
 - path: logos/resources/prd/1-product-requirements/core-08-research-requirements.md
   desc: 定位与用户旅程；A股Rust桌面研究设计，尚未实现验收
 - path: logos/resources/prd/2-product-design/1-feature-specs/core-02-research-workflow.md
-  desc: 全流程与版本；A股Rust桌面研究设计，尚未实现验收
+  desc: 统一研究流程与版本；保留生产筛选/成交/指标规则，单独说明离线演示边界
 - path: logos/resources/prd/2-product-design/2-page-design/core-02-research-pages.md
   desc: 界面结构；A股Rust桌面研究设计，尚未实现验收
 - path: logos/resources/prd/3-technical-plan/1-architecture/core-05-research-architecture.md
@@ -153,33 +153,33 @@ resource_index:
 - path: logos/resources/test/smoke/core-desktop-smoke-test-cases.md
   desc: 双平台部署后冒烟设计；A股Rust桌面研究设计，尚未实现验收
 - path: logos/resources/prd/2-product-design/2-page-design/core-03-research-design.md
-  desc: 高保真桌面原型范围、视觉规范和UI-P01～06交互检查；Rust GUI设计参考
+  desc: 旧原型迁入统一工作区的映射与兼容入口设计
 - path: logos/resources/prd/2-product-design/2-page-design/core-03-research-prototype.html
-  desc: 可离线打开的六页面高保真交互原型；含策略开发、版本绑定、筛选、图表及导出
+  desc: 旧研究原型兼容入口；锚点导向统一 core-05 工作区，无独立状态
 - path: logos/resources/prd/2-product-design/2-page-design/core-04-strategy-development-design.md
-  desc: S16策略开发原型；源码与参数编辑、检查、不可变版本、研究绑定及UI-P07～11
+  desc: S16/S18统一策略开发；修复差异、预置检查、冻结版本与研究绑定
 - path: logos/resources/test/core-S17-test-cases.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: ST-S17-11～14；统一入口、项目隔离、任务取消重试、布局和输入安全；非生产验收
 - path: logos/resources/test/core-S19-test-cases.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: ST-S19-11～13；确定性合成实验、调试比较与验证证据；非生产验收
 - path: logos/resources/test/core-S18-test-cases.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: ST-S18-11～13；同源设计图、修复版本与上游过期；非生产验收
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: 统一离线策略研究入口；黑色玻璃态、对话与产物工作区，含需求/设计图/开发/调试/回测/验证/人工计划，非生产运行时
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: 统一对话工作区设计；单入口、项目上下文、后台任务、工程产物和黑色玻璃视觉
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S19-ai-debug.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: S19合成实验、事件调试、冻结证据与分层验证；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S17-ai-project.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: S17统一项目对话、需求确认、项目隔离与取消时序；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S18-ai-development.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: S18同源流程图/时序图、代码差异与不可变版本；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S20-plan-bridge.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: S20独立账户与数据快照、计划生成/核对/过期阻断/导出；本地原型契约
 - path: logos/resources/test/core-S20-test-cases.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: ST-S20-11～13；计划账户核算、约束和过期阻断、确认导出；非生产验收
 - path: logos/resources/prd/1-product-requirements/core-09-ai-workspace-requirements.md
-  desc: S17～S20 研究工程台原型；需求、设计、开发、调试、验证与交易计划设计或检查依据，非生产验收
+  desc: FR-R13～R21；对话主入口、项目隔离、同源设计图、版本与证据、计划核对和可用性
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案

@@ -96,3 +96,9 @@
 - [工作台设计](prd/2-product-design/2-page-design/core-05-ai-workspace-design.md)：角色分工、版本与可见事件、原生GUI实现方向和演示边界。
 - [补充需求](prd/1-product-requirements/core-09-ai-workspace-requirements.md)：FR-R13～17与S17～S19。
 - 8项原型编排检查通过；Agent为预设演示，实验由固定合成样本计算。没有接入真实模型或生产回测引擎。
+
+## 统一策略研究原型入口
+
+唯一入口：[研序统一工作区](prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html)。旧 core-03 入口兼容导向同一应用。完整旅程：对话需求 → 设计图 → 开发 → 调试和实验 → 验证报告 → 演示计划核对及导出。
+
+设计见 core-05-ai-workspace-design.md；检查见 S17～S20，证据保留在变更目录 prototype-review，不代表生产验收。

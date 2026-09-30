@@ -1,24 +1,25 @@
+## MODIFIED — S18 处理流程到代码版本
+
 # S18 处理流程到代码版本
 
-需求来源：core-09-ai-workspace-requirements.md；交互详见 core-05-ai-workspace-design.md。
+## 设计图与代码版本
 
 ```mermaid
 sequenceDiagram
-    actor U as 研究员
-    participant G as 工作台
-    participant W as 版本服务
-    U->>G: 保存流程配置
-    G->>G: 校验与冻结上游引用
-    G->>W: 提交当前版本任务
-    W-->>G: 进度与可观察事件
-    alt 成功
-        W-->>G: 流程与源码版本
-        G-->>U: 展示版本、依据与后续入口
-    else 取消或校验失败
-        G-->>U: 保留历史，展示错误或取消状态
-    end
+    actor U as 用户
+    participant G as 统一工作区
+    participant P as 项目状态
+    participant W as 演示计算器
+    U->>G: 生成设计
+    G->>P: 读取确认需求及资源版本
+    G->>U: 展示设计草稿与同源流程图、时序图
+    U->>G: 编辑说明和参数并保存设计
+    G->>P: 冻结设计新版本
+    U->>G: 生成代码、审阅修复差异并应用
+    G->>P: 检查示例并保存不可变版本
+    G->>U: 显示版本及运行入口
 ```
 
-本轮仅实现本地内存交互；无生产接口新增。过期输入不能启动新实验，已有结果仍可查看。测试见 core-S18-test-cases.md。
+未确认需求不能生成设计。设计参数改变使旧代码绑定过期；任意源码不可冒称执行。图节点绑定输入输出和源码行。
 
-工程台重构后页面映射：设计页从策略处理逻辑生成系统处理流程图与调仓周期时序图，保存流程版本；开发页编辑源码并保存不可变代码版本。
+本地原型动作不构成生产 API。正式接口须由后续运行时时序推导；本次无 API、DB、部署变更。对应检查见 core-S18-test-cases.md。

@@ -1,0 +1,622 @@
+{
+  "kind": "离线原型合成实验，非生产验收",
+  "project": "A股量价 · 策略研究",
+  "runs": [
+    {
+      "id": 1,
+      "version": {
+        "id": 1,
+        "source": "# 合成样本策略示意；本页不执行 Python\ndef generate_targets(history, parameters):\n    visible = history.at_signal_close()\n    universe = visible.filter_amount(parameters[\"min_amount\"])\n    signal = universe.select_positive_signal()\n    # 信号不读取下一交易日价格\n    def on_next_open(cash, open_price):\n        quantity = int(cash * parameters[\"allocation\"] / signal.close / 100) * 100\n        quantity = max(0, quantity)\n        return simulate_order(signal.symbol, quantity, fee=5)\n    return signal, on_next_open",
+        "variant": 1,
+        "req": {
+          "id": 1,
+          "text": "研究 A 股日线量价信号：收盘后筛选流动性充足的股票，下一交易日执行。检查信号时点、仓位和资金约束，比较修复前后的表现，最后生成供人工核对的交易计划。",
+          "acceptance": "信号不使用未来数据；定位资金不足的订单拒绝；修复前后实验可比较；计划须核对账户和可卖数量。",
+          "allocation": 100,
+          "minAmount": 1000
+        },
+        "design": {
+          "id": 1,
+          "req": 1,
+          "note": "按需求 R1：研究 A 股日线量价信号：收盘后筛选流动性充足的股票，下一交易日执行。检查信号时点、仓位和资金约束，比较修复前后的表现，最后生成供人工核对的交易计划。\n\n处理顺序：可见数据 → 股票池过滤 → 信号形成 → 仓位 → 模拟成交 → 指标。信号日与执行日分离。",
+          "allocation": 1,
+          "minAmount": 1000,
+          "nodes": [
+            {
+              "id": "data",
+              "name": "读取数据",
+              "input": "截止信号日的可见收盘行情",
+              "output": "价格与成交额样本",
+              "line": 3
+            },
+            {
+              "id": "filter",
+              "name": "股票池过滤",
+              "input": "当期股票池与最低成交额",
+              "output": "入选或排除原因",
+              "line": 4
+            },
+            {
+              "id": "signal",
+              "name": "形成信号",
+              "input": "信号日收盘信息",
+              "output": "目标标的与投入比例",
+              "line": 5
+            },
+            {
+              "id": "size",
+              "name": "计算仓位",
+              "input": "资金、价格、费用与交易单位",
+              "output": "目标股数与资金检查",
+              "line": 8
+            },
+            {
+              "id": "fill",
+              "name": "模拟成交",
+              "input": "下一交易日开盘与申请数量",
+              "output": "成交或拒绝、剩余现金",
+              "line": 10
+            },
+            {
+              "id": "metric",
+              "name": "计算指标",
+              "input": "逐日现金、持仓与收盘价",
+              "output": "净值、收益和回撤",
+              "line": 11
+            }
+          ]
+        },
+        "data": {
+          "id": "SYN-202601-r1",
+          "fixture": [
+            {
+              "symbol": "SYN-A",
+              "name": "合成趋势样本",
+              "market": "沪市",
+              "amount": 2200,
+              "signal": true,
+              "close": 10,
+              "open": 10.1,
+              "marks": [
+                10,
+                10.4,
+                10.8
+              ],
+              "plan": 11
+            },
+            {
+              "symbol": "SYN-B",
+              "name": "合成反向样本",
+              "market": "深市",
+              "amount": 1600,
+              "signal": false,
+              "close": 20,
+              "open": 19.8,
+              "marks": [
+                20,
+                19.9,
+                19.7
+              ],
+              "plan": 19.5
+            },
+            {
+              "symbol": "SYN-C",
+              "name": "合成低流动性",
+              "market": "沪市",
+              "amount": 300,
+              "signal": false,
+              "close": 8,
+              "open": 8.1,
+              "marks": [
+                8,
+                8.2,
+                8.3
+              ],
+              "plan": 8.5
+            }
+          ]
+        },
+        "pool": {
+          "id": "U1",
+          "amount": 1000,
+          "symbols": [
+            "SYN-A",
+            "SYN-B"
+          ]
+        },
+        "simulator": "合成演示-2.0",
+        "stamp": "[1,1,1,1]"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "node": "data",
+          "symbol": "全部",
+          "status": "已读取",
+          "input": {
+            "snapshot": "SYN-202601-r1"
+          },
+          "output": {
+            "visibleThrough": "2026-01-05 15:00",
+            "count": 3
+          },
+          "line": 3,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 2,
+          "node": "filter",
+          "symbol": "SYN-A",
+          "status": "入选",
+          "input": {
+            "amount": 2200,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": true
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 3,
+          "node": "signal",
+          "symbol": "SYN-A",
+          "status": "形成信号",
+          "input": {
+            "close": 10
+          },
+          "output": {
+            "signal": true
+          },
+          "line": 5,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 4,
+          "node": "size",
+          "symbol": "SYN-A",
+          "status": "计算完成",
+          "input": {
+            "cash": 10000,
+            "allocation": 1,
+            "reference": 10,
+            "fee": 5
+          },
+          "output": {
+            "quantity": 1000,
+            "cost": 10105
+          },
+          "line": 8,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 09:30"
+        },
+        {
+          "seq": 5,
+          "node": "fill",
+          "symbol": "SYN-A",
+          "status": "资金不足 · 拒绝",
+          "input": {
+            "quantity": 1000,
+            "price": 10.1,
+            "cash": 10000
+          },
+          "output": {
+            "accepted": false,
+            "required": 10105,
+            "cash": 10000,
+            "held": 0
+          },
+          "line": 10,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 09:30"
+        },
+        {
+          "seq": 6,
+          "node": "filter",
+          "symbol": "SYN-B",
+          "status": "入选",
+          "input": {
+            "amount": 1600,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": true
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 7,
+          "node": "signal",
+          "symbol": "SYN-B",
+          "status": "无信号",
+          "input": {
+            "close": 20
+          },
+          "output": {
+            "signal": false
+          },
+          "line": 5,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 8,
+          "node": "filter",
+          "symbol": "SYN-C",
+          "status": "排除",
+          "input": {
+            "amount": 300,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": false
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 9,
+          "node": "metric",
+          "symbol": "账户",
+          "status": "已估值",
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10000
+          },
+          "line": 11,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 15:00"
+        },
+        {
+          "seq": 10,
+          "node": "metric",
+          "symbol": "账户",
+          "status": "已估值",
+          "input": {
+            "cash": 10000,
+            "held": 0,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10000
+          },
+          "line": 11,
+          "date": "2026-01-07",
+          "visibleAt": "2026-01-07 15:00"
+        }
+      ],
+      "equity": [
+        10000,
+        10000,
+        10000
+      ],
+      "cash": 10000,
+      "held": 0,
+      "rejected": 1,
+      "final": 10000,
+      "returnPct": 0,
+      "drawdownPct": 0
+    },
+    {
+      "id": 2,
+      "version": {
+        "id": 2,
+        "source": "# 合成样本策略示意；本页不执行 Python\ndef generate_targets(history, parameters):\n    visible = history.at_signal_close()\n    universe = visible.filter_amount(parameters[\"min_amount\"])\n    signal = universe.select_positive_signal()\n    # 信号不读取下一交易日价格\n    def on_next_open(cash, open_price):\n        quantity = int((cash * parameters[\"allocation\"] - 5) / open_price / 100) * 100\n        quantity = max(0, quantity)\n        return simulate_order(signal.symbol, quantity, fee=5)\n    return signal, on_next_open",
+        "variant": 2,
+        "req": {
+          "id": 1,
+          "text": "研究 A 股日线量价信号：收盘后筛选流动性充足的股票，下一交易日执行。检查信号时点、仓位和资金约束，比较修复前后的表现，最后生成供人工核对的交易计划。",
+          "acceptance": "信号不使用未来数据；定位资金不足的订单拒绝；修复前后实验可比较；计划须核对账户和可卖数量。",
+          "allocation": 100,
+          "minAmount": 1000
+        },
+        "design": {
+          "id": 1,
+          "req": 1,
+          "note": "按需求 R1：研究 A 股日线量价信号：收盘后筛选流动性充足的股票，下一交易日执行。检查信号时点、仓位和资金约束，比较修复前后的表现，最后生成供人工核对的交易计划。\n\n处理顺序：可见数据 → 股票池过滤 → 信号形成 → 仓位 → 模拟成交 → 指标。信号日与执行日分离。",
+          "allocation": 1,
+          "minAmount": 1000,
+          "nodes": [
+            {
+              "id": "data",
+              "name": "读取数据",
+              "input": "截止信号日的可见收盘行情",
+              "output": "价格与成交额样本",
+              "line": 3
+            },
+            {
+              "id": "filter",
+              "name": "股票池过滤",
+              "input": "当期股票池与最低成交额",
+              "output": "入选或排除原因",
+              "line": 4
+            },
+            {
+              "id": "signal",
+              "name": "形成信号",
+              "input": "信号日收盘信息",
+              "output": "目标标的与投入比例",
+              "line": 5
+            },
+            {
+              "id": "size",
+              "name": "计算仓位",
+              "input": "资金、价格、费用与交易单位",
+              "output": "目标股数与资金检查",
+              "line": 8
+            },
+            {
+              "id": "fill",
+              "name": "模拟成交",
+              "input": "下一交易日开盘与申请数量",
+              "output": "成交或拒绝、剩余现金",
+              "line": 10
+            },
+            {
+              "id": "metric",
+              "name": "计算指标",
+              "input": "逐日现金、持仓与收盘价",
+              "output": "净值、收益和回撤",
+              "line": 11
+            }
+          ]
+        },
+        "data": {
+          "id": "SYN-202601-r1",
+          "fixture": [
+            {
+              "symbol": "SYN-A",
+              "name": "合成趋势样本",
+              "market": "沪市",
+              "amount": 2200,
+              "signal": true,
+              "close": 10,
+              "open": 10.1,
+              "marks": [
+                10,
+                10.4,
+                10.8
+              ],
+              "plan": 11
+            },
+            {
+              "symbol": "SYN-B",
+              "name": "合成反向样本",
+              "market": "深市",
+              "amount": 1600,
+              "signal": false,
+              "close": 20,
+              "open": 19.8,
+              "marks": [
+                20,
+                19.9,
+                19.7
+              ],
+              "plan": 19.5
+            },
+            {
+              "symbol": "SYN-C",
+              "name": "合成低流动性",
+              "market": "沪市",
+              "amount": 300,
+              "signal": false,
+              "close": 8,
+              "open": 8.1,
+              "marks": [
+                8,
+                8.2,
+                8.3
+              ],
+              "plan": 8.5
+            }
+          ]
+        },
+        "pool": {
+          "id": "U1",
+          "amount": 1000,
+          "symbols": [
+            "SYN-A",
+            "SYN-B"
+          ]
+        },
+        "simulator": "合成演示-2.0",
+        "stamp": "[1,1,1,1]"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "node": "data",
+          "symbol": "全部",
+          "status": "已读取",
+          "input": {
+            "snapshot": "SYN-202601-r1"
+          },
+          "output": {
+            "visibleThrough": "2026-01-05 15:00",
+            "count": 3
+          },
+          "line": 3,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 2,
+          "node": "filter",
+          "symbol": "SYN-A",
+          "status": "入选",
+          "input": {
+            "amount": 2200,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": true
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 3,
+          "node": "signal",
+          "symbol": "SYN-A",
+          "status": "形成信号",
+          "input": {
+            "close": 10
+          },
+          "output": {
+            "signal": true
+          },
+          "line": 5,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 4,
+          "node": "size",
+          "symbol": "SYN-A",
+          "status": "计算完成",
+          "input": {
+            "cash": 10000,
+            "allocation": 1,
+            "reference": 10.1,
+            "fee": 5
+          },
+          "output": {
+            "quantity": 900,
+            "cost": 9095
+          },
+          "line": 8,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 09:30"
+        },
+        {
+          "seq": 5,
+          "node": "fill",
+          "symbol": "SYN-A",
+          "status": "已成交",
+          "input": {
+            "quantity": 900,
+            "price": 10.1
+          },
+          "output": {
+            "accepted": true,
+            "cash": 905,
+            "held": 900
+          },
+          "line": 10,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 09:30"
+        },
+        {
+          "seq": 6,
+          "node": "filter",
+          "symbol": "SYN-B",
+          "status": "入选",
+          "input": {
+            "amount": 1600,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": true
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 7,
+          "node": "signal",
+          "symbol": "SYN-B",
+          "status": "无信号",
+          "input": {
+            "close": 20
+          },
+          "output": {
+            "signal": false
+          },
+          "line": 5,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 8,
+          "node": "filter",
+          "symbol": "SYN-C",
+          "status": "排除",
+          "input": {
+            "amount": 300,
+            "threshold": 1000,
+            "pool": "U1"
+          },
+          "output": {
+            "included": false
+          },
+          "line": 4,
+          "date": "2026-01-05",
+          "visibleAt": "2026-01-05 15:00"
+        },
+        {
+          "seq": 9,
+          "node": "metric",
+          "symbol": "账户",
+          "status": "已估值",
+          "input": {
+            "cash": 905,
+            "held": 900,
+            "close": 10.4
+          },
+          "output": {
+            "equity": 10265
+          },
+          "line": 11,
+          "date": "2026-01-06",
+          "visibleAt": "2026-01-06 15:00"
+        },
+        {
+          "seq": 10,
+          "node": "metric",
+          "symbol": "账户",
+          "status": "已估值",
+          "input": {
+            "cash": 905,
+            "held": 900,
+            "close": 10.8
+          },
+          "output": {
+            "equity": 10625
+          },
+          "line": 11,
+          "date": "2026-01-07",
+          "visibleAt": "2026-01-07 15:00"
+        }
+      ],
+      "equity": [
+        10000,
+        10265,
+        10625
+      ],
+      "cash": 905,
+      "held": 900,
+      "rejected": 0,
+      "final": 10625,
+      "returnPct": 6.25,
+      "drawdownPct": 0
+    }
+  ]
+}
