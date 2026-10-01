@@ -60,3 +60,11 @@
 - [x] 更新 `deltas/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html` — 交付统一入口、共享状态、对话与产物工作区的离线交互原型。
 - [x] 更新 `deltas/prd/2-product-design/2-page-design/core-03-research-prototype.html` — 将旧入口和锚点导向统一原型，提供兼容说明。
 - [x] 更新 `deltas/index.md` — 标注唯一原型入口及完整研究旅程。
+
+
+## [delta] 业务逻辑完善与原型同步（2026-10-01，待授权合并）
+- [x] 明确阶段准入、草稿生效边界、版本失效与恢复入口。
+- [x] 原型概览按有效证据引导下一步，提示未确认草稿与实验可比性。
+- [x] 补充 ST-S17-15、ST-S18-14、ST-S19-14，连同原有13项浏览器检查全部通过。
+- [x] 资源目录的预览 HTML 与 delta HTML 一致；设计与测试规格保存在 delta 待审阅。
+- [ ] 用户明确授权后执行规格合并；不以本记录作为 merge、verify 或生产实现授权。

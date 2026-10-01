@@ -159,15 +159,15 @@ resource_index:
 - path: logos/resources/prd/2-product-design/2-page-design/core-04-strategy-development-design.md
   desc: S16/S18统一策略开发；修复差异、预置检查、冻结版本与研究绑定
 - path: logos/resources/test/core-S17-test-cases.md
-  desc: ST-S17-11～14；统一入口、项目隔离、任务取消重试、布局和输入安全；非生产验收
+  desc: ST-S17-11～15；统一入口、项目隔离、任务取消重试、布局、输入安全与阶段引导；非生产验收
 - path: logos/resources/test/core-S19-test-cases.md
-  desc: ST-S19-11～13；确定性合成实验、调试比较与验证证据；非生产验收
+  desc: ST-S19-11～14；确定性合成实验、调试比较、验证证据与输入可比性；非生产验收
 - path: logos/resources/test/core-S18-test-cases.md
-  desc: ST-S18-11～13；同源设计图、修复版本与上游过期；非生产验收
+  desc: ST-S18-11～14；同源设计图、修复版本、上游过期与草稿生效边界；非生产验收
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html
   desc: 统一离线策略研究入口；黑色玻璃态、对话与产物工作区，含需求/设计图/开发/调试/回测/验证/人工计划，非生产运行时
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md
-  desc: 统一对话工作区设计；单入口、项目上下文、后台任务、工程产物和黑色玻璃视觉
+  desc: 统一对话工作区设计；单入口、阶段准入、草稿生效边界、实验可比性与黑色玻璃视觉
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S19-ai-debug.md
   desc: S19合成实验、事件调试、冻结证据与分层验证；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S17-ai-project.md

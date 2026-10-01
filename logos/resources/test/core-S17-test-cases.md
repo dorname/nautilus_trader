@@ -10,3 +10,11 @@
 | ST-S17-14 | 布局与输入安全 | 1440/1100无水平溢出；用户HTML按文本显示；专注切换可用 |
 
 浏览器编排通过真实点击、输入和下载断言。OpenLogos reporter 使用 id/status/duration_ms/timestamp/error 字段，写入 prototype-review/unified-test-results.jsonl，source 标明原型检查，不污染生产验收结果。
+
+## 业务逻辑补充检查
+
+| ID | 操作 | 断言 |
+|---|---|---|
+| ST-S17-15 | 完整旅程、失败报告、上游过期、当前版本未运行 | 下一步按有效引用与证据计算，不按历史数量；计划核对后提示导出 |
+
+补充检查写入 prototype-review/business-test-results.jsonl，采用相同 OpenLogos reporter 字段，仅作为原型证据。
