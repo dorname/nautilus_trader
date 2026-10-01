@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 3d 完成（S11+S12+S13 全量：信号内核+引擎编排+运行生命周期+公司行为/日历调仓/规则包）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
+> 状态：批次 4 完成（S11～S13 全量 + S14 比较）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -170,11 +170,44 @@ UT-S13-07 的 5 秒强杀计时在 worker_bin 子进程接线时补验。
 净持仓」按 CASH 账户卖空拒绝——公司行为若在策略侧调整持仓会触发该拒绝，
 这是「估值层生效」设计的直接原因。
 
+## 批次 4：S14 比较（2026-10-01）
+
+**覆盖用例**：UT-S14-01、UT-S14-02、UT-S14-03、UT-S14-04、ST-S14-01（5/5 pass；全量回归 37/37，JSONL 0 失败）
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 指标纯函数 | research-domain/src/metrics.rs | compute_metrics（总收益/年化/回撤/波动/Sharpe/换手/成本）；NullableMetric（None+原因，十进制定点无 NaN）；十进制 Newton 平方根（确定性）；完整序列计算不降采样 |
+| 产物契约形状 | research-domain/src/worker_api.rs | EquityDoc（trade_date/现金/持仓市值/应收/净值）、HoldingsDoc（数量/可卖/标记价/市值）、FillDoc（fill_id 规范化） |
+| 持仓时间线 | research-worker/src/runner.rs | 估值重放产出逐日持仓（含 T+1 可卖数与应收股息） |
+| 组合适配 | research-worker/src/adapter.rs | 成员估值按字段求和（现金/市值/应收/净值）；持仓拼接；fill_id F-标的-日期-序 |
+| 比较命令 | research-domain/src/coordinator.rs | compare_runs（2..5 校验→指标→交集→差异→基准）；NO_OVERLAP；差异显式列出（区间/费用/数据/模式）不排名 |
+| 基准指标 | 同上 | 等权买入持有（首日收盘建仓）；期望日期取运行净值序列∩窗口，任一成员缺日期→基准指标全空附原因，策略指标保留 |
+| 查询扩展 | 同上 | QueryRows 运行三桶 equity/holdings/fills（RowsRow 类型化枚举，游标绑定结果哈希） |
+
+**关键语义（对照用例）**：
+- UT-S14-01：净值 100/110/99 → 总收益 -0.01、回撤 0.1；降采样会丢中间峰值（对照断言证明按完整序列）；
+- UT-S14-02：零波动/单样本 → Sharpe 空+原因（「波动为零」「仅1个收益样本」），绝不出现 NaN；
+- UT-S14-03：区间不相交交集请求 NO_OVERLAP（完整视图不拒绝、overlap 空）；
+  基准缺日期只清空基准指标；
+- UT-S14-04：结果对象文件篡改（旧哈希引用不变）→ 比较/查询均 CORRUPT_ARTIFACT
+  （对象存储读时哈希校验，无缓存旁路）；
+- ST-S14-01：费用差异显式列出（含双方费率与运行 ID）；各运行独立指标行；
+  Comparison 结构无排名字段（编译期保证不静默排名）。
+
+**修复记录（批次 3c 遗留）**：research_run.result_hash 此前从未回填（handle_run_exit
+只更新任务表）——S14 比较经 research_run 读产物时暴露；已并入 commit_task_result
+同一事务回填（先修过一次「提交后单独回填」仍有终态可见先于回填的竞态，测试探针
+偶然通过暴露）。
+
+**已知限制**：年化收益为首版线性近似（总收益×252/样本数，几何年化随指标版本化替换）；
+RowsQuery 的 sort 参数未实现（与 S12 一致）；基准为首日收盘等权买入持有近似。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）；
+- 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）；
   UT-S13-07 的 5 秒强杀计时随 worker_bin 子进程接线补验
-- 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台
 
 > verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，

@@ -357,33 +357,113 @@ pub struct UniversePreview {
     pub as_of: String,
 }
 
-/// QueryRows 表名（S12 本批实现 members/excluded/unknown）。
+/// QueryRows 表名（S12：members/excluded/unknown；S14 扩展：equity/holdings/fills）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RowsTable {
     Members,
     Excluded,
     Unknown,
+    Equity,
+    Holdings,
+    Fills,
 }
 
 impl RowsTable {
-    /// 对应的预览行判定值。
-    pub fn verdict(&self) -> &'static str {
+    /// 预览桶对应的行判定值（运行产物桶返回 None）。
+    pub fn verdict(&self) -> Option<&'static str> {
         match self {
-            Self::Members => "pass",
-            Self::Excluded => "exclude",
-            Self::Unknown => "unknown",
+            Self::Members => Some("pass"),
+            Self::Excluded => Some("exclude"),
+            Self::Unknown => Some("unknown"),
+            Self::Equity | Self::Holdings | Self::Fills => None,
         }
     }
+}
+
+/// QueryRows 行：按表名区分的类型化记录（serde untagged，JSON 形状与契约一致）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RowsRow {
+    Member(crate::universe::MemberRow),
+    Equity(crate::worker_api::EquityDoc),
+    Holding(crate::worker_api::HoldingsDoc),
+    Fill(crate::worker_api::FillDoc),
 }
 
 /// QueryRows 响应：cursor 绑定对象哈希，跨版本偏移拒绝。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowsPage {
-    pub rows: Vec<crate::universe::MemberRow>,
+    pub rows: Vec<RowsRow>,
     pub next_cursor: Option<String>,
     pub object_hash: String,
     pub total: u64,
+}
+
+// ---------------------------------------------------------------- S14 比较
+
+/// 比较视图：完整（各自区间）或交集（另列起止日）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompareView {
+    Full,
+    Intersection,
+}
+
+/// CompareRuns 请求（S14）：2..5 个不同且已完成的运行。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompareSpec {
+    pub run_ids: Vec<String>,
+    pub view: CompareView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmark_snapshot_id: Option<String>,
+}
+
+/// 日期区间（交集视图的起止日）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DateRange {
+    pub start: String,
+    pub end: String,
+}
+
+/// 运行间差异（区间／费用／数据／模式），显式列出，不做静默排名（ST-S14-01）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Difference {
+    /// region|cost|data|mode
+    pub kind: String,
+    pub detail: String,
+}
+
+/// 单个运行的指标视图（曲线经结果产物哈希引用）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunMetrics {
+    pub run_id: String,
+    pub result_hash: String,
+    pub start: String,
+    pub end: String,
+    pub mode: String,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub commission_rate: String,
+    pub metrics: crate::metrics::MetricsSet,
+}
+
+/// 基准指标视图（基准缺日期时各指标为空并附原因，策略指标不受影响）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkMetrics {
+    pub snapshot_id: String,
+    pub metrics: crate::metrics::MetricsSet,
+}
+
+/// CompareRuns 响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Comparison {
+    pub runs: Vec<RunMetrics>,
+    pub differences: Vec<Difference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlap: Option<DateRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmark: Option<BenchmarkMetrics>,
 }
 
 // ---------------------------------------------------------------- S13 研究运行

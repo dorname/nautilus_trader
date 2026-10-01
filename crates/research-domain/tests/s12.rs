@@ -146,9 +146,9 @@ fn ut_s12_01_future_report_not_visible() {
             .expect("查询未知桶");
         assert_eq!(page.rows.len(), 1);
         assert!(
-            page.rows[0].reasons.iter().any(|r| r.contains("尚无已公告报告")),
+            member_of(&page).reasons.iter().any(|r| r.contains("尚无已公告报告")),
             "原因需说明时点可见性：{:?}",
-            page.rows[0].reasons
+            member_of(&page).reasons
         );
     });
 }
@@ -284,9 +284,9 @@ fn ut_s12_05_missing_amount_is_unknown_not_substituted() {
             .query_rows(&task_id, RowsTable::Unknown, Some(10), None)
             .expect("查询未知桶");
         assert!(
-            page.rows[0].reasons.iter().any(|r| r.contains("成交额缺失")),
+            member_of(&page).reasons.iter().any(|r| r.contains("成交额缺失")),
             "原因需说明成交额缺失：{:?}",
-            page.rows[0].reasons
+            member_of(&page).reasons
         );
     });
 }
@@ -342,14 +342,14 @@ fn st_s12_01_preview_save_query_three_states() {
         // 分页查询三桶
         let members = c.query_rows(&task_id, RowsTable::Members, Some(500), None).expect("查成员");
         assert_eq!(members.total, 1);
-        assert_eq!(members.rows[0].instrument_id, "SYN-A");
+        assert_eq!(member_of(&members).instrument_id, "SYN-A");
         let excluded = c.query_rows(&task_id, RowsTable::Excluded, Some(500), None).expect("查排除");
         assert_eq!(excluded.total, 1);
-        assert_eq!(excluded.rows[0].instrument_id, "SYN-B");
-        assert!(!excluded.rows[0].reasons.is_empty(), "排除需带原因");
+        assert_eq!(member_of(&excluded).instrument_id, "SYN-B");
+        assert!(!member_of(&excluded).reasons.is_empty(), "排除需带原因");
         let unknown = c.query_rows(&task_id, RowsTable::Unknown, Some(500), None).expect("查未知");
         assert_eq!(unknown.total, 1);
-        assert_eq!(unknown.rows[0].instrument_id, "SYN-C");
+        assert_eq!(member_of(&unknown).instrument_id, "SYN-C");
 
         // 游标绑定对象哈希：跨对象偏移拒绝
         let err = c
@@ -440,4 +440,12 @@ fn st_s12_02_stale_preview_rejected() {
         assert_eq!(after.members_hash, before.members_hash, "原池成员不变");
         assert_eq!(after.name, "原始池");
     });
+}
+
+/// RowsRow → 成员行（S14 起行类型为枚举）。
+fn member_of(page: &nautilus_research_domain::protocol::RowsPage) -> &nautilus_research_domain::universe::MemberRow {
+    match page.rows.first().expect("至少一行") {
+        nautilus_research_domain::protocol::RowsRow::Member(m) => m,
+        other => panic!("应为成员行：{other:?}"),
+    }
 }

@@ -100,6 +100,20 @@ pub struct EquityPoint {
     pub position_qty: u64,
     pub close: String,
     pub equity_cny: String,
+    /// 应收未收股息（除息日～支付日之间计入净值一次）。
+    #[serde(default)]
+    pub receivable_cny: String,
+}
+
+/// 每日持仓行（单标的运行；契约 holdings 行类型的运行内形态）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HoldingsPoint {
+    pub date: String,
+    pub quantity: u64,
+    /// 扣除当日买入（T+1）后的可卖数量。
+    pub sellable_quantity: u64,
+    pub mark_price: String,
+    pub market_value_cny: String,
 }
 
 /// 运行产物（规范化、确定性）。
@@ -107,6 +121,7 @@ pub struct EquityPoint {
 pub struct RunOutcome {
     pub fills: Vec<FillRec>,
     pub equity_curve: Vec<EquityPoint>,
+    pub holdings: Vec<HoldingsPoint>,
     pub final_cash_cny: String,
     pub final_equity_cny: String,
     pub total_return: String,
@@ -412,6 +427,7 @@ pub fn run_ema_daily(
     let mut held = 0u64;
     let mut ledger = corporate::DividendLedger::default();
     let mut equity_curve = Vec::with_capacity(bars.len());
+    let mut holdings_curve = Vec::with_capacity(bars.len());
     for b in bars {
         for a in &config.actions {
             // 除息日按当前持仓登记应收；支付日应收转现金（转出后总资产只计一次）
@@ -421,6 +437,7 @@ pub fn run_ema_daily(
                 held = eff.new_held;
             }
         }
+        let mut bought_today = 0u64;
         for f in sink.fills.iter().filter(|f| f.date == b.date) {
             let qty: u64 = f.qty;
             let px = dec(&f.price);
@@ -428,6 +445,7 @@ pub fn run_ema_daily(
             if f.side == "buy" {
                 cash -= Decimal::from(qty) * px + fee;
                 held += qty;
+                bought_today += qty;
             } else {
                 cash += Decimal::from(qty) * px - fee;
                 held = held.saturating_sub(qty);
@@ -440,6 +458,14 @@ pub fn run_ema_daily(
             position_qty: held,
             close: b.close.normalize().to_string(),
             equity_cny: equity.normalize().to_string(),
+            receivable_cny: ledger.receivable.normalize().to_string(),
+        });
+        holdings_curve.push(HoldingsPoint {
+            date: b.date.clone(),
+            quantity: held,
+            sellable_quantity: held.saturating_sub(bought_today),
+            mark_price: b.close.normalize().to_string(),
+            market_value_cny: (Decimal::from(held) * b.close).normalize().to_string(),
         });
     }
     let final_equity = equity_curve.last().map(|e| dec(&e.equity_cny)).unwrap_or(config.capital);
@@ -447,6 +473,7 @@ pub fn run_ema_daily(
     Ok(RunOutcome {
         fills: sink.fills.clone(),
         equity_curve,
+        holdings: holdings_curve,
         final_cash_cny: cash.normalize().to_string(),
         final_equity_cny: final_equity.normalize().to_string(),
         total_return: total_return.normalize().to_string(),

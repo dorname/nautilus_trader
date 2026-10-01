@@ -19,6 +19,7 @@ pub mod gate;
 pub mod hash;
 pub mod indicators;
 pub mod manifest;
+pub mod metrics;
 pub mod objects;
 pub mod parquet_io;
 pub mod protocol;

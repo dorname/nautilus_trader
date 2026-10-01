@@ -17,6 +17,7 @@ use std::{
 };
 
 use crossbeam::channel::{bounded, select, Receiver, Sender};
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::{
@@ -32,15 +33,17 @@ use crate::{
     objects::ObjectStore,
     parquet_io,
     protocol::{
-        event_type, normalize_limit, ErrorBody, ImportSpec, Progress, QuotePage, RowsPage,
-        RowsTable, SaveUniverseSpec, SnapshotPage, TaskRef, TaskView, UniversePreview, UniverseRef,
-        UniverseSpec,
+        event_type, normalize_limit, BenchmarkMetrics, CompareSpec, CompareView, Comparison,
+        DateRange, Difference, ErrorBody, ImportSpec, Progress, QuotePage, RowsPage, RowsRow,
+        RowsTable, RunMetrics, SaveUniverseSpec, SnapshotPage, TaskRef, TaskView, UniversePreview,
+        UniverseRef, UniverseSpec,
     },
     quotes::{apply_scope, parse_staging_csv, partition_name, reject_duplicate_keys, QuoteRow, STAGING_CSV_HEADER},
     store::{MetadataStore, TaskRow},
     task::TaskState,
     time::now_rfc3339,
     universe::{self, MemberRow, Tri},
+    worker_api::RunOutcomeDoc,
 };
 
 /// 命令确认超时（契约：3 秒，超时提示查询 request_id，不盲目重建）。
@@ -304,7 +307,9 @@ impl Coordinator {
         self.read.get_universe(universe_id)
     }
 
-    /// QueryRows：按对象（预览任务/已存股票池）分页读取成员/排除/未知。
+    /// QueryRows：按对象分页读取类型化行。
+    /// 预览桶（members/excluded/unknown）读预览任务或已存股票池；
+    /// 运行桶（equity/holdings/fills，S14）读已完成运行的结果产物。
     pub fn query_rows(
         &self,
         object_id: &str,
@@ -312,8 +317,29 @@ impl Coordinator {
         limit: Option<u32>,
         cursor: Option<&str>,
     ) -> Result<RowsPage> {
-        let object_hash = self.resolve_rows_object(object_id)?;
-        let doc = self.read_preview_doc(&object_hash)?;
+        let (object_hash, all_rows): (String, Vec<RowsRow>) = match table.verdict() {
+            Some(verdict) => {
+                let object_hash = self.resolve_rows_object(object_id)?;
+                let doc = self.read_preview_doc(&object_hash)?;
+                let rows = doc
+                    .rows
+                    .into_iter()
+                    .filter(|r| r.verdict == verdict)
+                    .map(RowsRow::Member)
+                    .collect();
+                (object_hash, rows)
+            }
+            None => {
+                let (object_hash, doc) = self.read_run_doc(object_id)?;
+                let rows = match table {
+                    RowsTable::Equity => doc.equity_curve.into_iter().map(RowsRow::Equity).collect(),
+                    RowsTable::Holdings => doc.holdings.into_iter().map(RowsRow::Holding).collect(),
+                    RowsTable::Fills => doc.fills.into_iter().map(RowsRow::Fill).collect(),
+                    _ => return Err(ResearchError::invalid("不支持的查询表").with_field("table")),
+                };
+                (object_hash, rows)
+            }
+        };
         let limit = normalize_limit(limit) as usize;
         let offset = match cursor {
             None => 0usize,
@@ -329,19 +355,279 @@ impl Coordinator {
                     .map_err(|_| ResearchError::invalid("无效的分页游标").with_field("cursor"))?
             }
         };
-        let filtered: Vec<MemberRow> = doc
-            .rows
-            .into_iter()
-            .filter(|r| r.verdict == table.verdict())
-            .collect();
-        let total = filtered.len() as u64;
-        let page: Vec<MemberRow> = filtered.into_iter().skip(offset).take(limit).collect();
+        let total = all_rows.len() as u64;
+        let page: Vec<RowsRow> = all_rows.into_iter().skip(offset).take(limit).collect();
         let next_cursor = if offset + limit < total as usize {
             Some(format!("{object_hash}:{}", offset + limit))
         } else {
             None
         };
         Ok(RowsPage { rows: page, next_cursor, object_hash, total })
+    }
+
+    /// CompareRuns（S14）：同步读取已完成运行产物，计算指标、差异与交集。
+    /// 只读操作（WAL 读连接）；「超过 3 秒返回 BUSY」的护栏由调用方后台线程负责。
+    pub fn compare_runs(&self, spec: &CompareSpec) -> Result<Comparison> {
+        if !(2..=5).contains(&spec.run_ids.len()) {
+            return Err(ResearchError::invalid("比较需要 2..5 个运行").with_field("run_ids"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for id in &spec.run_ids {
+            if !seen.insert(id.clone()) {
+                return Err(
+                    ResearchError::invalid(format!("运行 ID 重复：{id}")).with_field("run_ids")
+                );
+            }
+        }
+        let mut runs = Vec::with_capacity(spec.run_ids.len());
+        let mut curve_dates: Vec<Vec<String>> = Vec::with_capacity(spec.run_ids.len());
+        for id in &spec.run_ids {
+            let (m, dates) = self.load_run_metrics(id)?;
+            runs.push(m);
+            curve_dates.push(dates);
+        }
+        // 交集：起止日取各运行规格的 max(start) / min(end)；交集请求无交集即拒绝
+        let start = runs.iter().map(|r| r.start.as_str()).max().unwrap_or("").to_string();
+        let end = runs.iter().map(|r| r.end.as_str()).min().unwrap_or("").to_string();
+        let overlap = (start <= end).then(|| DateRange { start: start.clone(), end: end.clone() });
+        if spec.view == CompareView::Intersection && overlap.is_none() {
+            return Err(ResearchError::new(
+                ErrorCode::NoOverlap,
+                format!("运行区间无交集：最长开始 {start} 晚于最短结束 {end}"),
+            ));
+        }
+        // 差异以第一个运行为参照显式列出（费用/区间/数据/模式），不做静默排名
+        let first = &runs[0];
+        let mut differences = Vec::new();
+        for r in &runs[1..] {
+            if r.start != first.start || r.end != first.end {
+                differences.push(Difference {
+                    kind: "region".to_string(),
+                    detail: format!(
+                        "区间差异：{} [{}, {}] vs {} [{}, {}]",
+                        first.run_id, first.start, first.end, r.run_id, r.start, r.end
+                    ),
+                });
+            }
+            if r.commission_rate != first.commission_rate {
+                differences.push(Difference {
+                    kind: "cost".to_string(),
+                    detail: format!(
+                        "费用差异：佣金率 {}（{}）vs {}（{}）",
+                        first.commission_rate, first.run_id, r.commission_rate, r.run_id
+                    ),
+                });
+            }
+            if r.snapshot_id != first.snapshot_id {
+                differences.push(Difference {
+                    kind: "data".to_string(),
+                    detail: format!("数据差异：快照 {} vs {}", first.snapshot_id, r.snapshot_id),
+                });
+            }
+            if r.mode != first.mode {
+                differences.push(Difference {
+                    kind: "mode".to_string(),
+                    detail: format!("模式差异：{} vs {}", first.mode, r.mode),
+                });
+            }
+        }
+        // 基准：等权买入持有（成员取第一个运行的股票池）；基准缺日期只影响基准指标
+        let benchmark = match &spec.benchmark_snapshot_id {
+            None => None,
+            Some(bid) => {
+                Some(self.benchmark_metrics(bid, &runs[0], &curve_dates[0], overlap.as_ref())?)
+            }
+        };
+        Ok(Comparison { runs, differences, overlap, benchmark })
+    }
+
+    /// 读取运行指标视图：任务已完成、产物哈希经内容校验（UT-S14-04）。
+    /// 同时返回净值日期序列（基准窗口的期望日期来源）。
+    fn load_run_metrics(&self, run_id: &str) -> Result<(RunMetrics, Vec<String>)> {
+        let run = self.read.get_research_run(run_id)?.ok_or_else(|| {
+            ResearchError::not_found(format!("研究运行不存在：{run_id}"))
+        })?;
+        let task = self.read.get_task(&run.task_id)?.ok_or_else(|| {
+            ResearchError::new(ErrorCode::CorruptArtifact, "运行缺少任务行")
+        })?;
+        if task.state != TaskState::Succeeded {
+            return Err(ResearchError::new(
+                ErrorCode::RunNotReady,
+                format!("运行未完成：{}（{:?}）", run.task_id, task.state),
+            ));
+        }
+        let result_hash = run.result_hash.clone().ok_or_else(|| {
+            ResearchError::new(ErrorCode::CorruptArtifact, "运行缺少结果产物哈希")
+        })?;
+        let doc = self.read_outcome_doc(&result_hash)?;
+        let cfg: RunConfigDoc = serde_json::from_str(&run.config_json)
+            .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("运行配置解析失败：{e}")))?;
+        // 完整净值序列升序计算（UT-S14-01：不按降采样曲线）
+        let mut curve: Vec<(String, Decimal)> = doc
+            .equity_curve
+            .iter()
+            .map(|p| {
+                (
+                    p.trade_date.clone(),
+                    Decimal::from_str_exact(&p.equity_cny).unwrap_or(Decimal::ZERO),
+                )
+            })
+            .collect();
+        curve.sort_by(|a, b| a.0.cmp(&b.0));
+        let traded: Decimal = doc
+            .fills
+            .iter()
+            .map(|f| {
+                Decimal::from(f.quantity)
+                    * Decimal::from_str_exact(&f.raw_price).unwrap_or(Decimal::ZERO)
+            })
+            .sum();
+        let fees: Decimal = doc
+            .fills
+            .iter()
+            .map(|f| Decimal::from_str_exact(&f.fees_cny).unwrap_or(Decimal::ZERO))
+            .sum();
+        let equity: Vec<Decimal> = curve.iter().map(|(_, v)| *v).collect();
+        let dates: Vec<String> = curve.into_iter().map(|(d, _)| d).collect();
+        let initial = Decimal::from_str_exact(&cfg.spec.capital_cny).unwrap_or(Decimal::ZERO);
+        Ok((RunMetrics {
+            run_id: run.task_id.clone(),
+            result_hash,
+            start: cfg.spec.start.clone(),
+            end: cfg.spec.end.clone(),
+            mode: cfg.spec.mode.as_str().to_string(),
+            snapshot_id: cfg.spec.snapshot_id.clone(),
+            universe_id: cfg.spec.universe_id.clone(),
+            commission_rate: cfg.spec.costs.commission_rate.clone(),
+            metrics: crate::metrics::compute_metrics(&equity, initial, traded, fees),
+        }, dates))
+    }
+
+    /// 基准指标：等权买入持有（首日收盘建仓）；任一成员缺窗口内任一日期，
+    /// 全部基准指标置空并附原因（UT-S14-03：策略指标保留）。
+    fn benchmark_metrics(
+        &self,
+        snapshot_id: &str,
+        base: &RunMetrics,
+        expected_dates: &[String],
+        overlap: Option<&DateRange>,
+    ) -> Result<BenchmarkMetrics> {
+        use crate::metrics::NullableMetric;
+        use std::collections::BTreeMap;
+        let none_set = || crate::metrics::MetricsSet {
+            total_return: NullableMetric::none("基准缺一个日期"),
+            annualized_return: NullableMetric::none("基准缺一个日期"),
+            max_drawdown: NullableMetric::none("基准缺一个日期"),
+            volatility: NullableMetric::none("基准缺一个日期"),
+            sharpe: NullableMetric::none("基准缺一个日期"),
+            turnover: NullableMetric::none("基准缺一个日期"),
+            cost_cny: NullableMetric::none("基准缺一个日期"),
+        };
+        let (start, end) = match overlap {
+            Some(r) => (r.start.clone(), r.end.clone()),
+            None => (base.start.clone(), base.end.clone()),
+        };
+        let members = self.universe_pass_members(&base.universe_id)?;
+        let snapshot = self
+            .read
+            .get_snapshot(snapshot_id)?
+            .ok_or_else(|| ResearchError::not_found(format!("基准快照不存在：{snapshot_id}")))?;
+        let manifest: SnapshotManifest =
+            serde_json::from_slice(&self.objects.get(&snapshot.manifest_hash)?)
+                .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("基准清单解析失败：{e}")))?;
+        // 期望窗口日期 = 运行净值序列 ∩ [start, end]（基准行情只是数据源，
+        // 缺日期不能从期望集合里消失——UT-S14-03）
+        let sorted_dates: Vec<String> = expected_dates
+            .iter()
+            .filter(|d| d.as_str() >= start.as_str() && d.as_str() <= end.as_str())
+            .cloned()
+            .collect();
+        // 成员 → 日期 → 收盘
+        let mut closes: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+        for part in &manifest.partitions {
+            let path = self.objects.path_of(&part.sha256);
+            for row in crate::parquet_io::read_quotes_partition(&path)? {
+                if !members.contains(&row.instrument_id) {
+                    continue;
+                }
+                if row.trade_date < start || row.trade_date > end {
+                    continue;
+                }
+                closes
+                    .entry(row.instrument_id)
+                    .or_default()
+                    .insert(row.trade_date, row.close);
+            }
+        }
+        for code in &members {
+            let series = closes.get(code);
+            for d in &sorted_dates {
+                if !series.is_some_and(|s| s.contains_key(d)) {
+                    return Ok(BenchmarkMetrics { snapshot_id: snapshot_id.to_string(), metrics: none_set() });
+                }
+            }
+        }
+        let Some(t0) = sorted_dates.first() else {
+            return Ok(BenchmarkMetrics { snapshot_id: snapshot_id.to_string(), metrics: none_set() });
+        };
+        let initial = Decimal::from(1);
+        let mut equity = Vec::with_capacity(sorted_dates.len());
+        for d in &sorted_dates {
+            let mean_ratio: Decimal = members
+                .iter()
+                .map(|code| {
+                    let s = &closes[code];
+                    s[d] / s[t0]
+                })
+                .sum();
+            equity.push(initial * mean_ratio / Decimal::from(members.len() as u64));
+        }
+        Ok(BenchmarkMetrics {
+            snapshot_id: snapshot_id.to_string(),
+            metrics: crate::metrics::compute_metrics(&equity, initial, Decimal::ZERO, Decimal::ZERO),
+        })
+    }
+
+    /// 已存股票池的 pass 成员。
+    fn universe_pass_members(&self, universe_id: &str) -> Result<Vec<String>> {
+        let uni = self.read.get_universe(universe_id)?.ok_or_else(|| {
+            ResearchError::not_found(format!("股票池不存在：{universe_id}"))
+        })?;
+        let doc = self.read_preview_doc(&uni.members_hash)?;
+        Ok(doc
+            .rows
+            .into_iter()
+            .filter(|r| r.verdict == "pass")
+            .map(|r| r.instrument_id)
+            .collect())
+    }
+
+    /// 读取已完成运行的结果产物（哈希校验失败 → CORRUPT_ARTIFACT）。
+    fn read_run_doc(&self, run_id: &str) -> Result<(String, RunOutcomeDoc)> {
+        let run = self.read.get_research_run(run_id)?.ok_or_else(|| {
+            ResearchError::not_found(format!("研究运行不存在：{run_id}"))
+        })?;
+        let task = self.read.get_task(&run.task_id)?.ok_or_else(|| {
+            ResearchError::new(ErrorCode::CorruptArtifact, "运行缺少任务行")
+        })?;
+        if task.state != TaskState::Succeeded {
+            return Err(ResearchError::new(
+                ErrorCode::RunNotReady,
+                format!("运行未完成：{}（{:?}）", run.task_id, task.state),
+            ));
+        }
+        let hash = run.result_hash.clone().ok_or_else(|| {
+            ResearchError::new(ErrorCode::CorruptArtifact, "运行缺少结果产物哈希")
+        })?;
+        let doc = self.read_outcome_doc(&hash)?;
+        Ok((hash, doc))
+    }
+
+    fn read_outcome_doc(&self, hash: &str) -> Result<RunOutcomeDoc> {
+        let bytes = self.objects.get(hash)?;
+        serde_json::from_slice(&bytes).map_err(|e| {
+            ResearchError::new(ErrorCode::CorruptArtifact, format!("运行产物解析失败：{e}"))
+        })
     }
 
     /// 解析 QueryRows 对象：预览任务 ID 或已存股票池 ID。

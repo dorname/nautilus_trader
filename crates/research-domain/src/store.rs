@@ -543,6 +543,12 @@ impl MetadataStore {
             params![result_hash, now_rfc3339(), task_id],
         )
         .map_err(|e| map_sqlite("标记任务成功", e))?;
+        // 同事务回填 research_run（比较/查询经此读取；消除终态可见而回填滞后的竞态）
+        tx.execute(
+            "UPDATE research_run SET result_hash=?1, metrics_json=?2 WHERE task_id=?3",
+            params![result_hash, "{}", task_id],
+        )
+        .map_err(|e| map_sqlite("回填研究运行结果", e))?;
         let seq: i64 = tx
             .query_row("SELECT last_seq FROM task WHERE id=?1", params![task_id], |r| r.get(0))
             .map_err(|e| map_sqlite("读取任务序号", e))?;

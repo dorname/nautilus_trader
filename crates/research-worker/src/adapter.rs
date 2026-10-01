@@ -19,7 +19,7 @@ use nautilus_research_domain::{
     parquet_io,
     protocol::{Rebalance, RunSpec, UniverseMode},
     store::MetadataStore,
-    worker_api::{EquityDoc, FillDoc, RunOutcomeDoc},
+    worker_api::{EquityDoc, FillDoc, HoldingsDoc, RunOutcomeDoc},
 };
 
 use crate::{
@@ -276,8 +276,10 @@ fn run_portfolio(
 
     let slots = members.len().max(1);
     let slot_capital = capital / Decimal::from(slots as u64);
-    let mut members_doc_rows = Vec::new();
-    let mut combined_equity: BTreeMap<String, Decimal> = BTreeMap::new();
+    let mut fills_doc: Vec<FillDoc> = Vec::new();
+    let mut holdings_doc: Vec<HoldingsDoc> = Vec::new();
+    // 组合净值：各成员按字段求和（现金/持仓市值/应收/净值）
+    let mut combined: BTreeMap<String, [Decimal; 4]> = BTreeMap::new();
     let mut final_equity = Decimal::ZERO;
     for (idx, code) in members.iter().enumerate() {
         if cancel() {
@@ -336,17 +338,38 @@ fn run_portfolio(
         let outcome = run_ema_daily(code, "SSE", &bars, &config)
             .map_err(|e| ResearchError::new(ErrorCode::RunNotReady, format!("引擎运行失败：{e}")))?;
         for point in &outcome.equity_curve {
-            *combined_equity.entry(point.date.clone()).or_default() +=
-                Decimal::from_str_exact(&point.equity_cny).unwrap_or(Decimal::ZERO);
+            let entry = combined.entry(point.date.clone()).or_default();
+            entry[0] += Decimal::from_str_exact(&point.cash_cny).unwrap_or(Decimal::ZERO);
+            let qty = Decimal::from(point.position_qty);
+            let close = Decimal::from_str_exact(&point.close).unwrap_or(Decimal::ZERO);
+            entry[1] += qty * close;
+            entry[2] += Decimal::from_str_exact(&point.receivable_cny).unwrap_or(Decimal::ZERO);
+            entry[3] += Decimal::from_str_exact(&point.equity_cny).unwrap_or(Decimal::ZERO);
         }
-        for fill in &outcome.fills {
-            members_doc_rows.push(FillDoc {
+        for h in &outcome.holdings {
+            holdings_doc.push(HoldingsDoc {
+                trade_date: h.date.clone(),
                 instrument_id: code.clone(),
-                date: fill.date.clone(),
+                quantity: h.quantity,
+                sellable_quantity: h.sellable_quantity,
+                mark_price: h.mark_price.clone(),
+                market_value_cny: h.market_value_cny.clone(),
+            });
+        }
+        // 每标的日内成交序号（fill_id 规范化且唯一）
+        let mut seq_by_date: BTreeMap<String, u64> = BTreeMap::new();
+        for fill in &outcome.fills {
+            let seq = seq_by_date.entry(fill.date.clone()).or_insert(0);
+            *seq += 1;
+            fills_doc.push(FillDoc {
+                fill_id: format!("F-{code}-{}-{:03}", fill.date, seq),
+                instrument_id: code.clone(),
+                trade_date: fill.date.clone(),
                 side: fill.side.clone(),
-                qty: fill.qty,
-                price: fill.price.clone(),
-                fee_cny: fill.fee_cny.clone(),
+                quantity: fill.qty,
+                raw_price: fill.price.clone(),
+                fees_cny: fill.fee_cny.clone(),
+                reason: String::new(),
             });
         }
         final_equity += Decimal::from_str_exact(&outcome.final_equity_cny).unwrap_or(Decimal::ZERO);
@@ -363,14 +386,18 @@ fn run_portfolio(
         universe_id: spec.universe_id.clone(),
         mode: spec.mode.as_str().to_string(),
         strategy: format!("{:?}", spec.strategy.template),
-        fills: members_doc_rows,
-        equity_curve: combined_equity
+        fills: fills_doc,
+        equity_curve: combined
             .into_iter()
-            .map(|(date, equity)| EquityDoc {
-                date,
-                equity_cny: equity.normalize().to_string(),
+            .map(|(trade_date, e)| EquityDoc {
+                trade_date,
+                cash_cny: e[0].normalize().to_string(),
+                positions_value_cny: e[1].normalize().to_string(),
+                receivables_cny: e[2].normalize().to_string(),
+                equity_cny: e[3].normalize().to_string(),
             })
             .collect(),
+        holdings: holdings_doc,
         final_equity_cny: final_equity.normalize().to_string(),
         total_return: total_return.normalize().to_string(),
     })
