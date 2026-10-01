@@ -29,6 +29,7 @@ nautilus-model = { workspace = true, features = ["test-support"] }
 nautilus-portfolio = { workspace = true }
 nautilus-risk = { workspace = true }
 nautilus-sandbox = { workspace = true }
+nautilus-trading = { workspace = true, features = ["examples"] }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
