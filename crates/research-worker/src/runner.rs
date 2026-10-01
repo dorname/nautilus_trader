@@ -8,6 +8,11 @@
 //!
 //! 引擎含 Rc/RefCell，本模块全部对象在同一调用线程创建、使用、销毁；
 //! run_id、墙钟时间不进入运行产物（规范化结果可跨次比对，UT-S13-05）。
+//!
+//! 公司行为（拆股/分红）在末段估值重放层生效：持仓、现金与净值按公告可见的
+//! 除权除息日调整（UT-S13-08/11）。策略与引擎保持「引擎世界」口径——引擎
+//! CASH 账户禁止卖空且无持仓调整接口，拆股不改变引擎内持仓，卖出按引擎
+//! 持仓封顶，溢余股数在估值层保留（已知限制，见实现清单批次 3d）。
 
 use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
@@ -34,7 +39,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use nautilus_research_domain::{indicators::ema_last, time::date32_to_trade_date};
+use nautilus_research_domain::{
+    auxiliary::ActionRecord, corporate, indicators::ema_last, time::date32_to_trade_date,
+};
 
 use crate::{
     fees::{astock_fee, AStockFeeModel},
@@ -66,6 +73,13 @@ pub struct EmaRunConfig {
     pub sell_tax_rate: Decimal,
     pub other_fee_rate: Decimal,
     pub rules: BoardRules,
+    /// 调仓信号日门控（weekly/monthly：只在周期最后交易日形成信号，UT-S13-10）；
+    /// None 表示每日评估（daily 或无交易日历）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_dates: Option<std::collections::BTreeSet<String>>,
+    /// 该标的的公司行为流（除权除息；应用时校验公告可见性，UT-S13-08/11）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionRecord>,
 }
 
 /// 一笔成交记录（规范化内容：无 UUID/墙钟）。
@@ -185,6 +199,8 @@ impl DataActor for ResearchEmaStrategy {
     }
 
     /// 开盘集合竞价：执行昨日收盘形成的信号（隔日执行的唯一成交入口）。
+    /// 公司行为不在策略侧应用（引擎 CASH 账户禁止卖空，拆股后引擎持仓不变）；
+    /// 拆股/分红只在估值重放层调整持仓与净值，卖出按引擎持仓封顶。
     fn on_trade(&mut self, tick: &TradeTick) -> anyhow::Result<()> {
         let Some((side, qty)) = self.pending_signal.take() else {
             return Ok(());
@@ -229,6 +245,14 @@ impl DataActor for ResearchEmaStrategy {
         // 预热期不交易（指标以初始资金为起点，不含未来数据）
         if self.bar_index <= self.config.warmup_bars {
             return Ok(());
+        }
+        // 调仓门控：weekly/monthly 只在周期最后交易日形成信号（指标照常累计，
+        // UT-S13-10）；节假日周末不在日历中，周期尾自动落在最后交易日
+        if let Some(gate) = &self.config.signal_dates {
+            let today = date_of_ns(bar.ts_event.as_u64());
+            if !gate.contains(&today) {
+                return Ok(());
+            }
         }
         let (Some(fast), Some(slow)) = (
             ema_last(&self.closes, self.config.fast),
@@ -381,12 +405,22 @@ pub fn run_ema_daily(
     engine.add_data(data, None, true, true)?;
     engine.run(None, None, None, false)?;
 
-    // 收盘估值序列：现金 + 持仓 × 当日收盘（填充重放，确定性）
+    // 收盘估值序列：现金 + 持仓 × 当日收盘 + 应收股息（填充重放，确定性）。
+    // 公司行为先于当日成交应用：除权除息针对除权除息日前的持仓（UT-S13-08/11）
     let sink = sink.borrow();
     let mut cash = config.capital;
     let mut held = 0u64;
+    let mut ledger = corporate::DividendLedger::default();
     let mut equity_curve = Vec::with_capacity(bars.len());
     for b in bars {
+        for a in &config.actions {
+            // 除息日按当前持仓登记应收；支付日应收转现金（转出后总资产只计一次）
+            let paid = corporate::advance_dividends(&mut ledger, a, held, &b.date);
+            cash += paid;
+            if let Some(eff) = corporate::apply_action(held, a, &b.date) {
+                held = eff.new_held;
+            }
+        }
         for f in sink.fills.iter().filter(|f| f.date == b.date) {
             let qty: u64 = f.qty;
             let px = dec(&f.price);
@@ -399,7 +433,7 @@ pub fn run_ema_daily(
                 held = held.saturating_sub(qty);
             }
         }
-        let equity = cash + Decimal::from(held) * b.close;
+        let equity = cash + Decimal::from(held) * b.close + ledger.receivable;
         equity_curve.push(EquityPoint {
             date: b.date.clone(),
             cash_cny: cash.normalize().to_string(),

@@ -12,8 +12,10 @@
 
 pub mod auxiliary;
 pub mod coordinator;
+pub mod corporate;
 pub mod error;
 pub mod executor;
+pub mod gate;
 pub mod hash;
 pub mod indicators;
 pub mod manifest;

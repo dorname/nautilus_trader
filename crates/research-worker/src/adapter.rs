@@ -9,14 +9,15 @@ use std::{collections::BTreeMap, path::Path, sync::atomic::Ordering};
 use rust_decimal::Decimal;
 
 use nautilus_research_domain::{
-    auxiliary::{financial_from_bytes, master_from_bytes},
+    auxiliary::{ActionRecord, CalendarRecord, RuleRecord},
     coordinator::{Completion, RunConfigDoc},
+    corporate,
     error::{ErrorCode, ResearchError},
     executor,
     manifest::SnapshotManifest,
     objects::ObjectStore,
     parquet_io,
-    protocol::RunSpec,
+    protocol::{Rebalance, RunSpec, UniverseMode},
     store::MetadataStore,
     worker_api::{EquityDoc, FillDoc, RunOutcomeDoc},
 };
@@ -126,13 +127,15 @@ fn execute(
             quotes_by_symbol.entry(row.instrument_id.clone()).or_default().push(row);
         }
     }
-    let mut master = Vec::new();
-    let mut financial = Vec::new();
+    let mut actions = Vec::new();
+    let mut calendar = Vec::new();
+    let mut rules = Vec::new();
     for aux in &manifest.auxiliary {
         let bytes = objects.get(&aux.sha256)?;
         match aux.kind.as_str() {
-            "master" => master = master_from_bytes(&bytes)?,
-            "financial" => financial = financial_from_bytes(&bytes)?,
+            "actions" => actions = nautilus_research_domain::auxiliary::actions_from_bytes(&bytes)?,
+            "calendar" => calendar = nautilus_research_domain::auxiliary::calendar_from_bytes(&bytes)?,
+            "rules" => rules = nautilus_research_domain::auxiliary::rules_from_bytes(&bytes)?,
             _ => {}
         }
     }
@@ -146,8 +149,9 @@ fn execute(
         &spec,
         &members,
         &quotes_by_symbol,
-        &master,
-        &financial,
+        &actions,
+        &calendar,
+        &rules,
         cancel,
     )?;
 
@@ -209,26 +213,67 @@ impl PreviewDocLike {
     }
 }
 
+/// 首版板块推断：合成标的均视为主板（真实板块划分随主档数据通道扩展）。
+fn default_board(_code: &str) -> String {
+    "主板".to_string()
+}
+
 /// 组合运行：等权多标的 EMA（首版：每标的独立 EMA 信号 + 等槽位资金）。
 /// F-RUN 覆盖单标的情形；多标的按代码升序分槽。
+/// 规则包按板块生效区间解析——严格模式缺生效区间即任务失败并定位标的/日期
+/// （UT-S13-12）；交易日历驱动调仓（weekly/monthly 只在周期最后交易日形成
+/// 信号，UT-S13-10）；公司行为按除权除息日调整持仓与股息应收（UT-S13-08/11）。
 #[allow(clippy::too_many_arguments)]
 fn run_portfolio(
     spec: &RunSpec,
     members: &[String],
     quotes: &BTreeMap<String, Vec<nautilus_research_domain::quotes::QuoteRow>>,
-    _master: &[nautilus_research_domain::auxiliary::MasterRecord],
-    _financial: &[nautilus_research_domain::auxiliary::FinancialRecord],
+    actions: &[ActionRecord],
+    calendar: &[CalendarRecord],
+    rules_pack: &[RuleRecord],
     cancel: &dyn Fn() -> bool,
 ) -> Result<RunOutcomeDoc, ResearchError> {
     let capital = Decimal::from_str_exact(&spec.capital_cny)
         .map_err(|_| ResearchError::invalid("capital_cny 非十进制"))?;
-    let rules = BoardRules {
-        board: "synthetic".to_string(),
-        tick: "0.01".parse().unwrap(),
-        min_qty: 100,
-        qty_step: 100,
-        limit_pct: None,
-    };
+    // 严格模式：规则包存在时运行区间每一天都必须有生效规则（先于运行定位缺失日）
+    if !rules_pack.is_empty() && spec.mode == UniverseMode::Strict {
+        for code in members {
+            let Some(rows) = quotes.get(code) else {
+                continue;
+            };
+            let board = default_board(code);
+            let missing = rows
+                .iter()
+                .map(|r| r.trade_date.as_str())
+                .filter(|d| *d >= spec.start.as_str() && *d <= spec.end.as_str())
+                .find(|d| corporate::resolve_rules(rules_pack, &board, d).is_err());
+            if let Some(date) = missing {
+                return Err(ResearchError::new(
+                    ErrorCode::MissingCapability,
+                    format!(
+                        "严格任务失败：标的 {code}（板块 {board}）在 {date} 无生效规则，不得以现行规则反套历史或默认值代替"
+                    ),
+                ));
+            }
+        }
+    }
+    // 调仓信号日（组合级一致；节假日周末不在日历中，周期尾自动落在最后交易日）
+    let signal_dates: Option<std::collections::BTreeSet<String>> =
+        if calendar.is_empty() || spec.strategy.rebalance == Rebalance::Daily {
+            None
+        } else {
+            Some(
+                corporate::rebalance_signal_dates(
+                    calendar,
+                    spec.strategy.rebalance,
+                    &spec.start,
+                    &spec.end,
+                )
+                .into_iter()
+                .collect(),
+            )
+        };
+
     let slots = members.len().max(1);
     let slot_capital = capital / Decimal::from(slots as u64);
     let mut members_doc_rows = Vec::new();
@@ -256,16 +301,37 @@ fn run_portfolio(
         if bars.is_empty() {
             continue;
         }
+        // 规则按首日解析（严格模式已预检全区间覆盖；逐日版本化解析后续扩展）；
+        // 无规则包数据时用合成规则（探索口径）
+        let rules = if rules_pack.is_empty() {
+            BoardRules {
+                board: "synthetic".to_string(),
+                tick: "0.01".parse().unwrap(),
+                min_qty: 100,
+                qty_step: 100,
+                limit_pct: None,
+            }
+        } else {
+            corporate::resolve_rules(rules_pack, &default_board(code), &bars[0].date)?
+        };
+        // 该标的公司行为流（除权除息）
+        let code_actions: Vec<ActionRecord> = actions
+            .iter()
+            .filter(|a| a.instrument_id == *code)
+            .cloned()
+            .collect();
         let config = EmaRunConfig {
             fast: spec.strategy.fast.unwrap_or(1),
             slow: spec.strategy.slow.unwrap_or(2),
-            warmup_bars: 20,
+            warmup_bars: spec.strategy.lookback.unwrap_or(20) as usize,
             capital: slot_capital,
             commission_rate: Decimal::from_str_exact(&spec.costs.commission_rate).unwrap_or(Decimal::ZERO),
             min_commission: Decimal::from_str_exact(&spec.costs.min_commission_cny).unwrap_or(Decimal::ZERO),
             sell_tax_rate: Decimal::from_str_exact(&spec.costs.sell_tax_rate).unwrap_or(Decimal::ZERO),
             other_fee_rate: Decimal::from_str_exact(&spec.costs.other_fee_rate).unwrap_or(Decimal::ZERO),
             rules: rules.clone(),
+            signal_dates: signal_dates.clone(),
+            actions: code_actions,
         };
         let outcome = run_ema_daily(code, "SSE", &bars, &config)
             .map_err(|e| ResearchError::new(ErrorCode::RunNotReady, format!("引擎运行失败：{e}")))?;

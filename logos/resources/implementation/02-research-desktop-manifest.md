@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 3c 完成（S11+S12+S13信号内核+引擎编排+运行生命周期）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
+> 状态：批次 3d 完成（S11+S12+S13 全量：信号内核+引擎编排+运行生命周期+公司行为/日历调仓/规则包）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -130,10 +130,50 @@ SubmitRun 协调器编排与子进程隔离，依赖本批 runner 作为计算�
 UT-S13-12（规则包估值：缺历史生效区间严格失败）——需要公司行为与规则包数据通道；
 UT-S13-07 的 5 秒强杀计时在 worker_bin 子进程接线时补验。
 
+## 批次 3d：S13 公司行为/日历调仓/规则包估值（2026-10-01）
+
+**覆盖用例**：UT-S13-08、UT-S13-10、UT-S13-11、UT-S13-12（4/4 pass；全量回归 32/32，JSONL 0 失败）
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 公司行为纯函数 | research-domain/src/corporate.rs | apply_action（拆股调整持仓，公告可见性守卫）；DividendLedger/advance_dividends（除息计应收、支付转现金）；rebalance_signal_dates/next_trade_date（ISO 周按儒略日分桶，周一为界）；resolve_rules/first_missing_rule_date（前闭后开生效区间） |
+| 辅助数据通道 | research-domain/src/auxiliary.rs | actions/calendar/rules 三类暂存 CSV 逐行校验 + 规范化 JSON 字节 + 哈希校验读回（CorruptArtifact） |
+| 规则门迁移 | research-domain/src/gate.rs | 自 research-worker 迁入（域层不反向依赖工作器）；worker 侧改再导出 |
+| 导入分发 | research-domain/src/coordinator.rs | 五类 auxiliary 全量接入（master/financial/actions/calendar/rules） |
+| 引擎接入 | research-worker/src/runner.rs | EmaRunConfig 增加 signal_dates（调仓门控：非信号日形成不了委托）与 actions；末段估值重放应用公司行为（净值=现金+持仓×收盘+应收股息） |
+| 组合适配 | research-worker/src/adapter.rs | 严格模式规则包全区间预检（失败定位标的/板块/日期）；规则按首日解析；调仓信号日组合级一致 |
+
+**关键语义（对照用例）**：
+- UT-S13-08 拆股：除权日持仓 ×比例（100→200）、净值 800+200×6=2000 不凭空减半；
+  公告晚于除权日的事件不可见、不应用（时点纪律）；
+- UT-S13-11 分红：除息日应收 100×0.1=10 计入总资产一次（净值 2010），支付日应收
+  转现金（现金 810）、净值仍 2010 不重复增加；
+- UT-S13-10 日历调仓：weekly 信号日=每周最后交易日（1/12、1/19）、执行日为下一
+  交易日（1/15、1/22，跨周末顺延）；monthly 只在月末最后交易日；日历不含的
+  节假日周末天然不产生信号；
+- UT-S13-12 规则包：前闭后开生效区间（切换日 6/30 起新规则）；严格模式缺生效
+  区间任务失败并定位板块/日期（含「不得以现行规则反套历史」声明）。
+
+**已知限制（诚实边界）**：
+- 引擎 CASH 账户禁止卖空且无持仓调整公开接口：拆股不改变引擎内持仓，策略侧
+  卖出按引擎持仓封顶（如拆股后引擎卖出 100 而非 200），溢余股数在估值层保留
+  ——公司行为只在估值重放层生效；引擎内公司行为事件需引擎侧支持，后续批次；
+- 规则包逐日版本化解析未做（按首日解析；严格预检保证全区间覆盖）；
+- 分红现金不回补引擎账户（BacktestEngine 无公开账户调整入口），买入规模不含
+  分红现金（保守方向，不会超买）；
+- UT-S13-07 的 5 秒强杀计时仍在 worker_bin 子进程接线时补验。
+
+**踩坑记录**：儒略日数 0 是周一，周分桶用 `days/7` 即可；原实现 `(days+3)/7`
+使周界移到周五、周信号错误落在周四（UT-S13-10 首跑暴露）。引擎对「卖出量 >
+净持仓」按 CASH 账户卖空拒绝——公司行为若在策略侧调整持仓会触发该拒绝，
+这是「估值层生效」设计的直接原因。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 3d：S13 公司行为/日历调仓/规则包估值（UT-S13-08/10/11/12 + UT-S13-07 子进程强杀）
-- 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）
+- 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）；
+  UT-S13-07 的 5 秒强杀计时随 worker_bin 子进程接线补验
 - 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台
 

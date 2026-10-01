@@ -21,8 +21,10 @@ use uuid::Uuid;
 
 use crate::{
     auxiliary::{
-        financial_from_bytes, financial_json_bytes, master_from_bytes, master_json_bytes,
-        parse_financial_csv, parse_master_csv, sniff_kind, AuxKind, FinancialRecord, MasterRecord,
+        actions_json_bytes, calendar_json_bytes, financial_from_bytes, financial_json_bytes,
+        master_from_bytes, master_json_bytes, parse_actions_csv, parse_calendar_csv,
+        parse_financial_csv, parse_master_csv, parse_rules_csv, rules_json_bytes, sniff_kind,
+        ActionRecord, AuxKind, CalendarRecord, FinancialRecord, MasterRecord, RuleRecord,
     },
     error::{ErrorCode, ResearchError, Result},
     hash::{hash_canonical, sha256_file},
@@ -1343,6 +1345,9 @@ fn run_import(
     let mut rows: Vec<QuoteRow> = Vec::new();
     let mut master_rows: Vec<MasterRecord> = Vec::new();
     let mut financial_rows: Vec<FinancialRecord> = Vec::new();
+    let mut action_rows: Vec<ActionRecord> = Vec::new();
+    let mut calendar_rows: Vec<CalendarRecord> = Vec::new();
+    let mut rule_rows: Vec<RuleRecord> = Vec::new();
     for path in &spec.paths {
         let text = match fs::read_to_string(path) {
             Ok(t) => t,
@@ -1428,16 +1433,44 @@ fn run_import(
                         return;
                     }
                 },
+                AuxKind::Actions => match parse_actions_csv(&text) {
+                    Ok(mut parsed) => action_rows.append(&mut parsed),
+                    Err(e) => {
+                        fail_rows(task_id, e);
+                        return;
+                    }
+                },
+                AuxKind::Calendar => match parse_calendar_csv(&text) {
+                    Ok(mut parsed) => calendar_rows.append(&mut parsed),
+                    Err(e) => {
+                        fail_rows(task_id, e);
+                        return;
+                    }
+                },
+                AuxKind::Rules => match parse_rules_csv(&text) {
+                    Ok(mut parsed) => rule_rows.append(&mut parsed),
+                    Err(e) => {
+                        fail_rows(task_id, e);
+                        return;
+                    }
+                },
             }
         }
     }
     rows = apply_scope(rows, &spec);
-    // symbols 过滤同样作用于辅助数据
+    // symbols 过滤同样作用于辅助数据（日历与规则包是全市场数据，不过滤）
     if let Some(symbols) = &spec.symbols {
         master_rows.retain(|r| symbols.contains(&r.instrument_id));
         financial_rows.retain(|r| symbols.contains(&r.instrument_id));
+        action_rows.retain(|r| symbols.contains(&r.instrument_id));
     }
-    if rows.is_empty() && master_rows.is_empty() && financial_rows.is_empty() {
+    if rows.is_empty()
+        && master_rows.is_empty()
+        && financial_rows.is_empty()
+        && action_rows.is_empty()
+        && calendar_rows.is_empty()
+        && rule_rows.is_empty()
+    {
         send(Completion::Failed {
             task_id,
             error: ResearchError::invalid("按标的与日期范围过滤后没有数据行，整批拒绝"),
@@ -1481,7 +1514,12 @@ fn run_import(
     }
 
     // 2) 行批次边界响应取消（测试钩子可注入逐批延迟）
-    let total = (rows.len() + master_rows.len() + financial_rows.len()) as u64;
+    let total = (rows.len()
+        + master_rows.len()
+        + financial_rows.len()
+        + action_rows.len()
+        + calendar_rows.len()
+        + rule_rows.len()) as u64;
     let quote_total = rows.len() as u64;
     for (done, chunk) in rows.chunks(CANCEL_CHECK_ROWS).enumerate() {
         if cancel.load(Ordering::SeqCst) {
@@ -1549,6 +1587,9 @@ fn run_import(
     for (kind, bytes, n) in [
         (AuxKind::Master, master_json_bytes(&master_rows), master_rows.len()),
         (AuxKind::Financial, financial_json_bytes(&financial_rows), financial_rows.len()),
+        (AuxKind::Actions, actions_json_bytes(&action_rows), action_rows.len()),
+        (AuxKind::Calendar, calendar_json_bytes(&calendar_rows), calendar_rows.len()),
+        (AuxKind::Rules, rules_json_bytes(&rule_rows), rule_rows.len()),
     ] {
         if n == 0 {
             continue;

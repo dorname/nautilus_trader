@@ -74,6 +74,8 @@ fn frun_config(commission_rate: &str, min_commission: &str) -> EmaRunConfig {
         sell_tax_rate: Decimal::ZERO,
         other_fee_rate: Decimal::ZERO,
         rules: frun_rules(),
+        signal_dates: None,
+        actions: Vec::new(),
     }
 }
 
