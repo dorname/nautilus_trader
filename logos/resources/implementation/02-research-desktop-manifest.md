@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 3a 完成（S11+S12+S13信号内核）· 真相源：crates/research-domain、crates/research-testkit
+> 状态：批次 3b 完成（S11+S12+S13信号内核+引擎编排）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -72,13 +72,36 @@
 | 选股 | src/signals.rs | select_top_k：正分占槽、平分按代码升序、不足 K 留现金不加权 |
 | 运行契约 | src/protocol.rs | StrategySpec/CostSpec/RunSpec 与提交前校验（样本外>训练结束、网格≤100、费率区间、confirmed 强制、生效区间覆盖） |
 
-**未覆盖（批次 3b）**：UT-S13-02~05/07~13 与 ST-S13-01~03——真实 Nautilus 引擎编排、
-隔日执行适配层、费用/拒单/公司行为、运行任务生命周期与网格子任务。
-已验证 `cargo check -p nautilus-backtest --offline` 可行（33s），引擎集成无依赖阻塞。
+**已验证 `cargo check -p nautilus-backtest --offline` 可行（33s），引擎集成无依赖阻塞。**
+
+## 批次 3b：S13 引擎运行编排（2026-10-01）
+
+**覆盖用例**：UT-S13-02、UT-S13-03、UT-S13-04、UT-S13-05、UT-S13-09、UT-S13-13、ST-S13-01
+（7/7 pass；全量回归 25/25，JSONL 0 失败）
+
+**交付物**（新 crate `crates/research-worker`）：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 费用模型 | src/fees.rs | astock_fee 纯函数（佣金 max(费率×额, 最低) 双向、印花税仅卖出）+ AStockFeeModel 接入引擎（FeeModelHandle 构造后替换） |
+| 规则门 | src/gate.rs | 停牌/缺价/涨跌停/T+1/最小量/步长 拒单枚举含理由；size_buy 含费缩量、现金永不负 |
+| 运行编排 | src/runner.rs | run_ema_daily：BacktestEngine 装配（Cash/CNY/L1_MBP），日线 bar（07:00 UTC）+ 开盘集合竞价 trade tick（06:00 UTC）双数据流；规范化 RunOutcome（无 UUID/墙钟） |
+
+**隔日执行机制（实测校正）**：引擎市价单在提交瞬间按当前市价同步撮合，
+`on_bar(T 收盘)` 直接下单会以 T 收盘成交（不符合隔日语义）。改为：收盘 bar 只记录信号，
+次日开盘价合成集合竞价 trade tick 到达时（先于当日 bar）提交市价单 → 以 T+1 开盘价成交。
+ST-S13-01 数值断言：信号日 1/3 收 11 不成交，1/4 开盘 12 成交 100 股，现金 800、净值 2100、收益 0.05。
+
+**踩坑记录**：bar 价格字符串须带标的价格精度（"10.00" 非 "10"），否则撮合引擎以精度不符跳过全部 bar
+（报 No market 拒单）；Money Display 含币种后缀，佣金取 `Money::as_decimal()` 不经字符串解析。
+
+**未覆盖（批次 3c）**：UT-S13-07（5s 杀子进程）、UT-S13-08/11（公司行为）、UT-S13-10（日历调仓）、
+UT-S13-12（规则包估值）、ST-S13-02（取消/崩溃）、ST-S13-03（网格父子任务）——
+SubmitRun 协调器编排与子进程隔离，依赖本批 runner 作为计算内核。
 
 ## 待办批次（未实现，不代表可用）
 
-- 批次 3b：S13 运行编排（真实 Nautilus 引擎、隔日执行适配层、UT-S13-02~05/07~13、ST-S13-01~03）
+- 批次 3c：S13 运行生命周期（SubmitRun/取消/崩溃恢复、网格子任务、公司行为、日历调仓、规则包估值）
 - 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）
 - 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台

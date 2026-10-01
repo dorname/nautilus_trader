@@ -1,0 +1,23 @@
+[package]
+name = "nautilus-research-worker"
+version = "0.65.0"
+edition = "2024"
+description = "A股研究运行工作器：Nautilus 引擎编排、隔日执行适配、A股规则门与费用模型"
+license = "LGPL-3.0-only"
+publish = false
+
+[dependencies]
+nautilus-research-domain = { path = "../research-domain" }
+nautilus-backtest = { path = "../backtest" }
+nautilus-model = { path = "../model" }
+nautilus-trading = { path = "../trading" }
+nautilus-execution = { path = "../execution" }
+nautilus-common = { path = "../common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rust_decimal = { workspace = true }
+anyhow = { workspace = true }
+ustr = { workspace = true }
+
+[dev-dependencies]
+nautilus-research-testkit = { path = "../research-testkit" }

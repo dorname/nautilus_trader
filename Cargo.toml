@@ -41,6 +41,7 @@ members = [
   "crates/pyo3",
   "crates/research-domain",
   "crates/research-testkit",
+  "crates/research-worker",
   "crates/risk",
   "crates/serialization",
   "crates/system",

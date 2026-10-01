@@ -6794,6 +6794,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-research-worker"
+version = "0.65.0"
+dependencies = [
+ "anyhow",
+ "nautilus-backtest",
+ "nautilus-common",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-research-domain",
+ "nautilus-research-testkit",
+ "nautilus-trading",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "ustr",
+]
+
+[[package]]
 name = "nautilus-risk"
 version = "0.65.0"
 dependencies = [
