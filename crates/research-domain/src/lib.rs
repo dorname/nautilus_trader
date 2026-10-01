@@ -13,6 +13,7 @@
 pub mod auxiliary;
 pub mod coordinator;
 pub mod error;
+pub mod executor;
 pub mod hash;
 pub mod indicators;
 pub mod manifest;
@@ -25,8 +26,10 @@ pub mod store;
 pub mod task;
 pub mod time;
 pub mod universe;
+pub mod worker_api;
 
-pub use coordinator::{Coordinator, CoordinatorConfig, ImportHooks};
+pub use coordinator::{Coordinator, CoordinatorConfig, ImportHooks, RunConfigDoc};
+pub use executor::register_run_executor;
 pub use error::{ErrorCode, ResearchError};
 pub use protocol::*;
 pub use quotes::QuoteRow;

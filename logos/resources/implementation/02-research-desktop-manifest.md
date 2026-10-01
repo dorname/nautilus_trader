@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 3b 完成（S11+S12+S13信号内核+引擎编排）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
+> 状态：批次 3c 完成（S11+S12+S13信号内核+引擎编排+运行生命周期）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -99,9 +99,40 @@ ST-S13-01 数值断言：信号日 1/3 收 11 不成交，1/4 开盘 12 成交 1
 UT-S13-12（规则包估值）、ST-S13-02（取消/崩溃）、ST-S13-03（网格父子任务）——
 SubmitRun 协调器编排与子进程隔离，依赖本批 runner 作为计算内核。
 
+## 批次 3c：S13 运行生命周期（2026-10-01）
+
+**覆盖用例**：UT-S13-07、ST-S13-02、ST-S13-03（3/3 pass；全量回归 28/28，JSONL 0 失败）
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 运行编排 | research-domain/src/coordinator.rs | SubmitRun（存在性预检→幂等入队→网格父子拆分→专属守望线程）；RunExited 产物裁决；网格父任务聚合 |
+| 执行器挂载 | research-domain/src/executor.rs | 进程内执行器注册点（领域核心不反向依赖引擎 crate）；退出码契约 0/3/4 |
+| 引擎适配 | research-worker/src/adapter.rs | 读配置文档→装配快照行情→组合 EMA 运行→产物写对象存储→结果清单写 tmp/{task_id}/result.json |
+| 子进程入口 | research-worker/src/bin/run_task.rs | `research-run-task <workspace> <config_hash>`；环境清空（凭证红线） |
+| 存储扩展 | research-domain/src/store.rs | task.parent_id/retry_of 读写；research_run 表 API；request_id 子任务后缀避让 UNIQUE |
+| 协议扩展 | research-domain/src/protocol.rs | TaskView.children/parent_id；RunCompleted/GridResolved 事件 |
+
+**关键语义（对照规格）**：
+- 完成提交与取消竞争：以持久化事务为准，完成先行则 CancelTask 返回 ALREADY_TERMINAL 不删结果（UT-S13-07）；
+- 取消/崩溃：取消无已提交结果；重试同键返回原任务、新键新 task_id；重启扫描不改写旧终态（ST-S13-02）；
+- 网格：子任务各自存档（产物哈希互异），取消只影响未完成项，父任务聚合 succeeded 需子运行清单产物
+  （DDL 约束 succeeded 必须有 result_hash），不把整个网格标全部成功（ST-S13-03）；
+- 子进程隔离预留：`CoordinatorConfig.worker_bin` 配置后走真实进程（env_clear 不继承 TICKFLOW_API_KEY）；
+  未配置时走注册的进程内执行器（测试路径，同一裁决逻辑）。5 秒强杀与 UT-S13-07 后半在子进程接线时补验。
+
+**踩坑记录**：ObjectStore::put 并发同哈希共用固定 `.tmp` 名产生 rename 竞态（两个网格子运行
+结果恰好相同）——临时文件名加原子计数序号，rename 目标覆盖等价安全；SQLite 只读连接不能回填
+运行结果，工作器以 tmp 清单文件传递结果哈希，元数据库仍只由协调器写（架构红线）。
+
+**未覆盖（批次 3d）**：UT-S13-08/11（公司行为：拆股/分红事件流）、UT-S13-10（日历调仓：节假日周末）、
+UT-S13-12（规则包估值：缺历史生效区间严格失败）——需要公司行为与规则包数据通道；
+UT-S13-07 的 5 秒强杀计时在 worker_bin 子进程接线时补验。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 3c：S13 运行生命周期（SubmitRun/取消/崩溃恢复、网格子任务、公司行为、日历调仓、规则包估值）
+- 批次 3d：S13 公司行为/日历调仓/规则包估值（UT-S13-08/10/11/12 + UT-S13-07 子进程强杀）
 - 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）
 - 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台

@@ -6776,6 +6776,7 @@ dependencies = [
  "arrow 59.3.0",
  "crossbeam",
  "nautilus-research-testkit",
+ "nautilus-research-worker",
  "parquet 59.3.0",
  "rusqlite",
  "rust_decimal",
@@ -6798,6 +6799,7 @@ name = "nautilus-research-worker"
 version = "0.65.0"
 dependencies = [
  "anyhow",
+ "crossbeam",
  "nautilus-backtest",
  "nautilus-common",
  "nautilus-execution",

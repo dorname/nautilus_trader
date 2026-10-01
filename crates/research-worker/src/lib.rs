@@ -6,6 +6,7 @@
 //!
 //! 引擎对象含 Rc/RefCell：全部在同一线程创建、使用、销毁，不跨线程搬移。
 
+pub mod adapter;
 pub mod fees;
 pub mod gate;
 pub mod runner;

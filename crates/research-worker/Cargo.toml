@@ -13,6 +13,7 @@ nautilus-model = { path = "../model" }
 nautilus-trading = { path = "../trading" }
 nautilus-execution = { path = "../execution" }
 nautilus-common = { path = "../common" }
+crossbeam = "0.8.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 rust_decimal = { workspace = true }
@@ -21,3 +22,7 @@ ustr = { workspace = true }
 
 [dev-dependencies]
 nautilus-research-testkit = { path = "../research-testkit" }
+
+[[bin]]
+name = "research-run-task"
+path = "src/bin/run_task.rs"

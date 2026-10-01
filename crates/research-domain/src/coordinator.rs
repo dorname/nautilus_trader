@@ -52,6 +52,8 @@ pub struct CoordinatorConfig {
     pub workspace: PathBuf,
     pub row_delay_ms: u64,
     pub crash_after_partition: bool,
+    /// 研究运行专属工作进程二进制（SubmitRun 必须；凭证不传入子进程环境）。
+    pub worker_bin: Option<PathBuf>,
 }
 
 impl CoordinatorConfig {
@@ -60,6 +62,7 @@ impl CoordinatorConfig {
             workspace,
             row_delay_ms: 0,
             crash_after_partition: false,
+            worker_bin: None,
         }
     }
 }
@@ -83,6 +86,12 @@ enum Command {
         idempotency_key: String,
         reply: Sender<Result<UniverseRef>>,
     },
+    SubmitRun {
+        spec: crate::protocol::RunSpec,
+        request_id: String,
+        idempotency_key: String,
+        reply: Sender<Result<TaskRef>>,
+    },
     Cancel {
         task_id: String,
         reply: Sender<Result<TaskView>>,
@@ -91,39 +100,41 @@ enum Command {
 }
 
 /// 计算线程 → 协调线程的完成通知（写库只能由协调线程执行）。
-enum Completion {
+pub enum Completion {
     Started { task_id: String },
     Progress { task_id: String, stage: String, done: u64, total: u64 },
     Succeeded { task_id: String, staged: Box<StagedImport> },
     /// 预览完成：产物已写入对象存储，由协调线程登记并落终态。
     PreviewSucceeded { task_id: String, artifact_hash: String, size: u64 },
+    /// 运行子进程退出：exit_code = Some(0) 正常（读产物裁决终态），None 为被信号终止。
+    RunExited { task_id: String, exit_code: Option<i32> },
     Failed { task_id: String, error: ResearchError },
     Cancelled { task_id: String },
     /// 模拟崩溃：分区完成、提交前进程死亡（UT-S11-03 注入点）。
     Crashed { task_id: String },
 }
 
-struct StagedPartition {
-    file_name: String,
-    sha256: String,
-    instrument_id: String,
-    rows: u64,
+pub struct StagedPartition {
+    pub file_name: String,
+    pub sha256: String,
+    pub instrument_id: String,
+    pub rows: u64,
 }
 
 /// 暂存的辅助数据内容对象（JSON 字节已写暂存目录并算好哈希）。
-struct StagedAux {
-    kind: AuxKind,
-    file_name: String,
-    sha256: String,
-    rows: u64,
+pub struct StagedAux {
+    pub kind: AuxKind,
+    pub file_name: String,
+    pub sha256: String,
+    pub rows: u64,
 }
 
-struct StagedImport {
-    staging_dir: PathBuf,
-    partitions: Vec<StagedPartition>,
-    auxiliary: Vec<StagedAux>,
-    spec: ImportSpec,
-    coverage: Coverage,
+pub struct StagedImport {
+    pub staging_dir: PathBuf,
+    pub partitions: Vec<StagedPartition>,
+    pub auxiliary: Vec<StagedAux>,
+    pub spec: ImportSpec,
+    pub coverage: Coverage,
 }
 
 /// 应用协调器句柄（GUI 侧持有，发送类型化消息、读取不可变视图）。
@@ -170,10 +181,11 @@ impl Coordinator {
         let thread_logs = Arc::clone(&logs);
         let thread_ws = config.workspace.clone();
         let thread_hooks = Arc::clone(&hooks);
+        let thread_worker_bin = config.worker_bin.clone();
         let handle = std::thread::Builder::new()
             .name("research-coordinator".to_string())
             .spawn(move || {
-                coordinator_loop(write, cmd_rx, done_rx, done_tx, cancels, thread_logs, thread_ws, thread_hooks);
+                coordinator_loop(write, cmd_rx, done_rx, done_tx, cancels, thread_logs, thread_ws, thread_hooks, thread_worker_bin);
             })
             .map_err(|e| ResearchError::invalid(format!("启动协调线程失败：{e}")))?;
 
@@ -353,6 +365,29 @@ impl Coordinator {
         })
     }
 
+    /// SubmitRun：预检（UT-S13-06）→ 入队（网格拆父子任务）→ 专属子进程执行。
+    /// 凭证策略：子进程环境只传工作区路径，绝不继承 TICKFLOW_API_KEY。
+    pub fn submit_run(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+        spec: crate::protocol::RunSpec,
+    ) -> Result<TaskRef> {
+        spec.validate()?;
+        let (reply_tx, reply_rx) = bounded(1);
+        self.cmd_tx
+            .send(Command::SubmitRun {
+                spec,
+                request_id: request_id.to_string(),
+                idempotency_key: idempotency_key.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| ResearchError::new(ErrorCode::WorkerExited, "协调线程已退出"))?;
+        reply_rx.recv_timeout(ACK_TIMEOUT).map_err(|_| {
+            ResearchError::busy("命令确认超时，请用 request_id 查询任务状态，不要盲目重建")
+        })?
+    }
+
     /// CancelTask：只作用于尚未完成的任务；终态返回 ALREADY_TERMINAL。
     pub fn cancel_task(&self, task_id: &str) -> Result<TaskView> {
         let (reply_tx, reply_rx) = bounded(1);
@@ -367,13 +402,28 @@ impl Coordinator {
         })?
     }
 
-    /// GetTask：返回任务持久化视图（状态、序号、进度、产物、错误）。
+    /// GetTask：返回任务持久化视图（状态、序号、进度、产物、错误、网格父子视图）。
     pub fn get_task(&self, task_id: &str) -> Result<TaskView> {
         let row = self
             .read
             .get_task(task_id)?
             .ok_or_else(|| ResearchError::not_found(format!("任务不存在：{task_id}")))?;
-        self.task_view(&row)
+        let mut view = self.task_view(&row)?;
+        view.parent_id = row.parent_id.clone();
+        if row.kind == "research_run_grid" {
+            view.children = self
+                .read
+                .list_children(&row.id)?
+                .iter()
+                .map(|c| crate::protocol::ChildTaskView {
+                    task_id: c.id.clone(),
+                    state: c.state,
+                    result_hash: c.result_hash.clone(),
+                    config_hash: Some(c.input_hash.clone()),
+                })
+                .collect();
+        }
+        Ok(view)
     }
 
     /// 轮询等待任务到达终态（测试与 GUI 均基于 GetTask，不做忙等待的内部实现）。
@@ -512,6 +562,8 @@ impl Coordinator {
             artifact_hash: row.result_hash.clone(),
             snapshot_id,
             error,
+            children: Vec::new(),
+            parent_id: row.parent_id.clone(),
         })
     }
 }
@@ -539,6 +591,7 @@ fn coordinator_loop(
     logs: Arc<Mutex<Vec<String>>>,
     workspace: PathBuf,
     hooks: Arc<ImportHooks>,
+    worker_bin: Option<PathBuf>,
 ) {
     loop {
         // 阻塞等待：空闲时线程挂起，零 CPU 空转
@@ -554,6 +607,10 @@ fn coordinator_loop(
                 }
                 Ok(Command::SaveUniverse { spec, request_id, idempotency_key, reply }) => {
                     let out = handle_save_universe(&store, &logs, &workspace, spec, request_id, idempotency_key);
+                    let _ = reply.send(out);
+                }
+                Ok(Command::SubmitRun { spec, request_id, idempotency_key, reply }) => {
+                    let out = handle_submit_run(&store, &done_tx, &cancels, &logs, &workspace, worker_bin.as_deref(), spec, request_id, idempotency_key);
                     let _ = reply.send(out);
                 }
                 Ok(Command::Cancel { task_id, reply }) => {
@@ -597,6 +654,8 @@ fn task_view_fn(store: &MetadataStore) -> impl Fn(&TaskRow) -> Result<TaskView> 
             artifact_hash: row.result_hash.clone(),
             snapshot_id,
             error,
+            children: Vec::new(),
+            parent_id: row.parent_id.clone(),
         })
     }
 }
@@ -645,10 +704,12 @@ fn handle_import(
         progress_json: None,
         result_hash: None,
         error_json: None,
+        parent_id: None,
+        retry_of: None,
     };
     let response_json = serde_json::to_string(&task_ref)
         .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?;
-    store.insert_task_with_receipt(&row, &response_json)?;
+    store.insert_task_with_receipt(&row, &response_json, "ImportData")?;
 
     let flag = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = cancels.lock() {
@@ -741,10 +802,12 @@ fn handle_preview(
         progress_json: None,
         result_hash: None,
         error_json: None,
+        parent_id: None,
+        retry_of: None,
     };
     let response_json = serde_json::to_string(&task_ref)
         .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?;
-    store.insert_task_with_receipt(&row, &response_json)?;
+    store.insert_task_with_receipt(&row, &response_json, "PreviewUniverse")?;
 
     let flag = Arc::new(AtomicBool::new(false));
     if let Ok(mut map) = cancels.lock() {
@@ -949,6 +1012,7 @@ fn handle_completion(
         | Completion::Progress { task_id, .. }
         | Completion::Succeeded { task_id, .. }
         | Completion::PreviewSucceeded { task_id, .. }
+        | Completion::RunExited { task_id, .. }
         | Completion::Failed { task_id, .. }
         | Completion::Cancelled { task_id }
         | Completion::Crashed { task_id } => task_id.clone(),
@@ -961,6 +1025,7 @@ fn handle_completion(
             | Completion::Failed { .. }
             | Completion::Cancelled { .. }
             | Completion::Crashed { .. }
+            | Completion::RunExited { .. }
     );
     match completion {
         Completion::Started { task_id } => {
@@ -1046,12 +1111,124 @@ fn handle_completion(
             );
             push_log(logs, format!("任务 {task_id} 中断：提交前异常退出"));
         }
+        Completion::RunExited { task_id, exit_code } => {
+            handle_run_exit(store, logs, workspace, &task_id, exit_code);
+        }
     }
     if terminal {
         if let Ok(mut map) = cancels.lock() {
             map.remove(&done_id);
         }
     }
+}
+
+/// 运行子进程正常退出（exit 0）：读产物对象裁决终态并回填 research_run；
+/// 网格父任务在全部子任务终态后聚合（首项结果保留，失败/取消不掩盖已完成项）。
+fn handle_run_exit(
+    store: &MetadataStore,
+    logs: &Arc<Mutex<Vec<String>>>,
+    workspace: &Path,
+    task_id: &str,
+    exit_code: Option<i32>,
+) {
+    debug_assert_eq!(exit_code, Some(0), "RunExited 仅承载正常退出");
+    // 工作器清单：tmp/{task_id}/result.json = 产物哈希（元数据库只由协调器写）
+    let manifest_file = workspace.join("tmp").join(task_id).join("result.json");
+    let result_hash = match fs::read_to_string(&manifest_file) {
+        Ok(h) if h.len() == 64 => h,
+        _ => {
+            push_log(logs, format!("运行任务 {task_id} 无有效结果清单，按失败处理"));
+            return;
+        }
+    };
+    let size = ObjectStore::new(workspace)
+        .map(|o| fs::metadata(o.path_of(&result_hash)).map(|m| m.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let artifacts = vec![(
+        result_hash.clone(),
+        ObjectStore::relative_path(&result_hash),
+        "research_run".to_string(),
+        size,
+    )];
+    match store.commit_task_result(task_id, &artifacts, &result_hash, event_type::RUN_COMPLETED) {
+        Ok(true) => {
+            let _ = store.complete_research_run_audit(task_id);
+            push_log(logs, format!("运行任务 {task_id} 结果已提交"));
+        }
+        Ok(false) => push_log(logs, format!("运行任务 {task_id} 提交被丢弃：取消已先行持久化")),
+        Err(e) => push_log(logs, format!("运行任务 {task_id} 提交失败：{e}")),
+    }
+    let _ = fs::remove_dir_all(workspace.join("tmp").join(task_id));
+    resolve_grid_parent(store, logs, task_id);
+}
+
+/// 网格父任务聚合：全部子任务终态后，父任务 succeeded（部分失败仍算父任务完成，
+/// 子任务各自状态可见——不得把整个网格标全部成功，也不得掩盖已完成项）。
+fn resolve_grid_parent(store: &MetadataStore, logs: &Arc<Mutex<Vec<String>>>, child_id: &str) {
+    let Some(row) = store.get_task(child_id).ok().flatten() else {
+        return;
+    };
+    let Some(parent_id) = row.parent_id else { return };
+    let children = store.list_children(&parent_id).unwrap_or_default();
+    if children.iter().any(|c| !c.state.is_terminal()) {
+        return;
+    }
+    // 父任务终态迁移：若有任一子任务 succeeded → 父 succeeded；全失败/取消 → failed
+    // 状态机要求经 Running 中转（Queued→Succeeded 非法），先推进再聚合
+    let _ = store.transition_task(
+        &parent_id,
+        &[TaskState::Queued],
+        TaskState::Running,
+        None,
+        None,
+        None,
+        event_type::TASK_STARTED,
+    );
+    let any_succeeded = children.iter().any(|c| c.state == TaskState::Succeeded);
+    let to = if any_succeeded { TaskState::Succeeded } else { TaskState::Failed };
+    // DDL 约束：succeeded 必须带 result_hash——父任务产物是子运行清单（哈希→状态）
+    let parent_hash = if to == TaskState::Succeeded {
+        let listing: std::collections::BTreeMap<&String, String> = children
+            .iter()
+            .map(|c| {
+                (
+                    &c.id,
+                    c.result_hash.clone().unwrap_or_else(|| c.state.as_str().to_string()),
+                )
+            })
+            .collect();
+        match ObjectStore::new(&store.workspace_root())
+            .and_then(|o| {
+                let h = o.put(crate::hash::canonical_json(&listing).as_bytes())?;
+                let size = fs::metadata(o.path_of(&h)).map(|m| m.len()).unwrap_or(0);
+                store.insert_artifact(&h, &ObjectStore::relative_path(&h), "research_run_grid", size)?;
+                Ok(h)
+            })
+        {
+            Ok(h) => Some(h),
+            Err(e) => {
+                push_log(logs, format!("网格父任务 {parent_id} 清单产物失败：{e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let moved = store.transition_task(
+        &parent_id,
+        &[TaskState::Running],
+        to,
+        None,
+        parent_hash.as_deref(),
+        None,
+        if any_succeeded { event_type::GRID_RESOLVED } else { event_type::TASK_FAILED },
+    );
+    if let Err(e) = moved {
+        push_log(logs, format!("网格父任务 {parent_id} 聚合迁移失败：{e}"));
+    } else {
+        push_log(logs, format!("网格父任务 {parent_id} 聚合完成：{to:?}"));
+    }
+    let _ = moved;
 }
 
 /// 提交快照：对象登记（复用已存在内容）→ manifest → 单事务落库。
@@ -1615,6 +1792,330 @@ impl From<&ResearchError> for ErrorBody {
             message: e.message.clone(),
             field: e.field.clone(),
             retryable: e.retryable,
+        }
+    }
+}
+
+// ---------------------------------------------------------------- S13 运行编排（批次 3c）
+
+/// 单个子运行的确定性配置文档（写入对象存储，工作进程读取后执行）。
+/// 内容不含 run_id 与墙钟 → 同配置同快照哈希一致（确定性，UT-S13-05）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RunConfigDoc {
+    pub kind: String,
+    pub workspace: String,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub spec: crate::protocol::RunSpec,
+    /// 网格覆盖项（如 fast=5）；单次运行为空。
+    #[serde(default)]
+    pub grid_override: std::collections::BTreeMap<String, String>,
+}
+
+/// 网格展开：按 BTreeMap 键序笛卡尔积（确定性顺序）。
+fn expand_grid(
+    grid: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<std::collections::BTreeMap<String, String>> {
+    let mut acc: Vec<std::collections::BTreeMap<String, String>> = vec![std::collections::BTreeMap::new()];
+    for (name, values) in grid {
+        let mut next = Vec::new();
+        for base in &acc {
+            for v in values {
+                let mut m = base.clone();
+                m.insert(name.clone(), v.clone());
+                next.push(m);
+            }
+        }
+        acc = next;
+    }
+    acc
+}
+
+/// SubmitRun：幂等 → 存在性预检（快照/股票池）→ 入队（网格拆父子）→ 起子进程守望。
+#[allow(clippy::too_many_arguments)]
+fn handle_submit_run(
+    store: &MetadataStore,
+    done_tx: &Sender<Completion>,
+    cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    logs: &Arc<Mutex<Vec<String>>>,
+    workspace: &Path,
+    worker_bin: Option<&Path>,
+    spec: crate::protocol::RunSpec,
+    request_id: String,
+    idempotency_key: String,
+) -> Result<TaskRef> {
+    let input_hash = hash_canonical(&spec);
+    if let Some((hash, response)) = store.find_receipt(&idempotency_key)? {
+        if hash != input_hash {
+            return Err(ResearchError::new(
+                ErrorCode::IdempotencyConflict,
+                "相同幂等键对应不同请求",
+            ));
+        }
+        let task_ref: TaskRef = serde_json::from_str(&response.unwrap_or_default())
+            .map_err(|e| ResearchError::invalid(format!("回执解析失败：{e}")))?;
+        return Ok(task_ref);
+    }
+
+    // 预检失败不启动任何引擎（规格：预检失败不启动引擎）
+    let snapshot = store
+        .get_snapshot(&spec.snapshot_id)?
+        .ok_or_else(|| ResearchError::not_found(format!("快照不存在：{}", spec.snapshot_id)))?;
+    let universe = store
+        .get_universe(&spec.universe_id)?
+        .ok_or_else(|| ResearchError::not_found(format!("股票池不存在：{}", spec.universe_id)))?;
+    if universe.snapshot_id != spec.snapshot_id {
+        return Err(ResearchError::invalid(format!(
+            "股票池 {} 来自快照 {}，与运行快照 {} 不一致",
+            spec.universe_id, universe.snapshot_id, spec.snapshot_id
+        ))
+        .with_field("universe_id"));
+    }
+    let _ = snapshot;
+
+    // 网格展开（无 grid → 单覆盖空表 = 单任务，不建父）
+    let overrides = expand_grid(spec.grid.as_ref().unwrap_or(&Default::default()));
+    let single = spec.grid.is_none();
+    let parent_id = if single { None } else { Some(Uuid::new_v4().to_string()) };
+
+    // 父任务（网格）
+    if let Some(pid) = &parent_id {
+        let parent_row = TaskRow {
+            id: pid.clone(),
+            request_id: format!("{request_id}:parent"),
+            idempotency_key: format!("{idempotency_key}:parent"),
+            input_hash: input_hash.clone(),
+            kind: "research_run_grid".to_string(),
+            state: TaskState::Queued,
+            input_json: crate::hash::canonical_json(&spec),
+            last_seq: 1,
+            progress_json: None,
+            result_hash: None,
+            error_json: None,
+            parent_id: None,
+            retry_of: None,
+        };
+        store.insert_task_with_receipt(
+            &parent_row,
+            &serde_json::to_string(&TaskRef {
+                task_id: pid.clone(),
+                request_id: request_id.clone(),
+                state: TaskState::Queued,
+            })
+            .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?,
+            "SubmitRun",
+        )?;
+    }
+
+    // 响应 TaskRef：单次=子任务本身；网格=父任务（children 经 GetTask 查询）
+    let task_id = parent_id.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
+    let task_ref = TaskRef {
+        task_id: task_id.clone(),
+        request_id: request_id.clone(),
+        state: TaskState::Queued,
+    };
+
+    // 子任务 + 运行配置文档 + research_run 行
+    let mut child_ids = Vec::new();
+    for grid_override in &overrides {
+        let child_id = if single { task_id.clone() } else { Uuid::new_v4().to_string() };
+        let doc = RunConfigDoc {
+            kind: "research_run_config".to_string(),
+            workspace: workspace.to_string_lossy().to_string(),
+            snapshot_id: spec.snapshot_id.clone(),
+            universe_id: spec.universe_id.clone(),
+            spec: spec.clone(),
+            grid_override: grid_override.clone(),
+        };
+        let doc_bytes = crate::hash::canonical_json(&doc).into_bytes();
+        let objects = ObjectStore::new(workspace)?;
+        let doc_hash = objects.put(&doc_bytes)?;
+        let config_hash = crate::hash::hash_canonical(&doc);
+        // 任务 input_hash = 配置哈希（任务层语义）；幂等键绑定的请求哈希在外层校验，
+        // single 任务的幂等键直接复用请求键，故 task.input_hash 在 single 时取请求哈希
+        let row = TaskRow {
+            id: child_id.clone(),
+            request_id: if single {
+                request_id.clone()
+            } else {
+                format!("{request_id}:child:{child_id}")
+            },
+            idempotency_key: if single {
+                idempotency_key.clone()
+            } else {
+                format!("{idempotency_key}:child:{config_hash}")
+            },
+            input_hash: if single { input_hash.clone() } else { config_hash.clone() },
+            kind: "research_run".to_string(),
+            state: TaskState::Queued,
+            input_json: String::from_utf8(doc_bytes.clone())
+                .map_err(|e| ResearchError::invalid(format!("配置文档编码失败：{e}")))?,
+            last_seq: 1,
+            progress_json: None,
+            result_hash: None,
+            error_json: None,
+            parent_id: parent_id.clone(),
+            retry_of: None,
+        };
+        store.insert_task_with_receipt(
+            &row,
+            &serde_json::to_string(&TaskRef {
+                task_id: child_id.clone(),
+                request_id: request_id.clone(),
+                state: TaskState::Queued,
+            })
+            .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?,
+            "SubmitRun",
+        )?;
+        store.insert_research_run(
+            &child_id,
+            &spec.snapshot_id,
+            &spec.universe_id,
+            &String::from_utf8(doc_bytes).map_err(|e| ResearchError::invalid(format!("配置文档编码失败：{e}")))?,
+            &config_hash,
+            env!("CARGO_PKG_VERSION"),
+        )?;
+        child_ids.push((child_id, doc_hash, config_hash));
+    }
+
+    // 幂等响应以"响应 TaskRef"为准写入回执（网格=父任务）
+    store.write_receipt_response(
+        &idempotency_key,
+        &serde_json::to_string(&task_ref)
+            .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?,
+    )?;
+
+    // 每个子任务起专属守望线程：spawn 子进程 → 轮询取消标记/退出 → 完成通知
+    let flag_for_children: Vec<Arc<AtomicBool>> = child_ids
+        .iter()
+        .map(|(cid, _, _)| {
+            let flag = Arc::new(AtomicBool::new(false));
+            if let Ok(mut map) = cancels.lock() {
+                map.insert(cid.clone(), Arc::clone(&flag));
+            }
+            flag
+        })
+        .collect();
+    for ((child_id, doc_hash, _), flag) in child_ids.iter().zip(flag_for_children) {
+        let thread_done = done_tx.clone();
+        let thread_logs = Arc::clone(logs);
+        let tid = child_id.clone();
+        let hash = doc_hash.clone();
+        let bin = worker_bin.map(Path::to_path_buf);
+        let ws = workspace.to_path_buf();
+        std::thread::Builder::new()
+            .name(format!("research-run-{child_id}"))
+            .spawn(move || {
+                run_run_process(tid, hash, bin, ws, flag, thread_done, thread_logs);
+            })
+            .map_err(|e| ResearchError::invalid(format!("启动运行守望线程失败：{e}")))?;
+    }
+    push_log(
+        logs,
+        format!("研究运行已入队：{}（{} 个子运行）", task_id, overrides.len()),
+    );
+    Ok(task_ref)
+}
+
+/// 运行守望线程：spawn 专属工作进程（凭证不入环境）→ 转发进度 → 退出后通知。
+/// 取消：标记置位后 kill 子进程（UT-S13-07 的 5 秒上限由 wait_timeout 兜底）。
+fn run_run_process(
+    task_id: String,
+    config_hash: String,
+    worker_bin: Option<PathBuf>,
+    workspace: PathBuf,
+    cancel: Arc<AtomicBool>,
+    done: Sender<Completion>,
+    logs: Arc<Mutex<Vec<String>>>,
+) {
+    let send = |c: Completion| {
+        let _ = done.send(c);
+    };
+    let _ = done.send(Completion::Started { task_id: task_id.clone() });
+
+    // 未配置 worker_bin：使用注册的进程内执行器（引擎与协调器同进程，测试路径；
+    // 生产应配置 worker_bin 以获得进程隔离）。执行器返回退出码语义与子进程一致。
+    let bin = match worker_bin {
+        Some(b) => b,
+        None => {
+            let exit = crate::executor::run_in_process(&workspace, &config_hash, &cancel, &task_id, &done);
+            match exit {
+                crate::executor::EXIT_OK => {
+                    push_log(&logs, format!("运行任务 {task_id} 执行完成"));
+                    send(Completion::RunExited { task_id, exit_code: Some(0) });
+                }
+                crate::executor::EXIT_CANCELLED => {
+                    push_log(&logs, format!("运行任务 {task_id} 已取消"));
+                    send(Completion::Cancelled { task_id });
+                }
+                crate::executor::EXIT_CRASHED => {
+                    push_log(&logs, format!("运行任务 {task_id} 崩溃（提交前）"));
+                    send(Completion::Crashed { task_id });
+                }
+                _ => {
+                    push_log(&logs, format!("运行任务 {task_id} 失败（exit={exit}）"));
+                    send(Completion::Failed {
+                        error: ResearchError::new(
+                            ErrorCode::WorkerExited,
+                            format!("工作进程退出码 {exit}"),
+                        ),
+                        task_id,
+                    });
+                }
+            }
+            return;
+        }
+    };
+
+    let mut cmd = std::process::Command::new(&bin);
+    // 凭证红线：不继承父进程环境，只传工作区与配置哈希
+    cmd.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .args(["run-task", &workspace.to_string_lossy(), &config_hash]);
+    let child = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            send(Completion::Failed {
+                error: ResearchError::new(
+                    ErrorCode::WorkerExited,
+                    format!("启动工作进程失败：{e}"),
+                ),
+                task_id,
+            });
+            return;
+        }
+    };
+    // 50ms 轮询取消标记与退出：进程等待无法 select，50ms 粒度足够交易日边界
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            push_log(&logs, format!("运行任务 {task_id} 工作进程已终止（取消）"));
+            send(Completion::Cancelled { task_id });
+            return;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code();
+                push_log(&logs, format!("运行任务 {task_id} 工作进程退出：{status}"));
+                send(Completion::RunExited { task_id, exit_code: code });
+                return;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                send(Completion::Failed {
+                    error: ResearchError::new(
+                        ErrorCode::WorkerExited,
+                        format!("工作进程等待失败：{e}"),
+                    ),
+                    task_id,
+                });
+                return;
+            }
         }
     }
 }

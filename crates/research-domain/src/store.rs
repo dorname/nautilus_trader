@@ -41,6 +41,10 @@ pub struct TaskRow {
     pub progress_json: Option<String>,
     pub result_hash: Option<String>,
     pub error_json: Option<String>,
+    /// 网格子任务指向父任务；普通任务为 None。
+    pub parent_id: Option<String>,
+    /// 重试任务指向被中断/失败的原任务；首创任务为 None。
+    pub retry_of: Option<String>,
 }
 
 /// universe 表行（不可变：创建后不更新业务内容）。
@@ -55,6 +59,20 @@ pub struct UniverseRow {
     pub rule_json: String,
     pub version_hash: String,
     pub members_hash: String,
+}
+
+/// research_run 表行。
+#[derive(Debug, Clone)]
+pub struct ResearchRunRow {
+    pub id: String,
+    pub task_id: String,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub config_json: String,
+    pub config_hash: String,
+    pub engine_version: String,
+    pub result_hash: Option<String>,
+    pub metrics_json: Option<String>,
 }
 
 pub struct MetadataStore {
@@ -174,19 +192,32 @@ impl MetadataStore {
             .map_err(|e| map_sqlite("查询命令回执", e))
     }
 
+    /// 更新既有回执的响应载荷（SubmitRun 网格：子任务入队后以父任务 TaskRef 覆盖）。
+    pub fn write_receipt_response(&self, key: &str, response_json: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE command_receipt SET response_json=?2 WHERE idempotency_key=?1",
+                params![key, response_json],
+            )
+            .map_err(|e| map_sqlite("更新命令回执", e))?;
+        Ok(())
+    }
+
     /// 同事务写入命令回执与 queued 任务（异步命令在入队事务保存 TaskRef）。
+    /// 注意：request_id 有 UNIQUE 约束，多任务共享请求时调用方须自行区分。
     pub fn insert_task_with_receipt(
         &self,
         task: &TaskRow,
         receipt_response_json: &str,
+        method: &str,
     ) -> Result<()> {
         let tx = self
             .conn
             .unchecked_transaction()
             .map_err(|e| map_sqlite("开启入队事务", e))?;
         tx.execute(
-            "INSERT INTO task(id, request_id, idempotency_key, input_hash, kind, state, input_json, last_seq, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)",
+            "INSERT INTO task(id, request_id, idempotency_key, input_hash, kind, state, input_json, last_seq, parent_id, retry_of, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
             params![
                 task.id,
                 task.request_id,
@@ -196,19 +227,54 @@ impl MetadataStore {
                 task.state.as_str(),
                 task.input_json,
                 task.last_seq,
+                task.parent_id,
+                task.retry_of,
                 now_rfc3339(),
             ],
         )
         .map_err(|e| map_sqlite("写入任务", e))?;
         tx.execute(
             "INSERT INTO command_receipt(idempotency_key, request_id, input_hash, method, state, response_json, created_at, updated_at)
-             VALUES (?1,?2,?3,'ImportData','committed',?4,?5,?5)",
-            params![task.idempotency_key, task.request_id, task.input_hash, receipt_response_json, now_rfc3339()],
+             VALUES (?1,?2,?3,?4,'committed',?5,?6,?6)",
+            params![task.idempotency_key, task.request_id, task.input_hash, method, receipt_response_json, now_rfc3339()],
         )
         .map_err(|e| map_sqlite("写入命令回执", e))?;
         self.append_audit_tx(&tx, &task.id, crate::protocol::event_type::TASK_QUEUED, task.last_seq)?;
         tx.commit().map_err(|e| map_sqlite("提交入队事务", e))?;
         Ok(())
+    }
+
+    /// 网格子任务（父任务查询视图用）。
+    pub fn list_children(&self, parent_id: &str) -> Result<Vec<TaskRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT * FROM task WHERE parent_id=?1 ORDER BY created_at, id")
+            .map_err(|e| map_sqlite("准备子任务查询", e))?;
+        let rows = stmt
+            .query_map(params![parent_id], |r| {
+                Ok(TaskRow {
+                    id: r.get("id")?,
+                    request_id: r.get("request_id")?,
+                    idempotency_key: r.get("idempotency_key")?,
+                    input_hash: r.get("input_hash")?,
+                    kind: r.get("kind")?,
+                    state: TaskState::parse(&r.get::<_, String>("state")?)
+                        .unwrap_or(TaskState::Interrupted),
+                    input_json: r.get("input_json")?,
+                    last_seq: r.get("last_seq")?,
+                    progress_json: r.get("progress_json")?,
+                    result_hash: r.get("result_hash")?,
+                    error_json: r.get("error_json")?,
+                    parent_id: r.get("parent_id")?,
+                    retry_of: r.get("retry_of")?,
+                })
+            })
+            .map_err(|e| map_sqlite("查询子任务", e))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| map_sqlite("读取子任务行", e))?);
+        }
+        Ok(out)
     }
 
     // ---------------------------------------------------------------- 任务读取
@@ -241,6 +307,8 @@ impl MetadataStore {
                     progress_json: r.get("progress_json")?,
                     result_hash: r.get("result_hash")?,
                     error_json: r.get("error_json")?,
+                    parent_id: r.get("parent_id")?,
+                    retry_of: r.get("retry_of")?,
                 })
             })
             .optional()
@@ -481,6 +549,94 @@ impl MetadataStore {
         self.append_audit_tx(&tx, task_id, audit_kind, seq)?;
         tx.commit().map_err(|e| map_sqlite("提交产物事务", e))?;
         Ok(true)
+    }
+
+    // ---------------------------------------------------------------- 研究运行
+
+    /// 入队研究运行（task 已在同事务外写入；本函数只登记 research_run 行）。
+    pub fn insert_research_run(
+        &self,
+        task_id: &str,
+        snapshot_id: &str,
+        universe_id: &str,
+        config_json: &str,
+        config_hash: &str,
+        engine_version: &str,
+    ) -> Result<String> {
+        let run_id = format!("run-{task_id}");
+        self.conn
+            .execute(
+                "INSERT INTO research_run(id, task_id, snapshot_id, universe_id, config_json, config_hash, engine_version, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![run_id, task_id, snapshot_id, universe_id, config_json, config_hash, engine_version, now_rfc3339()],
+            )
+            .map_err(|e| map_sqlite("写入研究运行", e))?;
+        Ok(run_id)
+    }
+
+    /// 运行完成：回填结果哈希与指标（终态守卫同 commit_task_result）。
+    pub fn complete_research_run(
+        &self,
+        task_id: &str,
+        result_hash: &str,
+        metrics_json: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE research_run SET result_hash=?1, metrics_json=?2 WHERE task_id=?3",
+                params![result_hash, metrics_json, task_id],
+            )
+            .map_err(|e| map_sqlite("回填研究运行结果", e))?;
+        Ok(())
+    }
+
+    /// 按任务读取研究运行（测试与工作进程用）。
+    pub fn get_research_run(&self, task_id: &str) -> Result<Option<ResearchRunRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, task_id, snapshot_id, universe_id, config_json, config_hash, engine_version, result_hash, metrics_json FROM research_run WHERE task_id=?1",
+                params![task_id],
+                |r| {
+                    Ok(ResearchRunRow {
+                        id: r.get(0)?,
+                        task_id: r.get(1)?,
+                        snapshot_id: r.get(2)?,
+                        universe_id: r.get(3)?,
+                        config_json: r.get(4)?,
+                        config_hash: r.get(5)?,
+                        engine_version: r.get(6)?,
+                        result_hash: r.get(7)?,
+                        metrics_json: r.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| map_sqlite("查询研究运行", e))
+    }
+
+    /// 工作器回填运行结果哈希（产物已写对象存储后调用；终态裁决在协调线程）。
+    pub fn record_run_result(&self, task_id: &str, result_hash: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE research_run SET result_hash=?1 WHERE task_id=?2",
+                params![result_hash, task_id],
+            )
+            .map_err(|e| map_sqlite("回填运行结果哈希", e))?;
+        Ok(())
+    }
+
+    /// 运行提交后的审计事件（RUN_COMPLETED，附任务序号）。
+    pub fn complete_research_run_audit(&self, task_id: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| map_sqlite("开启运行审计事务", e))?;
+        let seq: i64 = tx
+            .query_row("SELECT last_seq FROM task WHERE id=?1", params![task_id], |r| r.get(0))
+            .map_err(|e| map_sqlite("读取任务序号", e))?;
+        self.append_audit_tx(&tx, task_id, crate::protocol::event_type::RUN_COMPLETED, seq)?;
+        tx.commit().map_err(|e| map_sqlite("提交运行审计事务", e))?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------- 股票池

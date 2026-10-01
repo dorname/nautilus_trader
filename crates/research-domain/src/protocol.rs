@@ -152,6 +152,24 @@ pub struct TaskView {
     pub snapshot_id: Option<String>,
     #[serde(default)]
     pub error: Option<ErrorBody>,
+    /// 网格父任务的子任务视图；非父任务为空数组。
+    #[serde(default)]
+    pub children: Vec<ChildTaskView>,
+    /// 子任务指向的父任务 ID。
+    #[serde(default)]
+    pub parent_id: Option<String>,
+}
+
+/// 网格子任务摘要（父任务查询视图）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildTaskView {
+    pub task_id: String,
+    pub state: TaskState,
+    #[serde(default)]
+    pub result_hash: Option<String>,
+    /// 子配置的确定性哈希（网格内唯一）。
+    #[serde(default)]
+    pub config_hash: Option<String>,
 }
 
 /// 快照引用（ListSnapshots 项）。
@@ -190,6 +208,8 @@ pub mod event_type {
     pub const PREVIEW_READY: &str = "UniversePreviewReady";
     pub const TASK_FAILED: &str = "TaskFailed";
     pub const TASK_CANCELLED: &str = "TaskCancelled";
+    pub const RUN_COMPLETED: &str = "RunCompleted";
+    pub const GRID_RESOLVED: &str = "GridResolved";
 }
 
 /// 行情行分页结果（快照内容只读查询）。

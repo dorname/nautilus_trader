@@ -28,3 +28,4 @@ crossbeam = "0.8.4"
 
 [dev-dependencies]
 nautilus-research-testkit = { path = "../research-testkit" }
+nautilus-research-worker = { path = "../research-worker" }

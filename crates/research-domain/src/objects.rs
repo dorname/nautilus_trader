@@ -42,7 +42,9 @@ impl ObjectStore {
     }
 
     /// 写入字节内容，返回内容哈希；已存在则复用，不重写。
+    /// 并发安全：临时文件名带唯一计数，rename 到目标为原子覆盖（同内容等价）。
     pub fn put(&self, bytes: &[u8]) -> Result<String> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let hash = sha256_hex(bytes);
         let target = self.absolute(&hash);
         if target.exists() {
@@ -50,7 +52,8 @@ impl ObjectStore {
         }
         let dir = target.parent().unwrap_or(&self.root).to_path_buf();
         fs::create_dir_all(&dir).map_err(|e| ResearchError::invalid(format!("创建对象分片目录失败：{e}")))?;
-        let tmp = dir.join(format!(".{hash}.tmp"));
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let tmp = dir.join(format!(".{hash}.{seq}.tmp"));
         fs::write(&tmp, bytes).map_err(|e| map_io("写入对象临时文件", e))?;
         let f = fs::File::open(&tmp).map_err(|e| map_io("打开对象临时文件", e))?;
         f.sync_all().map_err(|e| map_io("同步对象文件", e))?;
