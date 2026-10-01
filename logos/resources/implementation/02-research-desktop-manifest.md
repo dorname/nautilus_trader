@@ -1,7 +1,7 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 2 完成（S11+S12）· 真相源：crates/research-domain、crates/research-testkit
-> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12-test-cases.md
+> 状态：批次 3a 完成（S11+S12+S13信号内核）· 真相源：crates/research-domain、crates/research-testkit
+> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
 
@@ -60,9 +60,25 @@
 - 导入按表头识别行情/主档/财务混合文件；声明 auxiliary_kind 时强制单类；
 - 修复批次 1 遗留：取消标记仅终态回收（Started/Progress 不再打断取消通路）、JSONL 单缓冲原子写入、Decimal128 scale 对齐。
 
+## 批次 3a：S13 信号内核与提交校验（2026-10-01）
+
+**覆盖用例**：UT-S13-01、UT-S13-06、UT-S13-14、UT-S13-15（4/4 pass；全量回归 18/18）
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 指标 | src/indicators.rs | 十进制 EMA（首值播种）与动量（skip 位移不用未来数据）；预热不足返回 None |
+| 选股 | src/signals.rs | select_top_k：正分占槽、平分按代码升序、不足 K 留现金不加权 |
+| 运行契约 | src/protocol.rs | StrategySpec/CostSpec/RunSpec 与提交前校验（样本外>训练结束、网格≤100、费率区间、confirmed 强制、生效区间覆盖） |
+
+**未覆盖（批次 3b）**：UT-S13-02~05/07~13 与 ST-S13-01~03——真实 Nautilus 引擎编排、
+隔日执行适配层、费用/拒单/公司行为、运行任务生命周期与网格子任务。
+已验证 `cargo check -p nautilus-backtest --offline` 可行（33s），引擎集成无依赖阻塞。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 3：S13 研究运行（SubmitRun、工作进程 JSONL、引擎隔日执行适配）
+- 批次 3b：S13 运行编排（真实 Nautilus 引擎、隔日执行适配层、UT-S13-02~05/07~13、ST-S13-01~03）
 - 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）
 - 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台

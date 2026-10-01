@@ -365,3 +365,221 @@ pub struct RowsPage {
     pub object_hash: String,
     pub total: u64,
 }
+
+// ---------------------------------------------------------------- S13 研究运行
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrategyTemplate {
+    Ema,
+    Momentum,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Rebalance {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+/// 策略规格（契约 StrategySpec；ema/momentum 模板参数互斥可选）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategySpec {
+    pub template: StrategyTemplate,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip: Option<u32>,
+    pub top_k: u32,
+    pub rebalance: Rebalance,
+    /// 首版仅支持 equal_slots（等槽位权重）。
+    pub weight: String,
+    /// 首版仅支持 point_in_time_adjusted。
+    pub signal_basis: String,
+}
+
+/// 成本假设（契约 CostSpec）：费率用十进制字符串；confirmed 必须 true
+/// （研究假设并非券商报价）；effective_schedule 覆盖整个实验区间。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CostSpec {
+    pub commission_rate: String,
+    pub min_commission_cny: String,
+    pub sell_tax_rate: String,
+    pub other_fee_rate: String,
+    pub slippage_bps: String,
+    pub participation_rate: String,
+    pub effective_schedule: Vec<EffectiveRange>,
+    pub confirmed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectiveRange {
+    pub start: String,
+    pub end: String,
+}
+
+/// SubmitRun 请求（S13）。`grid` 为参数枚举，笛卡尔积 ≤100，子运行各自存档。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSpec {
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub strategy: StrategySpec,
+    pub start: String,
+    pub end: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub training_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_start: Option<String>,
+    pub capital_cny: String,
+    pub costs: CostSpec,
+    pub rules_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmark_snapshot_id: Option<String>,
+    pub mode: UniverseMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    #[serde(default)]
+    pub seed: u64,
+}
+
+impl RunSpec {
+    /// 提交前校验（UT-S13-06）：任何失败都不入队、无子任务启动。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        parse_trade_date(&self.start).map_err(|e| e.with_field("start"))?;
+        parse_trade_date(&self.end).map_err(|e| e.with_field("end"))?;
+        if self.start > self.end {
+            return Err(ResearchError::invalid("开始日期不能晚于结束日期").with_field("start"));
+        }
+        // 样本外约束：test_start 必须晚于 training_end
+        match (&self.training_end, &self.test_start) {
+            (Some(t), Some(oos)) => {
+                parse_trade_date(t).map_err(|e| e.with_field("training_end"))?;
+                parse_trade_date(oos).map_err(|e| e.with_field("test_start"))?;
+                if oos <= t {
+                    return Err(ResearchError::invalid(format!(
+                        "样本外开始日 {oos} 必须晚于训练结束日 {t}"
+                    ))
+                    .with_field("test_start"));
+                }
+            }
+            (None, Some(_)) => {
+                return Err(ResearchError::invalid("设置样本外区间必须同时给出 training_end")
+                    .with_field("training_end"));
+            }
+            _ => {}
+        }
+        // 策略参数
+        let params = match self.strategy.template {
+            StrategyTemplate::Ema => crate::indicators::IndicatorParams::Ema {
+                fast: self.strategy.fast.unwrap_or(0),
+                slow: self.strategy.slow.unwrap_or(0),
+            },
+            StrategyTemplate::Momentum => crate::indicators::IndicatorParams::Momentum {
+                lookback: self.strategy.lookback.unwrap_or(0),
+                skip: self.strategy.skip.unwrap_or(0),
+            },
+        };
+        crate::indicators::validate_indicator_params(
+            serde_json::to_value(self.strategy.template)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default()
+                .as_str(),
+            &params,
+        )?;
+        if !(1..=500).contains(&self.strategy.top_k) {
+            return Err(ResearchError::invalid("top_k 须在 1..=500").with_field("strategy.top_k"));
+        }
+        if self.strategy.weight != "equal_slots" {
+            return Err(ResearchError::invalid("首版仅支持 equal_slots 权重").with_field("strategy.weight"));
+        }
+        if self.strategy.signal_basis != "point_in_time_adjusted" {
+            return Err(ResearchError::invalid("首版仅支持 point_in_time_adjusted 信号口径")
+                .with_field("strategy.signal_basis"));
+        }
+        // 资金与费率
+        let capital = rust_decimal::Decimal::from_str_exact(&self.capital_cny).map_err(|_| {
+            ResearchError::invalid("capital_cny 不是十进制数").with_field("capital_cny")
+        })?;
+        if capital.is_sign_negative() || capital.is_zero() {
+            return Err(ResearchError::invalid("capital_cny 必须为正").with_field("capital_cny"));
+        }
+        self.validate_costs()?;
+        // 规则包哈希
+        if self.rules_hash.len() != 64 {
+            return Err(ResearchError::invalid("rules_hash 必须是 SHA256 十六进制").with_field("rules_hash"));
+        }
+        // 网格：参数名白名单 + 笛卡尔积 ≤100
+        if let Some(grid) = &self.grid {
+            let mut combos: u64 = 1;
+            for (name, values) in grid {
+                if !["fast", "slow", "lookback", "skip", "top_k"].contains(&name.as_str()) {
+                    return Err(ResearchError::invalid(format!("网格参数不支持：{name}"))
+                        .with_field("grid"));
+                }
+                if values.is_empty() {
+                    return Err(ResearchError::invalid(format!("网格参数 {name} 枚举为空")).with_field("grid"));
+                }
+                for v in values {
+                    if v.parse::<u32>().is_err() {
+                        return Err(ResearchError::invalid(format!("网格参数 {name} 的值不是非负整数：{v}"))
+                            .with_field("grid"));
+                    }
+                }
+                combos = combos.saturating_mul(values.len() as u64);
+            }
+            if combos > 100 {
+                return Err(ResearchError::invalid(format!("网格组合数 {combos} 超过上限 100"))
+                    .with_field("grid"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_costs(&self) -> crate::error::Result<()> {
+        let rate = |s: &str, name: &str, max: &str| -> crate::error::Result<()> {
+            let v = rust_decimal::Decimal::from_str_exact(s).map_err(|_| {
+                ResearchError::invalid(format!("{name} 不是十进制数：{s}")).with_field(name)
+            })?;
+            let hi = rust_decimal::Decimal::from_str_exact(max).unwrap();
+            if v.is_sign_negative() || v > hi {
+                return Err(ResearchError::invalid(format!("{name} 须在 0..{max}")).with_field(name));
+            }
+            Ok(())
+        };
+        rate(&self.costs.commission_rate, "costs.commission_rate", "1")?;
+        rate(&self.costs.min_commission_cny, "costs.min_commission_cny", "1000000000")?;
+        rate(&self.costs.sell_tax_rate, "costs.sell_tax_rate", "1")?;
+        rate(&self.costs.other_fee_rate, "costs.other_fee_rate", "1")?;
+        rate(&self.costs.slippage_bps, "costs.slippage_bps", "1000")?;
+        rate(&self.costs.participation_rate, "costs.participation_rate", "1")?;
+        if !self.costs.confirmed {
+            return Err(ResearchError::invalid(
+                "成本假设必须显式确认（confirmed=true）；研究假设并非券商报价",
+            )
+            .with_field("costs.confirmed"));
+        }
+        // 生效区间覆盖整个实验（税费不允许静默缺省）
+        if self.costs.effective_schedule.is_empty() {
+            return Err(ResearchError::invalid("成本生效区间不能为空").with_field("costs.effective_schedule"));
+        }
+        let first = &self.costs.effective_schedule[0];
+        let last = &self.costs.effective_schedule[self.costs.effective_schedule.len() - 1];
+        parse_trade_date(&first.start).map_err(|e| e.with_field("costs.effective_schedule"))?;
+        parse_trade_date(&last.end).map_err(|e| e.with_field("costs.effective_schedule"))?;
+        if first.start > self.start || last.end < self.end {
+            return Err(ResearchError::invalid(format!(
+                "成本生效区间须覆盖实验 {}~{}",
+                self.start, self.end
+            ))
+            .with_field("costs.effective_schedule"));
+        }
+        Ok(())
+    }
+}
