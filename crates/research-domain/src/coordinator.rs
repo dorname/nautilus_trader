@@ -32,11 +32,12 @@ use crate::{
     manifest::{capabilities, limitations, AuxRef, Coverage, PartitionRef, SnapshotManifest, MANIFEST_SCHEMA_VERSION},
     objects::ObjectStore,
     parquet_io,
+    plan::{ExportReceipt, ExportSpec, ManualNote, NoteRef, TradePlanDoc},
     protocol::{
         event_type, normalize_limit, BenchmarkMetrics, CompareSpec, CompareView, Comparison,
-        DateRange, Difference, ErrorBody, ImportSpec, Progress, QuotePage, RowsPage, RowsRow,
-        RowsTable, RunMetrics, SaveUniverseSpec, SnapshotPage, TaskRef, TaskView, UniversePreview,
-        UniverseRef, UniverseSpec,
+        DateRange, Difference, ErrorBody, ImportSpec, PlanSpec, Progress, QuotePage, RowsPage,
+        RowsRow, RowsTable, RunMetrics, SaveUniverseSpec, SnapshotPage, TaskRef, TaskView,
+        UniversePreview, UniverseRef, UniverseSpec,
     },
     quotes::{apply_scope, parse_staging_csv, partition_name, reject_duplicate_keys, QuoteRow, STAGING_CSV_HEADER},
     store::{MetadataStore, TaskRow},
@@ -97,6 +98,12 @@ enum Command {
         idempotency_key: String,
         reply: Sender<Result<TaskRef>>,
     },
+    GeneratePlan {
+        spec: PlanSpec,
+        request_id: String,
+        idempotency_key: String,
+        reply: Sender<Result<TaskRef>>,
+    },
     Cancel {
         task_id: String,
         reply: Sender<Result<TaskView>>,
@@ -111,6 +118,8 @@ pub enum Completion {
     Succeeded { task_id: String, staged: Box<StagedImport> },
     /// 预览完成：产物已写入对象存储，由协调线程登记并落终态。
     PreviewSucceeded { task_id: String, artifact_hash: String, size: u64 },
+    /// 计划完成（S15）：同预览，产物为 trade_plan 文档。
+    PlanSucceeded { task_id: String, artifact_hash: String, size: u64 },
     /// 运行子进程退出：exit_code = Some(0) 正常（读产物裁决终态），None 为被信号终止。
     RunExited { task_id: String, exit_code: Option<i32> },
     Failed { task_id: String, error: ResearchError },
@@ -307,6 +316,107 @@ impl Coordinator {
         self.read.get_universe(universe_id)
     }
 
+    /// GeneratePlan（S15）：校验持仓与日期 → 异步入队 trade_plan 任务。
+    pub fn generate_plan(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+        spec: PlanSpec,
+    ) -> Result<TaskRef> {
+        if let Some(h) = &spec.holdings {
+            h.validate()?;
+        }
+        let (reply_tx, reply_rx) = bounded(1);
+        self.cmd_tx
+            .send(Command::GeneratePlan {
+                spec,
+                request_id: request_id.to_string(),
+                idempotency_key: idempotency_key.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| ResearchError::new(ErrorCode::WorkerExited, "协调线程已退出"))?;
+        reply_rx.recv_timeout(ACK_TIMEOUT).map_err(|_| {
+            ResearchError::busy("命令确认超时，请用 request_id 查询，不要盲目重建")
+        })?
+    }
+
+    /// 读取计划文档（计划任务成功后的不可变产物）。
+    pub fn get_trade_plan(&self, plan_id: &str) -> Result<TradePlanDoc> {
+        let task = self.read.get_task(plan_id)?.ok_or_else(|| {
+            ResearchError::not_found(format!("计划不存在：{plan_id}"))
+        })?;
+        if task.kind != "trade_plan" {
+            return Err(ResearchError::invalid("任务不是交易计划").with_field("plan_id"));
+        }
+        if task.state != TaskState::Succeeded {
+            return Err(ResearchError::new(ErrorCode::RunNotReady, "计划尚未生成完成"));
+        }
+        let hash = task
+            .result_hash
+            .clone()
+            .ok_or_else(|| ResearchError::new(ErrorCode::CorruptArtifact, "计划缺少产物哈希"))?;
+        let bytes = self.objects.get(&hash)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("计划产物解析失败：{e}")))
+    }
+
+    /// ExportPlan（S15）：CSV（UTF-8 BOM）临时文件写 + 原子替换，记录哈希。
+    /// 已存在且未确认覆盖 → PATH_CONFLICT（UT-S15-03）。
+    pub fn export_plan(&self, spec: &ExportSpec) -> Result<ExportReceipt> {
+        if spec.format != "csv_utf8_bom" {
+            return Err(ResearchError::invalid(format!("未知导出格式：{}", spec.format))
+                .with_field("format"));
+        }
+        let doc = self.get_trade_plan(&spec.plan_id)?;
+        let bytes = doc.csv_bytes();
+        let dest = std::path::PathBuf::from(&spec.destination);
+        if dest.exists() && !spec.overwrite_confirmed {
+            return Err(ResearchError::new(
+                ErrorCode::PathConflict,
+                format!("目标文件已存在：{}；覆盖需显式确认", spec.destination),
+            )
+            .with_field("destination"));
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ResearchError::invalid(format!("创建导出目录失败：{e}")))?;
+        }
+        // 临时文件写 → 原子替换（写入失败不损坏已有文件）
+        let tmp = dest.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| ResearchError::invalid(format!("写导出临时文件失败：{e}")))?;
+        std::fs::rename(&tmp, &dest)
+            .map_err(|e| ResearchError::invalid(format!("原子替换导出文件失败：{e}")))?;
+        let sha = crate::hash::sha256_hex(&bytes);
+        let receipt = ExportReceipt {
+            export_id: uuid::Uuid::new_v4().to_string(),
+            path: spec.destination.clone(),
+            sha256: sha,
+            rows: doc.rows.len() as u64,
+        };
+        self.push_log(format!("计划 {} 已导出到 {}（sha256 {}）", spec.plan_id, spec.destination, receipt.sha256));
+        Ok(receipt)
+    }
+
+    /// SaveManualNote（S15）：备注为独立内容对象（追加式），不更改模拟成交。
+    pub fn save_manual_note(&self, note: &ManualNote) -> Result<NoteRef> {
+        note.validate()?;
+        let canonical = crate::hash::canonical_json(note);
+        let note_id = crate::hash::sha256_hex(canonical.as_bytes());
+        self.objects.put(&canonical.into_bytes())?;
+        self.push_log(format!("计划 {} 追加人工备注（{}）", note.plan_id, note.kind));
+        Ok(NoteRef { note_id, plan_id: note.plan_id.clone() })
+    }
+
+    /// 追加应用日志（GUI 可读取）。
+    fn push_log(&self, line: String) {
+        (|| {
+            let mut logs = self.logs.lock().ok()?;
+            logs.push(line);
+            Some(())
+        })();
+    }
+
     /// QueryRows：按对象分页读取类型化行。
     /// 预览桶（members/excluded/unknown）读预览任务或已存股票池；
     /// 运行桶（equity/holdings/fills，S14）读已完成运行的结果产物。
@@ -335,6 +445,10 @@ impl Coordinator {
                     RowsTable::Equity => doc.equity_curve.into_iter().map(RowsRow::Equity).collect(),
                     RowsTable::Holdings => doc.holdings.into_iter().map(RowsRow::Holding).collect(),
                     RowsTable::Fills => doc.fills.into_iter().map(RowsRow::Fill).collect(),
+                    RowsTable::Plan => {
+                        let doc = self.get_trade_plan(object_id)?;
+                        doc.rows.into_iter().map(RowsRow::Plan).collect()
+                    }
                     _ => return Err(ResearchError::invalid("不支持的查询表").with_field("table")),
                 };
                 (object_hash, rows)
@@ -897,6 +1011,10 @@ fn coordinator_loop(
                     let out = handle_save_universe(&store, &logs, &workspace, spec, request_id, idempotency_key);
                     let _ = reply.send(out);
                 }
+                Ok(Command::GeneratePlan { spec, request_id, idempotency_key, reply }) => {
+                    let out = handle_generate_plan(&store, &done_tx, &cancels, &logs, &workspace, spec, request_id, idempotency_key);
+                    let _ = reply.send(out);
+                }
                 Ok(Command::SubmitRun { spec, request_id, idempotency_key, reply }) => {
                     let out = handle_submit_run(&store, &done_tx, &cancels, &logs, &workspace, worker_bin.as_deref(), spec, request_id, idempotency_key);
                     let _ = reply.send(out);
@@ -1113,6 +1231,253 @@ fn handle_preview(
     Ok(task_ref)
 }
 
+/// GeneratePlan：校验 → 幂等入队（kind=trade_plan）→ 专属计算线程。
+fn handle_generate_plan(
+    store: &MetadataStore,
+    done_tx: &Sender<Completion>,
+    cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    logs: &Arc<Mutex<Vec<String>>>,
+    workspace: &Path,
+    spec: PlanSpec,
+    request_id: String,
+    idempotency_key: String,
+) -> Result<TaskRef> {
+    let input_hash = hash_canonical(&spec);
+    if let Some((hash, response)) = store.find_receipt(&idempotency_key)? {
+        if hash != input_hash {
+            return Err(ResearchError::new(
+                ErrorCode::IdempotencyConflict,
+                "相同幂等键对应不同请求",
+            ));
+        }
+        let task_ref: TaskRef = serde_json::from_str(&response.unwrap_or_default())
+            .map_err(|e| ResearchError::invalid(format!("回执解析失败：{e}")))?;
+        return Ok(task_ref);
+    }
+    // 快照存在性预检（同步返回前裁决）
+    if store.get_snapshot(&spec.snapshot_id)?.is_none() {
+        return Err(ResearchError::not_found(format!("快照不存在：{}", spec.snapshot_id)));
+    }
+    if store.get_universe(&spec.universe_id)?.is_none() {
+        return Err(ResearchError::not_found(format!("股票池不存在：{}", spec.universe_id)));
+    }
+
+    let task_id = Uuid::new_v4().to_string();
+    let task_ref = TaskRef {
+        task_id: task_id.clone(),
+        request_id: request_id.clone(),
+        state: TaskState::Queued,
+    };
+    let row = TaskRow {
+        id: task_id.clone(),
+        request_id,
+        idempotency_key,
+        input_hash,
+        kind: "trade_plan".to_string(),
+        state: TaskState::Queued,
+        input_json: crate::hash::canonical_json(&spec),
+        last_seq: 1,
+        progress_json: None,
+        result_hash: None,
+        error_json: None,
+        parent_id: None,
+        retry_of: None,
+    };
+    let response_json = serde_json::to_string(&task_ref)
+        .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?;
+    store.insert_task_with_receipt(&row, &response_json, "GeneratePlan")?;
+
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut map) = cancels.lock() {
+        map.insert(task_id.clone(), Arc::clone(&flag));
+    }
+    let thread_done = done_tx.clone();
+    let thread_ws = workspace.to_path_buf();
+    let tid = task_id.clone();
+    std::thread::Builder::new()
+        .name(format!("research-plan-{task_id}"))
+        .spawn(move || run_plan_compute(tid, spec, flag, thread_done, thread_ws))
+        .map_err(|e| ResearchError::invalid(format!("启动计划计算线程失败：{e}")))?;
+    push_log(logs, format!("计划任务 {task_id} 已入队"));
+    Ok(task_ref)
+}
+
+/// 计划计算线程：日期陈旧预检 → 成员/参考价 → 等权目标 → trade_plan 产物。
+fn run_plan_compute(
+    task_id: String,
+    spec: PlanSpec,
+    cancel: Arc<AtomicBool>,
+    done_tx: Sender<Completion>,
+    workspace: PathBuf,
+) {
+    let send = |c: Completion| {
+        let _ = done_tx.send(c);
+    };
+    let fail = |e: ResearchError| send(Completion::Failed { task_id: task_id.clone(), error: e });
+    let _ = done_tx.send(Completion::Started { task_id: task_id.clone() });
+    if cancel.load(Ordering::SeqCst) {
+        send(Completion::Cancelled { task_id });
+        return;
+    }
+    let objects = match ObjectStore::new(&workspace) {
+        Ok(o) => o,
+        Err(e) => return fail(e),
+    };
+    let store = match MetadataStore::open_readonly(&workspace.join("research.db")) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    // 日期陈旧预检（UT-S15-04）：以快照覆盖末日为最近已结束交易日
+    let snapshot = match store.get_snapshot(&spec.snapshot_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => return fail(ResearchError::not_found(format!("快照不存在：{}", spec.snapshot_id))),
+        Err(e) => return fail(e),
+    };
+    let manifest: SnapshotManifest = match objects
+        .get(&snapshot.manifest_hash)
+        .and_then(|b| serde_json::from_slice(&b).map_err(|e| {
+            ResearchError::new(ErrorCode::CorruptArtifact, format!("快照清单解析失败：{e}"))
+        })) {
+        Ok(m) => m,
+        Err(e) => return fail(e),
+    };
+    let historical = match crate::plan::check_stale_as_of(
+        &spec.as_of,
+        &manifest.coverage.end,
+        spec.allow_historical,
+    ) {
+        Ok(h) => h,
+        Err(e) => return fail(e),
+    };
+    // 成员与参考价（as_of 当日收盘；缺失在严格模式失败、探索模式记限制）
+    let members = match universe_pass_members_readonly(&store, &objects, &spec.universe_id) {
+        Ok(m) => m,
+        Err(e) => return fail(e),
+    };
+    if members.is_empty() {
+        return fail(ResearchError::new(ErrorCode::EmptyUniverse, "股票池无 pass 成员，无法生成计划"));
+    }
+    let mut closes: std::collections::BTreeMap<String, Decimal> = Default::default();
+    for part in &manifest.partitions {
+        if cancel.load(Ordering::SeqCst) {
+            send(Completion::Cancelled { task_id });
+            return;
+        }
+        let path = objects.path_of(&part.sha256);
+        let rows = match crate::parquet_io::read_quotes_partition(&path) {
+            Ok(r) => r,
+            Err(e) => return fail(e),
+        };
+        for row in rows {
+            if row.trade_date == spec.as_of {
+                closes.entry(row.instrument_id).or_insert(row.close);
+            }
+        }
+    }
+    let holding = match &spec.holdings {
+        Some(h) => h.clone(),
+        None => crate::plan::HoldingInput {
+            as_of: spec.as_of.clone(),
+            cash_cny: "0".to_string(),
+            positions: Vec::new(),
+            total_assets_cny: "1".to_string(),
+        },
+    };
+    // 等权目标：槽位 = min(top_k, 成员数)
+    let slots = spec.strategy.top_k.max(1).min(members.len() as u32);
+    let weight = Decimal::ONE / Decimal::from(slots as u64);
+    let total_assets = Decimal::from_str_exact(&holding.total_assets_cny).unwrap_or(Decimal::ZERO);
+    let mut rows = Vec::new();
+    let mut limitations = vec![
+        "参考计划仅用于人工执行，不调用下单通道".to_string(),
+        format!("参考价为 {} 收盘价（未复权）", spec.as_of),
+    ];
+    if historical {
+        limitations.push("历史计划：计划日早于最近已结束交易日，仅供回溯核对".to_string());
+    }
+    for code in &members {
+        let (cur, sellable) = holding
+            .positions
+            .iter()
+            .find(|p| &p.instrument_id == code)
+            .map(|p| (p.quantity, p.sellable_quantity))
+            .unwrap_or((0, 0));
+        let Some(price) = closes.get(code) else {
+            if spec.mode == crate::protocol::UniverseMode::Strict {
+                return fail(ResearchError::new(
+                    ErrorCode::MissingCapability,
+                    format!("严格计划失败：标的 {code} 在 {} 无参考价", spec.as_of),
+                ));
+            }
+            limitations.push(format!("标的 {code} 在 {} 无参考价，未纳入计划", spec.as_of));
+            continue;
+        };
+        let target = match crate::plan::plan_target(total_assets, weight, *price, cur, 100) {
+            Ok(t) => t,
+            Err(e) => return fail(e),
+        };
+        rows.push(crate::plan::PlanRow {
+            instrument_id: code.clone(),
+            name: code.clone(),
+            target_weight: weight.normalize().to_string(),
+            current_quantity: cur,
+            sellable_quantity: sellable,
+            target_quantity: target.target_quantity,
+            delta_quantity: target.delta_quantity,
+            reference_price: price.normalize().to_string(),
+            reason: if target.delta_quantity > 0 {
+                "低于目标仓位，建议买入".to_string()
+            } else if target.delta_quantity < 0 {
+                "高于目标仓位，建议卖出".to_string()
+            } else {
+                "已达目标仓位".to_string()
+            },
+            limitations: Vec::new(),
+        });
+    }
+    let doc = TradePlanDoc {
+        kind: "trade_plan".to_string(),
+        snapshot_id: spec.snapshot_id.clone(),
+        universe_id: spec.universe_id.clone(),
+        as_of: spec.as_of.clone(),
+        historical,
+        strategy_version: spec.strategy.version.clone(),
+        mode: spec.mode.as_str().to_string(),
+        cash_cny: holding.cash_cny.clone(),
+        total_assets_cny: holding.total_assets_cny.clone(),
+        rows,
+        data_version: snapshot.manifest_hash.clone(),
+        limitations,
+    };
+    let bytes = crate::hash::canonical_json(&doc).into_bytes();
+    let size = bytes.len() as u64;
+    let artifact_hash = match objects.put(&bytes) {
+        Ok(h) => h,
+        Err(e) => return fail(e),
+    };
+    send(Completion::PlanSucceeded { task_id, artifact_hash, size });
+}
+
+/// 只读读取已存股票池的 pass 成员（计划计算线程用）。
+fn universe_pass_members_readonly(
+    store: &MetadataStore,
+    objects: &ObjectStore,
+    universe_id: &str,
+) -> Result<Vec<String>> {
+    let uni = store
+        .get_universe(universe_id)?
+        .ok_or_else(|| ResearchError::not_found(format!("股票池不存在：{universe_id}")))?;
+    let bytes = objects.get(&uni.members_hash)?;
+    let doc: PreviewDoc = serde_json::from_slice(&bytes)
+        .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("成员产物解析失败：{e}")))?;
+    Ok(doc
+        .rows
+        .into_iter()
+        .filter(|r| r.verdict == "pass")
+        .map(|r| r.instrument_id)
+        .collect())
+}
+
 /// 严格/探索预检：规则引用能力必须在快照能力内；价格规则受覆盖区间约束。
 fn precheck_universe(spec: &UniverseSpec, manifest: &SnapshotManifest) -> Result<()> {
     // 收集规则引用的能力
@@ -1300,6 +1665,7 @@ fn handle_completion(
         | Completion::Progress { task_id, .. }
         | Completion::Succeeded { task_id, .. }
         | Completion::PreviewSucceeded { task_id, .. }
+        | Completion::PlanSucceeded { task_id, .. }
         | Completion::RunExited { task_id, .. }
         | Completion::Failed { task_id, .. }
         | Completion::Cancelled { task_id }
@@ -1310,6 +1676,7 @@ fn handle_completion(
         completion,
         Completion::Succeeded { .. }
             | Completion::PreviewSucceeded { .. }
+            | Completion::PlanSucceeded { .. }
             | Completion::Failed { .. }
             | Completion::Cancelled { .. }
             | Completion::Crashed { .. }
@@ -1349,6 +1716,15 @@ fn handle_completion(
                 Ok(true) => push_log(logs, format!("预览任务 {task_id} 产物已提交")),
                 Ok(false) => push_log(logs, format!("预览任务 {task_id} 提交被丢弃：取消已先行持久化")),
                 Err(e) => push_log(logs, format!("预览任务 {task_id} 提交失败：{e}")),
+            }
+        }
+        Completion::PlanSucceeded { task_id, artifact_hash, size } => {
+            let rel = ObjectStore::relative_path(&artifact_hash);
+            let artifacts = vec![(artifact_hash.clone(), rel, "trade_plan".to_string(), size)];
+            match store.commit_task_result(&task_id, &artifacts, &artifact_hash, event_type::PLAN_READY) {
+                Ok(true) => push_log(logs, format!("计划任务 {task_id} 产物已提交")),
+                Ok(false) => push_log(logs, format!("计划任务 {task_id} 提交被丢弃：取消已先行持久化")),
+                Err(e) => push_log(logs, format!("计划任务 {task_id} 提交失败：{e}")),
             }
         }
         Completion::Failed { task_id, error } => {

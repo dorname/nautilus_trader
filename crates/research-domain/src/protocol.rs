@@ -210,6 +210,7 @@ pub mod event_type {
     pub const TASK_CANCELLED: &str = "TaskCancelled";
     pub const RUN_COMPLETED: &str = "RunCompleted";
     pub const GRID_RESOLVED: &str = "GridResolved";
+    pub const PLAN_READY: &str = "PlanReady";
 }
 
 /// 行情行分页结果（快照内容只读查询）。
@@ -367,6 +368,7 @@ pub enum RowsTable {
     Equity,
     Holdings,
     Fills,
+    Plan,
 }
 
 impl RowsTable {
@@ -376,7 +378,7 @@ impl RowsTable {
             Self::Members => Some("pass"),
             Self::Excluded => Some("exclude"),
             Self::Unknown => Some("unknown"),
-            Self::Equity | Self::Holdings | Self::Fills => None,
+            Self::Equity | Self::Holdings | Self::Fills | Self::Plan => None,
         }
     }
 }
@@ -389,6 +391,7 @@ pub enum RowsRow {
     Equity(crate::worker_api::EquityDoc),
     Holding(crate::worker_api::HoldingsDoc),
     Fill(crate::worker_api::FillDoc),
+    Plan(crate::plan::PlanRow),
 }
 
 /// QueryRows 响应：cursor 绑定对象哈希，跨版本偏移拒绝。
@@ -682,4 +685,25 @@ impl RunSpec {
         }
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------- S15 交易计划
+
+/// GeneratePlan 请求（S15）：复用策略与快照，产出下一交易日人工执行参考。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanSpec {
+    pub strategy: StrategySpec,
+    pub snapshot_id: String,
+    pub universe_id: String,
+    pub as_of: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holding_version_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdings: Option<crate::plan::HoldingInput>,
+    pub costs: CostSpec,
+    pub rules_hash: String,
+    /// 默认 false：as_of 早于最近已结束交易日时 STALE_DATA（UT-S15-04）。
+    #[serde(default)]
+    pub allow_historical: bool,
+    pub mode: UniverseMode,
 }

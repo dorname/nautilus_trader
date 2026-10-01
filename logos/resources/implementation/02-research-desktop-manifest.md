@@ -1,7 +1,7 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 4 完成（S11～S13 全量 + S14 比较）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
-> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12/S13-test-cases.md
+> 状态：批次 5 完成（S11～S15；全量回归 42 pass + 4 skip，0 失败）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
+> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
 
@@ -204,11 +204,42 @@ UT-S13-07 的 5 秒强杀计时在 worker_bin 子进程接线时补验。
 **已知限制**：年化收益为首版线性近似（总收益×252/样本数，几何年化随指标版本化替换）；
 RowsQuery 的 sort 参数未实现（与 S12 一致）；基准为首日收盘等权买入持有近似。
 
+## 批次 5：S15 交易计划（2026-10-01）
+
+**覆盖用例**：UT-S15-01、UT-S15-02、UT-S15-03、UT-S15-04、ST-S15-01（5/5 pass）；
+UT-S15-05/06、ST-S15-02/03 以 skip 诚实上报（需参考机与 GUI，批次 6；skip 不可计为通过）。
+全量回归 42 pass + 4 skip，JSONL 0 失败。
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 计划纯函数 | research-domain/src/plan.rs | plan_target（floor(总资产×权重/价/步长)×步长）、HoldingInput 校验（现金非负/0≤可卖≤持有/总资产为正，错误定位字段）、csv_escape（公式前缀 =+-@ 加撇号防注入）、check_stale_as_of（早于覆盖末日默认 STALE_DATA，显式确认转历史计划）、TradePlanDoc.csv_bytes（UTF-8 BOM；行级+全局限制、data_version、historical-plan 标识逐行落列） |
+| 计划命令 | research-domain/src/coordinator.rs | GeneratePlan（幂等回执+快照/池存在性预检→trade_plan 任务）；计算线程（陈旧预检→pass 成员→as_of 收盘参考价→等权目标→限制说明→产物入库→PLAN_READY 审计）；GetTradePlan（kind 校验+终态检查）；ExportPlan（仅 csv_utf8_bom；已存在未确认→PATH_CONFLICT；临时文件+原子改名；回执含 sha256/行数）；SaveManualNote（类型白名单 备注/已人工处理/放弃；内容寻址 note_id，同内容同 ID，追加不改 fills） |
+| 协议扩展 | research-domain/src/protocol.rs | PlanSpec（allow_historical 默认 false）、event PLAN_READY、QueryRows Plan 桶（RowsRow::Plan 类型化行） |
+
+**关键语义（对照用例）**：
+- UT-S15-01：10000×0.2/10=200 股、持 100 建议买 100、参考额 1000；纯函数无
+  订单/委托字段——全 crate 不存在 broker/order 通道类型（FR-R09 编译期保证）；
+- UT-S15-02：可卖 200 > 持有 100 拒绝并定位 positions[0].sellable_quantity；
+  现金为负定位 cash_cny（提交时同步校验，不入队）；
+- UT-S15-03：`=1+1` 导出为 `"'=1+1"`（引号包裹+撇号）；含中文与空格路径
+  正常落盘；已存在未确认 → PATH_CONFLICT，确认后覆盖；
+- UT-S15-04：as_of 早于快照覆盖末日默认任务失败 STALE_DATA（field=as_of）；
+  allow_historical=true 成功且 doc.historical=true、CSV 逐行含 historical-plan；
+- ST-S15-01：生成（参考价=as_of 收盘 33，目标 floor(20000/33/100)×100=600，
+  差额 +500）→ 导出（回执 sha256 与磁盘文件一致、行数=计划行数）→ 备注
+  （同内容同 note_id；未知类型拒绝）→ 回测 fills 前后完全一致。
+
+**已知限制**：备注仅内容寻址入库（无 plan→note 索引表，列备注待 GUI 批次）；
+目标股数固定 100 股步长（A股整手，未读规则包 qty_step）；
+UT-S15-05/06 性能量测与 ST-S15-02/03 双平台 GUI 旅程留待批次 6。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）；
+- 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、
+  UT-S15-05/06 性能量测、ST-S15-02/03 双平台 GUI、smoke 双平台；
   UT-S13-07 的 5 秒强杀计时随 worker_bin 子进程接线补验
-- 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台
 
 > verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，
 > 含引擎基线（ST-01~08、UT-AST/BT/EXEC 等，接入采用时未接 reporter）与未实现批次。
