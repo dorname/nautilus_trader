@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 5 完成（S11～S15；全量回归 42 pass + 4 skip，0 失败）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
+> 状态：批次 6 完成（S11～S15 全量 + UT-S13-07 子进程补验；回归 42 pass + 4 skip，0 失败；剩余用例环境阻塞，见批次 6 清单）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -235,11 +235,41 @@ UT-S15-05/06、ST-S15-02/03 以 skip 诚实上报（需参考机与 GUI，批次
 目标股数固定 100 股步长（A股整手，未读规则包 qty_step）；
 UT-S15-05/06 性能量测与 ST-S15-02/03 双平台 GUI 旅程留待批次 6。
 
-## 待办批次（未实现，不代表可用）
+## 批次 6：UT-S13-07 子进程补验 + 环境阻塞清算（2026-10-01）
 
-- 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、
-  UT-S15-05/06 性能量测、ST-S15-02/03 双平台 GUI、smoke 双平台；
-  UT-S13-07 的 5 秒强杀计时随 worker_bin 子进程接线补验
+**覆盖用例**：UT-S13-07 后半（worker_bin 子进程）补验通过（同一用例 ID，1.2s 实测）；
+全量回归 42 pass + 4 skip，JSONL 0 失败。
+
+**补验内容（s13_run.rs 竞争 C，真实子进程路径）**：
+- 凭证红线端到端：测试进程注入探针 `TICKFLOW_API_KEY`，协调器以 env_clear 启动
+  worker_bin 子进程，子进程转储环境断言不含变量名与探针值；
+- 5 秒强杀上限：取消 → cancelled 终态实测 <5s（实现为标记置位后 50ms 轮询内
+  SIGKILL，严于规格上限）；无已提交结果（artifact_hash 为空）；
+- 专属进程死亡：kill -0 确认工作进程已被终止（协调器 kill 后 wait 收割）。
+
+**S17～S20 原型编排检查（原型验收线，非生产代码）**：
+- 统一离线 HTML 编排检查 13/13 pass（ST-S17-11~14、ST-S18-11~13、ST-S19-11~13、
+  ST-S20-11~13，见 logos/changes/astock-research-desktop/prototype-review/
+  unified-test-results.jsonl，source 标明非生产验收）；
+- 业务逻辑补充 3/3 pass（ST-S17-15、ST-S18-14、ST-S19-14，business-test-results.jsonl）。
+
+**环境阻塞清单（本机不可执行，诚实上报 skip 或待环境）**：
+| 用例 | 阻塞原因 | 状态 |
+|---|---|---|
+| UT-S15-05/06 | 需 Windows/Linux 参考机与生产 GUI（egui/eframe 不在 cargo 离线缓存，需网络或 vendor） | skip 上报 |
+| ST-S15-02/03 | 需生产 GUI 双平台旅程（同上） | skip 上报 |
+| smoke 双平台 | 需按 core-03-desktop-delivery.md 部署后执行（部署与 smoke 均为人类确认点） | 待部署 |
+
+**CPU 红线（验收主红线）落实汇总**：协调线程 crossbeam select! 阻塞无轮询空转；
+计算线程随任务生灭；取消 50ms 粒度响应；wait_terminal 固定 50ms 睡眠；
+子进程守望 50ms 轮询（本批实测取消终态 1.2s << 5s 上限）。
+
+## 待办批次（环境阻塞，非本机可解）
+
+- egui 生产 GUI（依赖需网络下载或 vendor 后构建）→ 解锁 UT-S15-05/06、ST-S15-02/03；
+- 双平台部署 + smoke（人类确认点）；UT-S15-05/06 性能量测需参考机环境记录。
+- verify 覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，含引擎基线用例（接入采用时
+  未接 reporter）——基线用例的覆盖率口径需另行决策。
 
 > verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，
 > 含引擎基线（ST-01~08、UT-AST/BT/EXEC 等，接入采用时未接 reporter）与未实现批次。

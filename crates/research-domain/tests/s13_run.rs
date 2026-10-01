@@ -366,5 +366,65 @@ fn ut_s13_07_complete_cancel_race_already_terminal() {
                 assert!(v.artifact_hash.is_none(), "取消无已提交结果");
             }
         }
+
+        // 竞争 C（worker_bin 子进程补验）：真实专属工作进程——
+        // ① 凭证红线：协调器注入探针凭证，子进程环境必须不含；
+        // ② 无响应进程：取消后 ≤5 秒强杀 → cancelled、无已提交结果、进程死亡。
+        let ws2 = temp_workspace("ut07-sub");
+        let worker = ws2.join("fake-worker.sh");
+        fs::write(
+            &worker,
+            "#!/bin/sh\n# UT-S13-07 补验：记录 PID 与环境后驻留，等待协调器强杀\necho $$ > \"$2/worker.pid\"\nenv > \"$2/env-dump.txt\"\nsleep 30\nexit 0\n",
+        )
+        .expect("写模拟工作进程");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&worker, fs::Permissions::from_mode(0o755)).expect("可执行位");
+        }
+        // SAFETY: 测试进程内单点写入；其余用例不读取该变量，测毕立即移除
+        unsafe { std::env::set_var("TICKFLOW_API_KEY", "sk-leak-probe-ut13-07") };
+        let mut cfg = CoordinatorConfig::new(ws2.clone());
+        cfg.worker_bin = Some(worker.clone());
+        let c2 = Coordinator::open(cfg).expect("打开子进程协调器");
+        let quotes2 = rising_bars("SYN-A", &ws2, "a.csv");
+        let snapshot_id2 = import_ok(&c2, "ut13-07b", vec![quotes2]);
+        let universe_id2 = save_universe_all(&c2, "ut13-07b", &snapshot_id2);
+        let sub = c2
+            .submit_run("req-ut07-sub", "ut07-sub", run_spec(&snapshot_id2, &universe_id2))
+            .expect("提交子进程运行");
+        // 等子进程启动并转储环境
+        let dump_path = ws2.join("env-dump.txt");
+        let mut env_dump = String::new();
+        for _ in 0..100 {
+            if let Ok(s) = fs::read_to_string(&dump_path) {
+                env_dump = s;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!env_dump.is_empty(), "子进程应已启动并转储环境");
+        assert!(
+            !env_dump.contains("TICKFLOW_API_KEY") && !env_dump.contains("sk-leak-probe-ut13-07"),
+            "凭证红线：子进程环境不得含 TICKFLOW_API_KEY"
+        );
+        // 取消：5 秒上限内强杀 → cancelled、无产物
+        let t0 = std::time::Instant::now();
+        c2.cancel_task(&sub.task_id).expect("取消入队");
+        let v = c2.wait_terminal(&sub.task_id, Duration::from_secs(10)).expect("取消终态");
+        let elapsed = t0.elapsed();
+        assert_eq!(v.state, TaskState::Cancelled, "子进程取消终态：{:?}", v.state);
+        assert!(v.artifact_hash.is_none(), "取消无已提交结果");
+        assert!(elapsed < Duration::from_secs(5), "强杀上限 5 秒，实测 {elapsed:?}");
+        // 专属进程已死亡
+        let pid = fs::read_to_string(ws2.join("worker.pid")).expect("读取子进程 PID");
+        let alive = std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.trim())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(true);
+        assert!(!alive, "专属工作进程应已被终止（PID {}）", pid.trim());
+        // SAFETY: 与上方 set_var 配对，恢复测试进程环境
+        unsafe { std::env::remove_var("TICKFLOW_API_KEY") };
     });
 }
