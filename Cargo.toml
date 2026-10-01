@@ -44,6 +44,7 @@ members = [
   "crates/research-worker",
   "crates/risk",
   "crates/serialization",
+  "crates/baseline-tests",
   "crates/system",
   "crates/testkit",
   "crates/trading",

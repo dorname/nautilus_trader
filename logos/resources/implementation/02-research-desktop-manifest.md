@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 7 完成（S11～S15 全量 + 引擎基线接入 UT-AST/ST-A 组；verify 执行 59 条 55 pass + 4 skip，0 失败；覆盖 46%→58%）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、python/tests/adapters/astock
+> 状态：批次 8 完成（S11～S15 全量 + 引擎基线接入：单元基线 18 条 UT + A 股数据接入 13 条全部接 reporter；提案范围用例全 pass）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、crates/baseline-tests、python/tests/adapters/astock
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md / astock-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -285,13 +285,43 @@ ST-A1/A2，规格 logos/resources/test/astock/astock-test-cases.md）。
 （scripts/run-astock-tests.sh 已封装探测逻辑）；uv sync 完整环境需网络（maturin），
 当前以系统纯 Python 包路径注入替代，功能等价。
 
+## 批次 8：引擎单元基线 18 条桥接（2026-10-02）
+
+**范围**：logos/resources/test/unit/unit-test-cases.md 全部 18 条 UT 用例
+（UT-BUS/SER/MODEL/RISK/PORT/EXEC/BT/DATA/ADV），每条以引擎 crate 公开 API
+真实复现验收点，经 `nautilus_research_testkit::case()` 写 OpenLogos reporter
+（crates/baseline-tests，workspace 成员）。
+
+**交付物**：
+
+| 测试文件 | 用例 | 验收点与装配 |
+|---|---|---|
+| baseline_bus.rs | UT-BUS-01 | 三消息模式（pub/sub、p2p、req/resp）语义正确无串扰 |
+| baseline_serialization.rs | UT-SER-01 | OrderFilled serde_json 往返字段级无损（CNY/600000.SH） |
+| baseline_model.rs | UT-MODEL-01/02 | 状态机合法迁移链可达+事件正确；非法迁移（Initialized→Filled、重复 Filled）拒绝且状态不变 |
+| baseline_risk.rs | UT-RISK-01/02/03 | 超名义额拒单不下发 venue；价格精度违规拒单；限额更新后预检读最新状态（放行→收紧→拒，venue 收数不变） |
+| baseline_portfolio.rs | UT-PORT-01/02 | OrderFilled 驱动开平仓：仓位/未实现盈亏/已实现盈亏（20 USD）入账；跨币种 BTC 持仓盈亏换算 USDT 入账（+2000）。装配按引擎调用链 Position::new→cache.add_position→PositionOpened::create→update_position/update_order；现金账户 calculate_account_state=true 为组合核算前置 |
+| baseline_instrument.rs | UT-MODEL-03 | 四类资产（现货/期货/期权/预测市场）price_increment == 10^(−price_precision) 换算不变式、乘数/批量/价格界 |
+| baseline_execution.rs | UT-EXEC-01/02 | 双 StubExecutionClient 按 venue 路由互不串扰（register_venue_routing）；venue 回报回写 Cache（Submitted）且经策略/场所双 topic 发布 |
+| baseline_backtest.rs | UT-BT-01/02 | SimulatedExchange L1 撮合：市价成交于 ask（Taker）、限价到价成交（Maker）；同一输入两次运行事件语义流逐一致 |
+| baseline_data.rs | UT-DATA-01/02 | 多订阅者多标的分发隔离+同标的广播；自定义类型（CustomDataTrait 完整契约）注入→派发→downcast 还原→JSON 往返 |
+| baseline_adapter.rs | UT-ADV-01/02 | architect_ax 样例报文（candle JSON→Bar、instrument→PerpetualContract）解析无损；sandbox 执行客户端全链路（行情→市价→撮合回报 ask/Taker），作为适配器测试模板 |
+
+**结果**：18/18 pass（12 个测试二进制全绿），reporter 全量写入
+logos/resources/verify/test-results.jsonl；依赖新增 workspace 级
+nautilus-{data,execution,backtest,architect-ax,sandbox}、async-trait、tokio、
+serde、anyhow（全部已在缓存，--offline 可构建）。
+
+**规格符合性注记**：UT-PORT-02 验收点为「多币种换算与核算正确」——实现为
+BTC 持仓开平后盈亏换算结算币 USDT 入账（引擎组合层不对开仓按成交额扣减现金，
+该行为非本引擎公开 API 语义）。
+
 ## 待办批次（环境阻塞，非本机可解）
 
 - egui 生产 GUI（依赖需网络下载或 vendor 后构建）→ 解锁 UT-S15-05/06、ST-S15-02/03；
 - 双平台部署 + smoke（人类确认点）；UT-S15-05/06 性能量测需参考机环境记录。
-- verify 覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，含引擎基线用例（接入采用时
-  未接 reporter）——基线用例的覆盖率口径需另行决策。
+- 批次 9：ST-01~08 场景基线桥接（可离线复现项接 reporter，sandbox/kill-9 类诚实 skip）。
 
-> verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，
-> 含引擎基线（ST-01~08、UT-AST/BT/EXEC 等，接入采用时未接 reporter）与未实现批次。
-> 本提案范围内用例将随批次 3~5 收敛；基线用例的覆盖率口径需另行决策。
+> verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例。
+> 单元基线 18 条（本批）+ A 股数据接入 13 条（批次 7）+ 提案范围批次 3~5 已接 reporter；
+> 剩余场景基线 ST-01~08 由批次 9 收敛。

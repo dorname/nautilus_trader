@@ -1,0 +1,35 @@
+[package]
+name = "nautilus-baseline-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "引擎基线用例桥接测试（OpenLogos verify 用例 ID 对照执行）"
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+nautilus-research-testkit = { path = "../research-testkit" }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+nautilus-backtest = { workspace = true }
+nautilus-common = { workspace = true }
+nautilus-core = { workspace = true }
+nautilus-data = { workspace = true }
+nautilus-execution = { workspace = true }
+nautilus-architect-ax = { workspace = true }
+nautilus-model = { workspace = true, features = ["test-support"] }
+nautilus-portfolio = { workspace = true }
+nautilus-risk = { workspace = true }
+nautilus-sandbox = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

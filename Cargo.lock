@@ -5514,6 +5514,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-baseline-tests"
+version = "0.65.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "nautilus-architect-ax",
+ "nautilus-backtest",
+ "nautilus-common",
+ "nautilus-core",
+ "nautilus-data",
+ "nautilus-execution",
+ "nautilus-model",
+ "nautilus-portfolio",
+ "nautilus-research-testkit",
+ "nautilus-risk",
+ "nautilus-sandbox",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nautilus-betfair"
 version = "0.65.0"
 dependencies = [
