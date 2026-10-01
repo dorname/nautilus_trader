@@ -1,7 +1,7 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 6 完成（S11～S15 全量 + UT-S13-07 子进程补验；回归 42 pass + 4 skip，0 失败；剩余用例环境阻塞，见批次 6 清单）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit
-> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md
+> 状态：批次 7 完成（S11～S15 全量 + 引擎基线接入 UT-AST/ST-A 组；verify 执行 59 条 55 pass + 4 skip，0 失败；覆盖 46%→58%）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、python/tests/adapters/astock
+> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md / astock-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
 
@@ -263,6 +263,27 @@ UT-S15-05/06 性能量测与 ST-S15-02/03 双平台 GUI 旅程留待批次 6。
 **CPU 红线（验收主红线）落实汇总**：协调线程 crossbeam select! 阻塞无轮询空转；
 计算线程随任务生灭；取消 50ms 粒度响应；wait_terminal 固定 50ms 睡眠；
 子进程守望 50ms 轮询（本批实测取消终态 1.2s << 5s 上限）。
+
+## 批次 7：UT-AST/ST-A 组接 OpenLogos reporter（2026-10-02）
+
+**背景**：用户决策为引擎基线用例补接 reporter（verify Gate 3.5/3.6 全仓口径下
+55 条 uncovered 中 39 条为基线）。本批先接 A 股数据接入组 13 条（UT-AST-01~11、
+ST-A1/A2，规格 logos/resources/test/astock/astock-test-cases.md）。
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| reporter hook | python/tests/adapters/astock/conftest.py | pytest_runtest_makereport 包装：测试名解析用例 ID（test_ut_ast_01→UT-AST-01；ST-A1 域字母直连数字；test_ut_ast_05_06_07 复合展开三条），setup/call/teardown 时长累计，pass/fail/skip + error（截断 500 字符）追加写入 logos/resources/verify/test-results.jsonl；只追加不清空（清理由 verify pre_run 负责），skip 不可计为通过 |
+| 用例补齐 | python/tests/adapters/astock/test_astock.py | UT-AST-09（增量 start_time=T+1 断言，mock 请求捕获）、UT-AST-10（探针 key 全链路泄漏检查：仅经请求头、URL/异常/日志均无明文）、ST-A1（examples/tongxindadata 真实样例 3 万+记录全量建库端到端）、ST-A2（tdx 全量+tickflow 增量并集断言，重叠日 TickFlow 胜出）；05/06 用例扩为 05/06/07（BarType 断言已在其中） |
+| verify 接入 | scripts/run-astock-tests.sh + logos.config.json | pre_run_command 链式追加第三段；脚本探测可加载 _libnautilus.so 的解释器（当前构建 cp312，系统 3.10 报 undefined symbol），pytest 复用系统 dist-packages（纯 Python 依赖），无网络安装 |
+
+**结果**：13/13 pass（pytest 21 项测试，含非 verify 对应物 test_st_filter.py 10 项
+不上报）；verify 执行 59 条（55 pass + 4 skip），覆盖 46%→58%。
+
+**环境注记**：_libnautilus.so 为 cp312 构建——astock 测试必须用 cp312 解释器运行
+（scripts/run-astock-tests.sh 已封装探测逻辑）；uv sync 完整环境需网络（maturin），
+当前以系统纯 Python 包路径注入替代，功能等价。
 
 ## 待办批次（环境阻塞，非本机可解）
 
