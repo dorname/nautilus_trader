@@ -8,8 +8,9 @@
 //! - ST-07 自定义数据融合（信号与行情按时间序交错处理）
 //! - ST-08 纯 Rust 节点旅程（Rust API 组装最小回测 + sandbox 链路）
 //!
-//! ST-04/05 需 live 节点运行时（LiveExecNode / kill -9 实盘恢复），环境阻塞
-//! 诚实 skip 上报（见 manifest 批次 9）。
+//! ST-04/05 需 live 节点运行时（LiveExecNode / kill -9 实盘恢复），规格标记
+//! [manual] 人工验收并复用于部署后冒烟，不在生产验收 JSONL 中上报（见
+//! manifest 批次 9）。
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -790,23 +791,9 @@ impl DataActor for SignalFusionProbe {
     }
 }
 
-/// ST-04/05：环境阻塞诚实 skip 上报（skip 不计为通过，verify 覆盖度门可见）。
-///
-/// - ST-04 需 live 节点运行时（LiveExecNode「回测转实盘零改动」双环境旅程）；
-///   sandbox 撮合模板已由 UT-ADV-02、ST-08 覆盖其离线可验证部分。
-/// - ST-05 需实盘进程 kill -9 崩溃恢复场景（live 进程管理与重启编排）。
-#[test]
-fn st_04_05_live_runtime_blocked() {
-    nautilus_research_testkit::report_result(
-        "ST-04",
-        "skip",
-        0,
-        Some("需 live 节点运行时（LiveExecNode 双环境零改动旅程），当前环境无 live runtime"),
-    );
-    nautilus_research_testkit::report_result(
-        "ST-05",
-        "skip",
-        0,
-        Some("需实盘运行中 kill -9 崩溃恢复场景（live 进程管理），当前环境不可执行"),
-    );
-}
+// ST-04/05：规格标记 [manual]（需 live 节点运行时 / kill -9 进程注入，开发
+// 环境不可自动化；复用于部署后冒烟）。生产验收口径排除，不上报 JSONL——
+// 否则 skip 结果会把关联验收条件（S02-AC-01/02）判为自动化未全过。
+//
+// - ST-04 的离线可验证部分（sandbox 撮合链路）已由 UT-ADV-02、ST-08 覆盖。
+// - ST-05 留待部署后按 3-deployment/02-smoke-test-spec.md 人工执行。

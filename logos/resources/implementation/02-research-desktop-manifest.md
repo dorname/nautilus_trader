@@ -1,6 +1,6 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 9 完成（S11～S15 全量 + 引擎基线全量接入：单元 18 条 + 场景 ST-01~08 + A 股 13 条接 reporter；可执行项全 pass，live 阻塞项诚实 skip）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、crates/baseline-tests、python/tests/adapters/astock
+> 状态：批次 9 完成（S11～S15 全量 + 引擎基线全量接入：单元 18 条 + 场景 ST-01~03/06~08 + A 股 13 条真实执行接 reporter；ST-04/05 与原型 16 条 [manual] 人工验收）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、crates/baseline-tests、python/tests/adapters/astock
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md / astock-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
@@ -319,22 +319,25 @@ BTC 持仓开平后盈亏换算结算币 USDT 入账（引擎组合层不对开�
 ## 批次 9：场景基线 ST-01~08 桥接（2026-10-02）
 
 **范围**：logos/resources/test/scenario/scenario-test-cases.md 全部 8 条 ST 用例。
-可离线复现的 6 条以引擎真实装配执行（crates/baseline-tests/tests/baseline_scenario.rs），
-live 运行时阻塞的 2 条诚实 skip 上报（skip 不计为通过）。
+可离线复现的 6 条以引擎真实装配执行（crates/baseline-tests/tests/baseline_scenario.rs）；
+live 运行时阻塞的 2 条（ST-04/05）规格标记 [manual] 人工验收（复用于部署后冒烟），
+不在生产验收 JSONL 中上报。
 
 | 用例 | 执行方式 | 验收结果 |
 |---|---|---|
 | ST-01 首次回测旅程 | EmaCross + BacktestEngine 完整历史区间（185 tick 金叉/死叉） | 运行完成、事件链 Submitted→Filled×3 完整、结果计数产出、重复运行事件链逐一致 ✓ |
 | ST-02 多场所组合回测 | 自写 DualVenueProbe 策略（nautilus_strategy! 宏）单策略订阅 BINANCE/SANDBOX 两场所并分别下单 | 两场所各成交一笔、组合汇总两场所持仓（total_positions=2）✓ |
 | ST-03 风控拦截端到端 | RiskEngine→（Denied）→ExecutionEngine::register_msgbus_handlers→策略 topic；venue 为 StubExecutionClient | Denied 到达策略订阅、venue 零命令 ✓ |
-| ST-04 回测转实盘零改动 | skip：需 live 节点运行时（LiveExecNode 双环境旅程）；离线可验证部分已由 UT-ADV-02/ST-08 覆盖 | skip 上报（不计通过） |
-| ST-05 崩溃恢复 kill -9 | skip：需实盘进程管理与重启编排 | skip 上报（不计通过） |
+| ST-04 回测转实盘零改动 | [manual]：需 live 节点运行时（LiveExecNode 双环境旅程）；离线可验证部分已由 UT-ADV-02/ST-08 覆盖 | 人工验收 + 部署后冒烟（不上报 JSONL） |
+| ST-05 崩溃恢复 kill -9 | [manual]：需实盘进程管理与重启编排 | 人工验收 + 部署后冒烟（不上报 JSONL） |
 | ST-06 历史数据回放 | 本地 30 根日线（600000.XSHG）Data::Bar 回放 | 数据完整回放（iterations=30）、重复运行一致 ✓ |
 | ST-07 自定义数据融合 | SignalFusionProbe 策略 subscribe_data + on_data；行情/信号交错注入 | 到达顺序 quote@1→signal@2→quote@3→signal@4 时间序交错 ✓ |
 | ST-08 纯 Rust 节点旅程 | Rust API 组装最小回测节点 + sandbox 执行客户端全链路 | 回测 iterations=12 完成 + sandbox 成交回报 ✓ |
 
-**结果**：baseline-tests 全量回归 26/26 上报（24 pass + 2 skip，0 失败）；
-verify 全仓口径下基线用例（单元 18 + 场景 8 + A 股 13）全部接 reporter。
+**结果**：baseline-tests 全量回归 24/24 上报（全 pass，0 失败 0 skip）；
+verify 全仓口径下基线用例（单元 18 + 场景 6 + A 股 13）真实执行接 reporter，
+ST-04/05 与原型检查 16 条（S17~S20）标记 [manual] 排除出口径（证据在
+prototype-review/*.jsonl 与部署后冒烟）。
 
 **装配要点（复现注记）**：BacktestEngine 构建会重置全局消息总线——事件捕获
 订阅必须在引擎构建之后、run 之前注册；事件摘要跨次比对须剔除 event_id/ts 等
@@ -344,7 +347,7 @@ verify 全仓口径下基线用例（单元 18 + 场景 8 + A 股 13）全部接
 
 - egui 生产 GUI（依赖需网络下载或 vendor 后构建）→ 解锁 UT-S15-05/06、ST-S15-02/03；
 - 双平台部署 + smoke（人类确认点）；UT-S15-05/06 性能量测需参考机环境记录；
-- live 节点运行时 → 解锁 ST-04/05（当前诚实 skip）。
+- live 节点运行时 → 解锁 ST-04/05（当前 [manual] 人工验收 + 部署后冒烟）。
 
 > verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例。
 > 单元基线 18 条（本批）+ A 股数据接入 13 条（批次 7）+ 提案范围批次 3~5 已接 reporter；

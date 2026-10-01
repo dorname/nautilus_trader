@@ -82,7 +82,7 @@
     "sandbox_mode": "auto",
     "sandbox_root": "/tmp",
     "sandbox_deny_workspace_write": true,
-    "pre_run_command": "rm -f logos/resources/verify/test-results.jsonl && cargo test -p nautilus-research-domain -p nautilus-research-worker --offline && sh scripts/run-astock-tests.sh",
+    "pre_run_command": "rm -f logos/resources/verify/test-results.jsonl && cargo test -p nautilus-research-domain -p nautilus-research-worker --offline && sh scripts/run-astock-tests.sh && cargo test -p nautilus-baseline-tests --offline",
     "report_path": "logos/resources/verify/smoke-report.md"
   }
 }

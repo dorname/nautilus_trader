@@ -2,19 +2,19 @@
 
 本节替代旧原型检查；检查对象是离线统一HTML，不是生产API或Nautilus引擎。
 
-| ID | 操作 | 断言 |
-|---|---|---|
-| ST-S17-11 | 统一入口与资源导航 | 旧入口锚点映射到同一应用，导航不丢失会话 |
-| ST-S17-12 | 需求确认与项目隔离 | 空正文/越界拒绝；新项目独立；切回保留版本和消息 |
-| ST-S17-13 | 对话、取消与失败重试 | 未知意图解释限制；取消不提交；模拟失败后可重试 |
-| ST-S17-14 | 布局与输入安全 | 1440/1100无水平溢出；用户HTML按文本显示；专注切换可用 |
+| ID | 操作 | 断言 | 验收方式 |
+|---|---|---|---|
+| ST-S17-11 | 统一入口与资源导航 | 旧入口锚点映射到同一应用，导航不丢失会话 | [manual] |
+| ST-S17-12 | 需求确认与项目隔离 | 空正文/越界拒绝；新项目独立；切回保留版本和消息 | [manual] |
+| ST-S17-13 | 对话、取消与失败重试 | 未知意图解释限制；取消不提交；模拟失败后可重试 | [manual] |
+| ST-S17-14 | 布局与输入安全 | 1440/1100无水平溢出；用户HTML按文本显示；专注切换可用 | [manual] |
 
-浏览器编排通过真实点击、输入和下载断言。OpenLogos reporter 使用 id/status/duration_ms/timestamp/error 字段，写入 prototype-review/unified-test-results.jsonl，source 标明原型检查，不污染生产验收结果。
+浏览器编排通过真实点击、输入和下载断言。OpenLogos reporter 使用 id/status/duration_ms/timestamp/error 字段，写入 prototype-review/unified-test-results.jsonl，source 标明原型检查，不污染生产验收结果——生产验收口径中本节用例标记 [manual] 排除，原型证据以 prototype-review JSONL 为准。
 
 ## 业务逻辑补充检查
 
-| ID | 操作 | 断言 |
-|---|---|---|
-| ST-S17-15 | 完整旅程、失败报告、上游过期、当前版本未运行 | 下一步按有效引用与证据计算，不按历史数量；计划核对后提示导出 |
+| ID | 操作 | 断言 | 验收方式 |
+|---|---|---|---|
+| ST-S17-15 | 完整旅程、失败报告、上游过期、当前版本未运行 | 下一步按有效引用与证据计算，不按历史数量；计划核对后提示导出 | [manual] |
 
-补充检查写入 prototype-review/business-test-results.jsonl，采用相同 OpenLogos reporter 字段，仅作为原型证据。
+补充检查写入 prototype-review/business-test-results.jsonl，采用相同 OpenLogos reporter 字段，仅作为原型证据，生产验收口径中标记 [manual] 排除。
