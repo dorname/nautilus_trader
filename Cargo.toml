@@ -39,6 +39,8 @@ members = [
   "crates/plugin",
   "crates/portfolio",
   "crates/pyo3",
+  "crates/research-domain",
+  "crates/research-testkit",
   "crates/risk",
   "crates/serialization",
   "crates/system",
