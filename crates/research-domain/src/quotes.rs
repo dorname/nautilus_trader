@@ -13,6 +13,8 @@ use crate::{
 };
 
 /// 规范化日线行情行（Parquet 分区内容）。
+/// `amount_cny` 可为空：成交额缺失是真实数据形态（UT-S12-05），
+/// 缺失不等于 0，也不允许用 close×volume 替代。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuoteRow {
     pub instrument_id: String,
@@ -22,7 +24,8 @@ pub struct QuoteRow {
     pub low: Decimal,
     pub close: Decimal,
     pub volume_shares: u64,
-    pub amount_cny: Decimal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount_cny: Option<Decimal>,
 }
 
 /// 暂存 CSV 表头（Python 数据桥接的协议化输出；测试直接用同格式文件）。
@@ -97,10 +100,16 @@ fn parse_row(raw: &str, line_no: usize) -> std::result::Result<QuoteRow, RowErro
     let volume_shares: u64 = cols[6]
         .parse()
         .map_err(|_| err(&format!("成交量不是非负整数：{}", cols[6])))?;
-    let amount_cny = dec(cols[7], "amount_cny")?;
-    if amount_cny.is_sign_negative() {
-        return Err(err(&format!("成交额不能为负：{amount_cny}")));
-    }
+    // 成交额允许为空（缺失）；非空时必须是非负十进制数
+    let amount_cny = if cols[7].is_empty() {
+        None
+    } else {
+        let a = dec(cols[7], "amount_cny")?;
+        if a.is_sign_negative() {
+            return Err(err(&format!("成交额不能为负：{a}")));
+        }
+        Some(a)
+    };
     Ok(QuoteRow {
         instrument_id,
         trade_date,

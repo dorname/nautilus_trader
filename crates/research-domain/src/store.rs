@@ -43,6 +43,20 @@ pub struct TaskRow {
     pub error_json: Option<String>,
 }
 
+/// universe 表行（不可变：创建后不更新业务内容）。
+#[derive(Debug, Clone)]
+pub struct UniverseRow {
+    pub id: String,
+    pub name: String,
+    pub snapshot_id: String,
+    pub as_of: String,
+    pub membership: String,
+    pub mode: String,
+    pub rule_json: String,
+    pub version_hash: String,
+    pub members_hash: String,
+}
+
 pub struct MetadataStore {
     conn: Connection,
     path: PathBuf,
@@ -424,6 +438,114 @@ impl MetadataStore {
         self.append_audit_tx(&tx, task_id, crate::protocol::event_type::SNAPSHOT_READY, seq)?;
         tx.commit().map_err(|e| map_sqlite("提交导入事务", e))?;
         Ok(true)
+    }
+
+    /// 通用产物提交（预览等异步任务）：登记对象 + 任务终态同事务。
+    /// 返回 false：任务已被先前事务裁决为终态（取消先行），不提交任何产物。
+    pub fn commit_task_result(
+        &self,
+        task_id: &str,
+        artifacts: &[(String, String, String, u64)],
+        result_hash: &str,
+        audit_kind: &str,
+    ) -> Result<bool> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| map_sqlite("开启提交事务", e))?;
+        let state: String = tx
+            .query_row("SELECT state FROM task WHERE id=?1", params![task_id], |r| r.get(0))
+            .optional()
+            .map_err(|e| map_sqlite("读取任务状态", e))?
+            .ok_or_else(|| ResearchError::not_found(format!("任务不存在：{task_id}")))?;
+        if !matches!(state.as_str(), "running" | "cancelling") {
+            return Ok(false);
+        }
+        for (hash, rel, kind, size) in artifacts {
+            tx.execute(
+                "INSERT OR IGNORE INTO artifact(hash, relative_path, kind, size_bytes, created_at)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![hash, rel, kind, *size as i64, now_rfc3339()],
+            )
+            .map_err(|e| map_sqlite("登记内容对象", e))?;
+        }
+        tx.execute(
+            "UPDATE task SET state='succeeded', last_seq=last_seq+1, result_hash=?1,
+             progress_json=NULL, updated_at=?2 WHERE id=?3 AND state IN ('running','cancelling')",
+            params![result_hash, now_rfc3339(), task_id],
+        )
+        .map_err(|e| map_sqlite("标记任务成功", e))?;
+        let seq: i64 = tx
+            .query_row("SELECT last_seq FROM task WHERE id=?1", params![task_id], |r| r.get(0))
+            .map_err(|e| map_sqlite("读取任务序号", e))?;
+        self.append_audit_tx(&tx, task_id, audit_kind, seq)?;
+        tx.commit().map_err(|e| map_sqlite("提交产物事务", e))?;
+        Ok(true)
+    }
+
+    // ---------------------------------------------------------------- 股票池
+
+    /// 保存股票池 + committed 回执 + 审计，单事务（同步命令的最终提交）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_universe_with_receipt(
+        &self,
+        universe_id: &str,
+        name: &str,
+        snapshot_id: &str,
+        as_of: &str,
+        membership: &str,
+        mode: &str,
+        rule_json: &str,
+        version_hash: &str,
+        members_hash: &str,
+        idempotency_key: &str,
+        request_id: &str,
+        input_hash: &str,
+        response_json: &str,
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| map_sqlite("开启保存事务", e))?;
+        tx.execute(
+            "INSERT INTO universe(id, name, snapshot_id, as_of, membership, mode, rule_json, version_hash, members_hash, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![universe_id, name, snapshot_id, as_of, membership, mode, rule_json, version_hash, members_hash, now_rfc3339()],
+        )
+        .map_err(|e| map_sqlite("写入股票池", e))?;
+        tx.execute(
+            "INSERT INTO command_receipt(idempotency_key, request_id, input_hash, method, state, response_json, created_at, updated_at)
+             VALUES (?1,?2,?3,'SaveUniverse','committed',?4,?5,?5)",
+            params![idempotency_key, request_id, input_hash, response_json, now_rfc3339()],
+        )
+        .map_err(|e| map_sqlite("写入命令回执", e))?;
+        self.append_audit_tx(&tx, universe_id, crate::protocol::event_type::UNIVERSE_SAVED, 0)?;
+        tx.commit().map_err(|e| map_sqlite("提交保存事务", e))?;
+        Ok(())
+    }
+
+    /// 按 ID 读取股票池（不可变视图）。
+    pub fn get_universe(&self, id: &str) -> Result<Option<UniverseRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, snapshot_id, as_of, membership, mode, rule_json, version_hash, members_hash FROM universe WHERE id=?1",
+                params![id],
+                |r| {
+                    Ok(UniverseRow {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        snapshot_id: r.get(2)?,
+                        as_of: r.get(3)?,
+                        membership: r.get(4)?,
+                        mode: r.get(5)?,
+                        rule_json: r.get(6)?,
+                        version_hash: r.get(7)?,
+                        members_hash: r.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| map_sqlite("查询股票池", e))
     }
 
     // ---------------------------------------------------------------- 快照查询

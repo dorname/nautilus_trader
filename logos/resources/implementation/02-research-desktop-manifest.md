@@ -1,7 +1,7 @@
 # 研究桌面实现清单（astock-research-desktop）
 
-> 状态：批次 1 完成（S11）· 真相源：crates/research-domain、crates/research-testkit
-> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11-test-cases.md
+> 状态：批次 2 完成（S11+S12）· 真相源：crates/research-domain、crates/research-testkit
+> 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11/S12-test-cases.md
 
 ## 批次 1：S11 数据维护（2026-10-01）
 
@@ -33,10 +33,40 @@
 **verify 配置修正**：logos.config.json 的 pre_run_command 已由固定 pass 占位改为真实执行
 `rm -f test-results.jsonl && cargo test -p nautilus-research-domain --offline`（规格 core-09 要求）。
 
+## 批次 2：S12 股票池（2026-10-01）
+
+**覆盖用例**：UT-S12-01～UT-S12-05、ST-S12-01～ST-S12-02（7/7 pass；连同 S11 回归共 14/14，见 test-results.jsonl）
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 辅助数据 | src/auxiliary.rs | 主档/财务暂存 CSV 逐行校验（available_at 必填、主键冲突整批拒绝）、规范化 JSON 内容对象 |
+| 规则引擎 | src/universe.rs | RuleAST（AND 根 ≤20 子节点、OR 组、深度≤2）静态校验 + 三态评估（命中/不满足/未知） |
+| 协议类型 | src/protocol.rs | UniverseSpec/SaveUniverseSpec/UniverseRef/UniversePreview/RowsTable/RowsPage |
+| 协调器扩展 | src/coordinator.rs | PreviewUniverse 异步任务、SaveUniverse 同步命令、QueryRows 三桶分页、严格预检 |
+| 存储扩展 | src/store.rs | commit_task_result 通用产物提交、save_universe_with_receipt 单事务保存、get_universe |
+| 清单扩展 | src/manifest.rs | manifest.auxiliary 引用（master/financial），能力/限制按实际内容生成 |
+
+**时点纪律落实**：
+- 财务只取 available_at ≤ as_of 的报告（同报告期取最大修订号），未来报告条件判未知（UT-S12-01）；
+- 主档按 as_of 当时状态判断在册，退市标的历史池保留（UT-S12-02）；
+- 成交额缺失判未知，禁止 close×volume 替代（UT-S12-05；QuoteRow.amount_cny 改 Option，Parquet 列可空）；
+- 固定池形成日晚于回测开始日严格预检拒绝并指出形成日（UT-S12-04，precheck_run_universe 供 S13 复用）。
+
+**一致性落实**：
+- 预览产物为内容寻址 JSON（行按标的排序，哈希确定性）；保存校验 input_hash+preview_hash 双一致，否则 STALE_PREVIEW（ST-S12-02）；
+- universe 行 + committed 回执 + UniverseSaved 审计单事务；幂等重放返回原 universe_id；
+- 导入按表头识别行情/主档/财务混合文件；声明 auxiliary_kind 时强制单类；
+- 修复批次 1 遗留：取消标记仅终态回收（Started/Progress 不再打断取消通路）、JSONL 单缓冲原子写入、Decimal128 scale 对齐。
+
 ## 待办批次（未实现，不代表可用）
 
-- 批次 2：S12 股票池（PreviewUniverse/SaveUniverse、RuleAST、严格/探索模式）
 - 批次 3：S13 研究运行（SubmitRun、工作进程 JSONL、引擎隔日执行适配）
-- 批次 4：S14 比较（CompareRuns/QueryRows）
+- 批次 4：S14 比较（CompareRuns/QueryRows 扩展 equity/holdings/fills）
 - 批次 5：S15 交易计划（GeneratePlan/ExportPlan/SaveManualNote、UT-S15-05/06 性能量测）
 - 批次 6+：S17～S20 工程台、egui GUI（依赖当前未缓存，需网络或 vendor）、smoke 双平台
+
+> verify 口径说明：`openlogos verify` 的覆盖度门（Gate 3.5/3.6）统计全仓 101 条用例，
+> 含引擎基线（ST-01~08、UT-AST/BT/EXEC 等，接入采用时未接 reporter）与未实现批次。
+> 本提案范围内用例将随批次 3~5 收敛；基线用例的覆盖率口径需另行决策。

@@ -96,6 +96,14 @@ impl ImportSpec {
                 return Err(ResearchError::invalid("开始日期不能晚于结束日期").with_field("start"));
             }
         }
+        if let Some(k) = &self.auxiliary_kind {
+            if crate::auxiliary::AuxKind::parse(k).is_none() {
+                return Err(ResearchError::invalid(format!(
+                    "未知辅助数据种类：{k}（支持 master/financial）"
+                ))
+                .with_field("auxiliary_kind"));
+            }
+        }
         Ok(())
     }
 }
@@ -178,6 +186,8 @@ pub mod event_type {
     pub const TASK_STARTED: &str = "TaskStarted";
     pub const TASK_PROGRESS: &str = "TaskProgress";
     pub const SNAPSHOT_READY: &str = "SnapshotReady";
+    pub const UNIVERSE_SAVED: &str = "UniverseSaved";
+    pub const PREVIEW_READY: &str = "UniversePreviewReady";
     pub const TASK_FAILED: &str = "TaskFailed";
     pub const TASK_CANCELLED: &str = "TaskCancelled";
 }
@@ -197,4 +207,161 @@ pub fn normalize_limit(limit: Option<u32>) -> u32 {
         Some(l) => l.clamp(1, PAGE_MAX_LIMIT),
         None => PAGE_DEFAULT_LIMIT,
     }
+}
+
+// ---------------------------------------------------------------- S12 股票池
+
+/// 股票池模式：严格（缺能力预检拒绝）/ 探索（缺数据记未知）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UniverseMode {
+    Strict,
+    Exploratory,
+}
+
+impl UniverseMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Exploratory => "exploratory",
+        }
+    }
+}
+
+/// 成员口径：动态（保存规则版本，回测逐日重算）/ 固定（保存形成日成员）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Membership {
+    Dynamic,
+    Fixed,
+}
+
+impl Membership {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dynamic => "dynamic",
+            Self::Fixed => "fixed",
+        }
+    }
+}
+
+/// 缺失数据处理：exclude（默认，计入未知桶）/ ignore_condition（仅探索模式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingPolicy {
+    Exclude,
+    IgnoreCondition,
+}
+
+/// PreviewUniverse 请求（S12）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniverseSpec {
+    pub snapshot_id: String,
+    pub as_of: String,
+    pub mode: UniverseMode,
+    pub membership: Membership,
+    pub rule: crate::universe::RuleGroup,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_policy: Option<MissingPolicy>,
+}
+
+impl UniverseSpec {
+    /// 字段级校验 + 规则静态校验 + 模式约束。
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.snapshot_id.trim().is_empty() {
+            return Err(ResearchError::invalid("snapshot_id 不能为空").with_field("snapshot_id"));
+        }
+        parse_trade_date(&self.as_of).map_err(|e| e.with_field("as_of"))?;
+        crate::universe::validate_rule(&self.rule)?;
+        if self.missing_policy == Some(MissingPolicy::IgnoreCondition)
+            && self.mode != UniverseMode::Exploratory
+        {
+            return Err(ResearchError::invalid(
+                "missing_policy=ignore_condition 只能用于探索模式",
+            )
+            .with_field("missing_policy"));
+        }
+        Ok(())
+    }
+}
+
+/// SaveUniverse 请求（S12）：哈希必须与当前预览一致，否则 STALE_PREVIEW。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveUniverseSpec {
+    pub preview_task_id: String,
+    pub preview_hash: String,
+    pub input_hash: String,
+    pub name: String,
+}
+
+impl SaveUniverseSpec {
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.preview_task_id.trim().is_empty() {
+            return Err(ResearchError::invalid("preview_task_id 不能为空").with_field("preview_task_id"));
+        }
+        if self.preview_hash.len() != 64 {
+            return Err(ResearchError::invalid("preview_hash 必须是 SHA256 十六进制").with_field("preview_hash"));
+        }
+        if self.input_hash.len() != 64 {
+            return Err(ResearchError::invalid("input_hash 必须是 SHA256 十六进制").with_field("input_hash"));
+        }
+        let name_len = self.name.chars().count();
+        if !(1..=80).contains(&name_len) {
+            return Err(ResearchError::invalid("名称长度须为 1..80 字符").with_field("name"));
+        }
+        Ok(())
+    }
+}
+
+/// SaveUniverse 响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniverseRef {
+    pub universe_id: String,
+    pub version_hash: String,
+    pub rule_hash: String,
+    pub snapshot_id: String,
+    pub as_of: String,
+    pub count: u64,
+}
+
+/// 预览产物摘要（UniversePreview，任务成功时可通过 GetTask 间接核对哈希）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UniversePreview {
+    pub preview_hash: String,
+    pub input_hash: String,
+    pub pass: u64,
+    pub exclude: u64,
+    pub unknown: u64,
+    pub rows_object_id: String,
+    pub snapshot_id: String,
+    pub as_of: String,
+}
+
+/// QueryRows 表名（S12 本批实现 members/excluded/unknown）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RowsTable {
+    Members,
+    Excluded,
+    Unknown,
+}
+
+impl RowsTable {
+    /// 对应的预览行判定值。
+    pub fn verdict(&self) -> &'static str {
+        match self {
+            Self::Members => "pass",
+            Self::Excluded => "exclude",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// QueryRows 响应：cursor 绑定对象哈希，跨版本偏移拒绝。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RowsPage {
+    pub rows: Vec<crate::universe::MemberRow>,
+    pub next_cursor: Option<String>,
+    pub object_hash: String,
+    pub total: u64,
 }

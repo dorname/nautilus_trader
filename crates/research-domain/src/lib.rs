@@ -10,6 +10,7 @@
 //! 阻塞接收命令与任务完成通知，空闲时线程挂起，不存在轮询空转；
 //! 计算线程仅在任务执行期间存活，按行批次边界响应取消。
 
+pub mod auxiliary;
 pub mod coordinator;
 pub mod error;
 pub mod hash;
@@ -21,6 +22,7 @@ pub mod quotes;
 pub mod store;
 pub mod task;
 pub mod time;
+pub mod universe;
 
 pub use coordinator::{Coordinator, CoordinatorConfig, ImportHooks};
 pub use error::{ErrorCode, ResearchError};

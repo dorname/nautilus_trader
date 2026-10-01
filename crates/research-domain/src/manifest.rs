@@ -20,6 +20,15 @@ pub struct PartitionRef {
     pub rows: u64,
 }
 
+/// 辅助数据引用（manifest.auxiliary）：种类、内容对象与行数。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuxRef {
+    pub kind: String,
+    pub relative_path: String,
+    pub sha256: String,
+    pub rows: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Coverage {
     pub instruments: u64,
@@ -35,6 +44,9 @@ pub struct SnapshotManifest {
     pub price_basis: PriceBasis,
     pub coverage: Coverage,
     pub partitions: Vec<PartitionRef>,
+    /// 辅助数据内容对象（master/financial 等），按 kind 排序。
+    #[serde(default)]
+    pub auxiliary: Vec<AuxRef>,
     pub capabilities: Vec<String>,
     pub limitations: Vec<String>,
 }
@@ -49,13 +61,42 @@ impl SnapshotManifest {
     pub fn as_of(&self) -> &str {
         &self.coverage.end
     }
+
+    /// 指定种类的辅助数据引用。
+    pub fn aux(&self, kind: &str) -> Option<&AuxRef> {
+        self.auxiliary.iter().find(|a| a.kind == kind)
+    }
 }
 
-/// 仅行情快照的能力与限制声明（辅助数据能力在后续导入批次扩展）。
-pub fn quotes_capabilities() -> Vec<String> {
-    vec!["quotes.daily".to_string()]
+/// 按实际内容生成能力与限制声明。
+pub fn capabilities(has_quotes: bool, aux_kinds: &[&str]) -> Vec<String> {
+    let mut caps = Vec::new();
+    if has_quotes {
+        caps.push("quotes.daily".to_string());
+    }
+    for k in aux_kinds {
+        caps.push(format!("aux.{k}"));
+    }
+    caps.sort();
+    caps
 }
 
-pub fn quotes_limitations() -> Vec<String> {
-    vec!["仅日线行情，未导入证券主档、状态、财务、公司行为与交易规则".to_string()]
+pub fn limitations(aux_kinds: &[&str]) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (kind, label) in [
+        ("master", "证券主档"),
+        ("financial", "财务报告"),
+        ("status", "状态表"),
+        ("actions", "公司行为"),
+        ("rules", "交易规则"),
+    ] {
+        if !aux_kinds.contains(&kind) {
+            missing.push(label);
+        }
+    }
+    if missing.is_empty() {
+        vec![]
+    } else {
+        vec![format!("未导入：{}；涉及这些数据的条件评估为未知", missing.join("、"))]
+    }
 }

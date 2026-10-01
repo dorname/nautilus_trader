@@ -9,7 +9,7 @@ use std::{fs::File, path::Path, sync::Arc};
 
 use arrow::{
     array::{
-        ArrayRef, Date32Array, Decimal128Array, Int64Array, RecordBatch, StringArray,
+        Array, ArrayRef, Date32Array, Decimal128Array, Int64Array, RecordBatch, StringArray,
         TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
@@ -35,7 +35,8 @@ fn quotes_schema() -> Arc<Schema> {
         Field::new("low", DataType::Decimal128(18, PRICE_SCALE as i8), false),
         Field::new("close", DataType::Decimal128(18, PRICE_SCALE as i8), false),
         Field::new("volume_shares", DataType::Int64, false),
-        Field::new("amount_cny", DataType::Decimal128(18, PRICE_SCALE as i8), false),
+        // 成交额可空：缺失是真实数据形态（UT-S12-05）
+        Field::new("amount_cny", DataType::Decimal128(18, PRICE_SCALE as i8), true),
         Field::new("price_basis", DataType::Utf8, false),
         Field::new("source", DataType::Utf8, false),
         Field::new(
@@ -89,7 +90,10 @@ pub fn write_quotes_partition(
         highs.push(to_scaled(&r.high)?);
         lows.push(to_scaled(&r.low)?);
         closes.push(to_scaled(&r.close)?);
-        amounts.push(to_scaled(&r.amount_cny)?);
+        amounts.push(match &r.amount_cny {
+            Some(a) => Some(to_scaled(a)?),
+            None => None,
+        });
         volumes.push(r.volume_shares as i64);
         available.push(available_at_ns(&r.trade_date)?);
     }
@@ -97,6 +101,14 @@ pub fn write_quotes_partition(
     let decimal = |vals: Vec<i128>| -> Result<ArrayRef> {
         Ok(Arc::new(
             Decimal128Array::from_iter_values(vals)
+                .with_precision_and_scale(18, PRICE_SCALE as i8)
+                .map_err(|e| ResearchError::invalid(format!("Decimal128 精度错误：{e}")))?,
+        ))
+    };
+    // 可空十进制列（成交额缺失）
+    let decimal_opt = |vals: Vec<Option<i128>>| -> Result<ArrayRef> {
+        Ok(Arc::new(
+            Decimal128Array::from(vals)
                 .with_precision_and_scale(18, PRICE_SCALE as i8)
                 .map_err(|e| ResearchError::invalid(format!("Decimal128 精度错误：{e}")))?,
         ))
@@ -112,7 +124,7 @@ pub fn write_quotes_partition(
             decimal(lows)?,
             decimal(closes)?,
             Arc::new(Int64Array::from(volumes)),
-            decimal(amounts)?,
+            decimal_opt(amounts)?,
             Arc::new(StringArray::from(vec![basis.as_str().to_string(); n])),
             Arc::new(StringArray::from(vec![source.as_str().to_string(); n])),
             Arc::new(TimestampNanosecondArray::from_iter_values(available).with_timezone("UTC")),
@@ -164,7 +176,11 @@ pub fn read_quotes_partition(path: &Path) -> Result<Vec<QuoteRow>> {
                 low: Decimal::from_i128_with_scale(lows.value(i), PRICE_SCALE),
                 close: Decimal::from_i128_with_scale(closes.value(i), PRICE_SCALE),
                 volume_shares: volumes.value(i) as u64,
-                amount_cny: Decimal::from_i128_with_scale(amounts.value(i), PRICE_SCALE),
+                amount_cny: if amounts.is_null(i) {
+                    None
+                } else {
+                    Some(Decimal::from_i128_with_scale(amounts.value(i), PRICE_SCALE))
+                },
             });
         }
     }

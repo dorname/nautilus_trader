@@ -20,18 +20,25 @@ use crossbeam::channel::{bounded, select, Receiver, Sender};
 use uuid::Uuid;
 
 use crate::{
+    auxiliary::{
+        financial_from_bytes, financial_json_bytes, master_from_bytes, master_json_bytes,
+        parse_financial_csv, parse_master_csv, sniff_kind, AuxKind, FinancialRecord, MasterRecord,
+    },
     error::{ErrorCode, ResearchError, Result},
     hash::{hash_canonical, sha256_file},
-    manifest::{quotes_capabilities, quotes_limitations, Coverage, PartitionRef, SnapshotManifest, MANIFEST_SCHEMA_VERSION},
+    manifest::{capabilities, limitations, AuxRef, Coverage, PartitionRef, SnapshotManifest, MANIFEST_SCHEMA_VERSION},
     objects::ObjectStore,
     parquet_io,
     protocol::{
-        normalize_limit, ErrorBody, ImportSpec, Progress, QuotePage, SnapshotPage, TaskRef, TaskView,
+        event_type, normalize_limit, ErrorBody, ImportSpec, Progress, QuotePage, RowsPage,
+        RowsTable, SaveUniverseSpec, SnapshotPage, TaskRef, TaskView, UniversePreview, UniverseRef,
+        UniverseSpec,
     },
-    quotes::{apply_scope, parse_staging_csv, partition_name, reject_duplicate_keys, QuoteRow},
+    quotes::{apply_scope, parse_staging_csv, partition_name, reject_duplicate_keys, QuoteRow, STAGING_CSV_HEADER},
     store::{MetadataStore, TaskRow},
     task::TaskState,
     time::now_rfc3339,
+    universe::{self, MemberRow, Tri},
 };
 
 /// 命令确认超时（契约：3 秒，超时提示查询 request_id，不盲目重建）。
@@ -64,6 +71,18 @@ enum Command {
         idempotency_key: String,
         reply: Sender<Result<TaskRef>>,
     },
+    PreviewUniverse {
+        spec: UniverseSpec,
+        request_id: String,
+        idempotency_key: String,
+        reply: Sender<Result<TaskRef>>,
+    },
+    SaveUniverse {
+        spec: SaveUniverseSpec,
+        request_id: String,
+        idempotency_key: String,
+        reply: Sender<Result<UniverseRef>>,
+    },
     Cancel {
         task_id: String,
         reply: Sender<Result<TaskView>>,
@@ -76,6 +95,8 @@ enum Completion {
     Started { task_id: String },
     Progress { task_id: String, stage: String, done: u64, total: u64 },
     Succeeded { task_id: String, staged: Box<StagedImport> },
+    /// 预览完成：产物已写入对象存储，由协调线程登记并落终态。
+    PreviewSucceeded { task_id: String, artifact_hash: String, size: u64 },
     Failed { task_id: String, error: ResearchError },
     Cancelled { task_id: String },
     /// 模拟崩溃：分区完成、提交前进程死亡（UT-S11-03 注入点）。
@@ -89,9 +110,18 @@ struct StagedPartition {
     rows: u64,
 }
 
+/// 暂存的辅助数据内容对象（JSON 字节已写暂存目录并算好哈希）。
+struct StagedAux {
+    kind: AuxKind,
+    file_name: String,
+    sha256: String,
+    rows: u64,
+}
+
 struct StagedImport {
     staging_dir: PathBuf,
     partitions: Vec<StagedPartition>,
+    auxiliary: Vec<StagedAux>,
     spec: ImportSpec,
     coverage: Coverage,
 }
@@ -178,6 +208,149 @@ impl Coordinator {
         reply_rx.recv_timeout(ACK_TIMEOUT).map_err(|_| {
             ResearchError::busy("命令确认超时，请用 request_id 查询任务状态，不要盲目重建")
         })?
+    }
+
+    /// PreviewUniverse：校验 + 严格预检 + 幂等入队（S12）。
+    pub fn preview_universe(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+        spec: UniverseSpec,
+    ) -> Result<TaskRef> {
+        spec.validate()?;
+        let (reply_tx, reply_rx) = bounded(1);
+        self.cmd_tx
+            .send(Command::PreviewUniverse {
+                spec,
+                request_id: request_id.to_string(),
+                idempotency_key: idempotency_key.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| ResearchError::new(ErrorCode::WorkerExited, "协调线程已退出"))?;
+        reply_rx.recv_timeout(ACK_TIMEOUT).map_err(|_| {
+            ResearchError::busy("命令确认超时，请用 request_id 查询任务状态，不要盲目重建")
+        })?
+    }
+
+    /// SaveUniverse：同步命令，哈希必须与当前预览一致（STALE_PREVIEW）。
+    pub fn save_universe(
+        &self,
+        request_id: &str,
+        idempotency_key: &str,
+        spec: SaveUniverseSpec,
+    ) -> Result<UniverseRef> {
+        spec.validate()?;
+        let (reply_tx, reply_rx) = bounded(1);
+        self.cmd_tx
+            .send(Command::SaveUniverse {
+                spec,
+                request_id: request_id.to_string(),
+                idempotency_key: idempotency_key.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| ResearchError::new(ErrorCode::WorkerExited, "协调线程已退出"))?;
+        reply_rx.recv_timeout(ACK_TIMEOUT).map_err(|_| {
+            ResearchError::busy("命令确认超时，请用 request_id 查询，不要盲目重建")
+        })?
+    }
+
+    /// 预览摘要（三态计数与哈希），供保存前核对。
+    pub fn universe_preview(&self, preview_task_id: &str) -> Result<UniversePreview> {
+        let row = self
+            .read
+            .get_task(preview_task_id)?
+            .ok_or_else(|| ResearchError::not_found(format!("任务不存在：{preview_task_id}")))?;
+        if row.kind != "universe_preview" {
+            return Err(ResearchError::invalid("任务不是股票池预览").with_field("preview_task_id"));
+        }
+        if row.state != TaskState::Succeeded {
+            return Err(ResearchError::new(ErrorCode::RunNotReady, "预览任务尚未成功"));
+        }
+        let hash = row
+            .result_hash
+            .clone()
+            .ok_or_else(|| ResearchError::new(ErrorCode::CorruptArtifact, "预览任务缺少产物哈希"))?;
+        let doc = self.read_preview_doc(&hash)?;
+        let spec: UniverseSpec = serde_json::from_str(&row.input_json)
+            .map_err(|e| ResearchError::invalid(format!("预览输入解析失败：{e}")))?;
+        Ok(UniversePreview {
+            preview_hash: hash,
+            input_hash: row.input_hash.clone(),
+            pass: doc.rows.iter().filter(|r| r.verdict == "pass").count() as u64,
+            exclude: doc.rows.iter().filter(|r| r.verdict == "exclude").count() as u64,
+            unknown: doc.rows.iter().filter(|r| r.verdict == "unknown").count() as u64,
+            rows_object_id: row.id.clone(),
+            snapshot_id: spec.snapshot_id,
+            as_of: spec.as_of,
+        })
+    }
+
+    /// 股票池不可变视图（ST-S12-02 断言原池不变用）。
+    pub fn get_universe(&self, universe_id: &str) -> Result<Option<crate::store::UniverseRow>> {
+        self.read.get_universe(universe_id)
+    }
+
+    /// QueryRows：按对象（预览任务/已存股票池）分页读取成员/排除/未知。
+    pub fn query_rows(
+        &self,
+        object_id: &str,
+        table: RowsTable,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<RowsPage> {
+        let object_hash = self.resolve_rows_object(object_id)?;
+        let doc = self.read_preview_doc(&object_hash)?;
+        let limit = normalize_limit(limit) as usize;
+        let offset = match cursor {
+            None => 0usize,
+            Some(c) => {
+                let (hash, off) = c
+                    .split_once(':')
+                    .ok_or_else(|| ResearchError::invalid("无效的分页游标").with_field("cursor"))?;
+                if hash != object_hash {
+                    return Err(ResearchError::invalid("分页游标与对象版本不符，请重新查询")
+                        .with_field("cursor"));
+                }
+                off.parse()
+                    .map_err(|_| ResearchError::invalid("无效的分页游标").with_field("cursor"))?
+            }
+        };
+        let filtered: Vec<MemberRow> = doc
+            .rows
+            .into_iter()
+            .filter(|r| r.verdict == table.verdict())
+            .collect();
+        let total = filtered.len() as u64;
+        let page: Vec<MemberRow> = filtered.into_iter().skip(offset).take(limit).collect();
+        let next_cursor = if offset + limit < total as usize {
+            Some(format!("{object_hash}:{}", offset + limit))
+        } else {
+            None
+        };
+        Ok(RowsPage { rows: page, next_cursor, object_hash, total })
+    }
+
+    /// 解析 QueryRows 对象：预览任务 ID 或已存股票池 ID。
+    fn resolve_rows_object(&self, object_id: &str) -> Result<String> {
+        if let Some(task) = self.read.get_task(object_id)? {
+            if task.kind == "universe_preview" && task.state == TaskState::Succeeded {
+                return task.result_hash.clone().ok_or_else(|| {
+                    ResearchError::new(ErrorCode::CorruptArtifact, "预览任务缺少产物哈希")
+                });
+            }
+            return Err(ResearchError::new(ErrorCode::RunNotReady, "预览任务尚未成功"));
+        }
+        if let Some(u) = self.read.get_universe(object_id)? {
+            return Ok(u.members_hash);
+        }
+        Err(ResearchError::not_found(format!("查询对象不存在：{object_id}")))
+    }
+
+    fn read_preview_doc(&self, hash: &str) -> Result<PreviewDoc> {
+        let bytes = self.objects.get(hash)?;
+        serde_json::from_slice(&bytes).map_err(|e| {
+            ResearchError::new(ErrorCode::CorruptArtifact, format!("预览产物解析失败：{e}"))
+        })
     }
 
     /// CancelTask：只作用于尚未完成的任务；终态返回 ALREADY_TERMINAL。
@@ -375,6 +548,14 @@ fn coordinator_loop(
                     let out = handle_import(&store, &done_tx, &cancels, &logs, &workspace, &hooks, spec, request_id, idempotency_key);
                     let _ = reply.send(out);
                 }
+                Ok(Command::PreviewUniverse { spec, request_id, idempotency_key, reply }) => {
+                    let out = handle_preview(&store, &done_tx, &cancels, &logs, &workspace, &hooks, spec, request_id, idempotency_key);
+                    let _ = reply.send(out);
+                }
+                Ok(Command::SaveUniverse { spec, request_id, idempotency_key, reply }) => {
+                    let out = handle_save_universe(&store, &logs, &workspace, spec, request_id, idempotency_key);
+                    let _ = reply.send(out);
+                }
                 Ok(Command::Cancel { task_id, reply }) => {
                     let _ = reply.send(handle_cancel(&store, &cancels, &logs, &task_view_fn(&store), &task_id));
                 }
@@ -486,6 +667,235 @@ fn handle_import(
     Ok(task_ref)
 }
 
+/// 预览产物文档（内容寻址 JSON；行按标的排序，哈希确定性）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreviewDoc {
+    pub kind: String,
+    pub as_of: String,
+    pub snapshot_id: String,
+    pub mode: String,
+    pub membership: String,
+    pub rule: universe::RuleGroup,
+    pub counts: PreviewCounts,
+    pub rows: Vec<MemberRow>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PreviewCounts {
+    pub pass: u64,
+    pub exclude: u64,
+    pub unknown: u64,
+}
+
+/// PreviewUniverse 入队：快照存在性 + 严格预检（缺能力即拒）+ 幂等。
+#[allow(clippy::too_many_arguments)]
+fn handle_preview(
+    store: &MetadataStore,
+    done_tx: &Sender<Completion>,
+    cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    logs: &Arc<Mutex<Vec<String>>>,
+    workspace: &Path,
+    hooks: &Arc<ImportHooks>,
+    spec: UniverseSpec,
+    request_id: String,
+    idempotency_key: String,
+) -> Result<TaskRef> {
+    let input_hash = hash_canonical(&spec);
+    if let Some((hash, response)) = store.find_receipt(&idempotency_key)? {
+        if hash != input_hash {
+            return Err(ResearchError::new(
+                ErrorCode::IdempotencyConflict,
+                "相同幂等键对应不同请求",
+            ));
+        }
+        let task_ref: TaskRef = serde_json::from_str(&response.unwrap_or_default())
+            .map_err(|e| ResearchError::invalid(format!("回执解析失败：{e}")))?;
+        return Ok(task_ref);
+    }
+
+    // 快照与严格预检（协调线程内同步完成，返回前已裁决）
+    let snapshot = store
+        .get_snapshot(&spec.snapshot_id)?
+        .ok_or_else(|| ResearchError::not_found(format!("快照不存在：{}", spec.snapshot_id)))?;
+    let objects = ObjectStore::new(&store.workspace_root())?;
+    let manifest_bytes = objects.get(&snapshot.manifest_hash)?;
+    let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("快照清单解析失败：{e}")))?;
+    precheck_universe(&spec, &manifest)?;
+
+    let task_id = Uuid::new_v4().to_string();
+    let task_ref = TaskRef {
+        task_id: task_id.clone(),
+        request_id: request_id.clone(),
+        state: TaskState::Queued,
+    };
+    let row = TaskRow {
+        id: task_id.clone(),
+        request_id,
+        idempotency_key,
+        input_hash,
+        kind: "universe_preview".to_string(),
+        state: TaskState::Queued,
+        input_json: crate::hash::canonical_json(&spec),
+        last_seq: 1,
+        progress_json: None,
+        result_hash: None,
+        error_json: None,
+    };
+    let response_json = serde_json::to_string(&task_ref)
+        .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?;
+    store.insert_task_with_receipt(&row, &response_json)?;
+
+    let flag = Arc::new(AtomicBool::new(false));
+    if let Ok(mut map) = cancels.lock() {
+        map.insert(task_id.clone(), Arc::clone(&flag));
+    }
+    let thread_done = done_tx.clone();
+    let thread_ws = workspace.to_path_buf();
+    let thread_hooks = Arc::clone(hooks);
+    let tid = task_id.clone();
+    std::thread::Builder::new()
+        .name(format!("research-preview-{task_id}"))
+        .spawn(move || run_preview(tid, spec, flag, thread_done, thread_ws, thread_hooks))
+        .map_err(|e| ResearchError::invalid(format!("启动预览计算线程失败：{e}")))?;
+    push_log(logs, format!("预览任务 {task_id} 已入队"));
+    Ok(task_ref)
+}
+
+/// 严格/探索预检：规则引用能力必须在快照能力内；价格规则受覆盖区间约束。
+fn precheck_universe(spec: &UniverseSpec, manifest: &SnapshotManifest) -> Result<()> {
+    // 收集规则引用的能力
+    let mut needed = std::collections::BTreeSet::new();
+    for child in &spec.rule.children {
+        match child {
+            universe::RuleChild::Cond(c) => {
+                needed.insert(c.field.capability());
+            }
+            universe::RuleChild::Or(g) => {
+                for c in &g.children {
+                    needed.insert(c.field.capability());
+                }
+            }
+        }
+    }
+    for cap in &needed {
+        if !manifest.capabilities.iter().any(|c| c == cap) {
+            if spec.mode == crate::protocol::UniverseMode::Strict {
+                return Err(ResearchError::new(
+                    ErrorCode::MissingCapability,
+                    format!("严格预检拒绝：快照缺少能力 {cap}（请先导入对应辅助数据）"),
+                ));
+            }
+        }
+    }
+    // 价格类规则的 as_of 不得晚于快照覆盖末日（不能用未来数据）
+    if needed.contains("quotes.daily") && !manifest.as_of().is_empty() && spec.as_of.as_str() > manifest.as_of() {
+        return Err(ResearchError::invalid(format!(
+            "as_of {} 晚于快照覆盖末日 {}，无法按时点评估",
+            spec.as_of,
+            manifest.as_of()
+        ))
+        .with_field("as_of"));
+    }
+    Ok(())
+}
+
+/// SaveUniverse（同步）：哈希一致性校验 + 不可变保存 + 回执，单事务。
+fn handle_save_universe(
+    store: &MetadataStore,
+    logs: &Arc<Mutex<Vec<String>>>,
+    workspace: &Path,
+    spec: SaveUniverseSpec,
+    request_id: String,
+    idempotency_key: String,
+) -> Result<UniverseRef> {
+    let input_hash = hash_canonical(&spec);
+    if let Some((hash, response)) = store.find_receipt(&idempotency_key)? {
+        if hash != input_hash {
+            return Err(ResearchError::new(
+                ErrorCode::IdempotencyConflict,
+                "相同幂等键对应不同请求",
+            ));
+        }
+        let saved: UniverseRef = serde_json::from_str(&response.unwrap_or_default())
+            .map_err(|e| ResearchError::invalid(format!("回执解析失败：{e}")))?;
+        return Ok(saved);
+    }
+
+    let task = store
+        .get_task(&spec.preview_task_id)?
+        .ok_or_else(|| ResearchError::not_found(format!("预览任务不存在：{}", spec.preview_task_id)))?;
+    if task.kind != "universe_preview" {
+        return Err(ResearchError::invalid("preview_task_id 不是预览任务").with_field("preview_task_id"));
+    }
+    if task.state != TaskState::Succeeded {
+        return Err(ResearchError::new(ErrorCode::RunNotReady, "预览任务尚未成功，不能保存"));
+    }
+    // 陈旧预览：规则修改后保存旧预览 → STALE_PREVIEW（ST-S12-02）
+    let result_hash = task.result_hash.clone().unwrap_or_default();
+    if spec.input_hash != task.input_hash || spec.preview_hash != result_hash {
+        return Err(ResearchError::new(
+            ErrorCode::StalePreview,
+            "输入已改变，请重新预览后再保存",
+        ));
+    }
+
+    let universe_spec: UniverseSpec = serde_json::from_str(&task.input_json)
+        .map_err(|e| ResearchError::invalid(format!("预览输入解析失败：{e}")))?;
+    let objects = ObjectStore::new(workspace)?;
+    let doc_bytes = objects.get(&result_hash)?;
+    let doc: PreviewDoc = serde_json::from_slice(&doc_bytes)
+        .map_err(|e| ResearchError::new(ErrorCode::CorruptArtifact, format!("预览产物解析失败：{e}")))?;
+
+    let rule_hash = hash_canonical(&universe_spec.rule);
+    #[derive(serde::Serialize)]
+    struct VersionContent<'a> {
+        rule_hash: &'a str,
+        members_hash: &'a str,
+        snapshot_id: &'a str,
+        as_of: &'a str,
+        membership: &'a str,
+        mode: &'a str,
+    }
+    let version_hash = hash_canonical(&VersionContent {
+        rule_hash: &rule_hash,
+        members_hash: &result_hash,
+        snapshot_id: &universe_spec.snapshot_id,
+        as_of: &universe_spec.as_of,
+        membership: universe_spec.membership.as_str(),
+        mode: universe_spec.mode.as_str(),
+    });
+
+    let universe_id = Uuid::new_v4().to_string();
+    let universe_ref = UniverseRef {
+        universe_id: universe_id.clone(),
+        version_hash,
+        rule_hash,
+        snapshot_id: universe_spec.snapshot_id.clone(),
+        as_of: universe_spec.as_of.clone(),
+        count: doc.counts.pass,
+    };
+    let response_json = serde_json::to_string(&universe_ref)
+        .map_err(|e| ResearchError::invalid(format!("回执序列化失败：{e}")))?;
+    store.save_universe_with_receipt(
+        &universe_id,
+        &spec.name,
+        &universe_spec.snapshot_id,
+        &universe_spec.as_of,
+        universe_spec.membership.as_str(),
+        universe_spec.mode.as_str(),
+        &crate::hash::canonical_json(&universe_spec.rule),
+        &universe_ref.version_hash,
+        &result_hash,
+        &idempotency_key,
+        &request_id,
+        &input_hash,
+        &response_json,
+    )?;
+    push_log(logs, format!("股票池 {universe_id} 已保存（{} 名成员）", doc.counts.pass));
+    Ok(universe_ref)
+}
+
 fn handle_cancel(
     store: &MetadataStore,
     cancels: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
@@ -538,6 +948,7 @@ fn handle_completion(
         Completion::Started { task_id }
         | Completion::Progress { task_id, .. }
         | Completion::Succeeded { task_id, .. }
+        | Completion::PreviewSucceeded { task_id, .. }
         | Completion::Failed { task_id, .. }
         | Completion::Cancelled { task_id }
         | Completion::Crashed { task_id } => task_id.clone(),
@@ -546,6 +957,7 @@ fn handle_completion(
     let terminal = matches!(
         completion,
         Completion::Succeeded { .. }
+            | Completion::PreviewSucceeded { .. }
             | Completion::Failed { .. }
             | Completion::Cancelled { .. }
             | Completion::Crashed { .. }
@@ -576,6 +988,15 @@ fn handle_completion(
                 Err(e) => push_log(logs, format!("任务 {task_id} 提交失败：{e}")),
             }
             let _ = fs::remove_dir_all(&staged.staging_dir);
+        }
+        Completion::PreviewSucceeded { task_id, artifact_hash, size } => {
+            let rel = ObjectStore::relative_path(&artifact_hash);
+            let artifacts = vec![(artifact_hash.clone(), rel, "universe_preview".to_string(), size)];
+            match store.commit_task_result(&task_id, &artifacts, &artifact_hash, event_type::PREVIEW_READY) {
+                Ok(true) => push_log(logs, format!("预览任务 {task_id} 产物已提交")),
+                Ok(false) => push_log(logs, format!("预览任务 {task_id} 提交被丢弃：取消已先行持久化")),
+                Err(e) => push_log(logs, format!("预览任务 {task_id} 提交失败：{e}")),
+            }
         }
         Completion::Failed { task_id, error } => {
             let error_json = serde_json::to_string(&ErrorBody::from(&error)).unwrap_or_default();
@@ -661,14 +1082,35 @@ fn commit_import(store: &MetadataStore, task_id: &str, staged: &StagedImport) ->
     }
     partitions.sort_by(|a, b| a.instrument_id.cmp(&b.instrument_id));
 
+    // 辅助数据内容对象：登记并进入 manifest（master/financial）
+    let mut aux_refs: Vec<AuxRef> = Vec::new();
+    for aux in &staged.auxiliary {
+        let staged_file = staged.staging_dir.join(&aux.file_name);
+        let hash = objects.put_file(&staged_file)?;
+        if hash != aux.sha256 {
+            return Err(ResearchError::new(
+                ErrorCode::CorruptArtifact,
+                format!("辅助数据哈希在提交时不符：{}", aux.file_name),
+            ));
+        }
+        let size = fs::metadata(&staged_file).map(|m| m.len()).unwrap_or(0);
+        let rel = ObjectStore::relative_path(&hash);
+        artifacts.push((hash.clone(), rel.clone(), format!("aux_{}", aux.kind.as_str()), size));
+        aux_refs.push(AuxRef { kind: aux.kind.as_str().to_string(), relative_path: rel, sha256: hash, rows: aux.rows });
+    }
+    aux_refs.sort_by(|a, b| a.kind.cmp(&b.kind));
+    let aux_kinds: Vec<String> = aux_refs.iter().map(|a| a.kind.clone()).collect();
+    let aux_kind_refs: Vec<&str> = aux_kinds.iter().map(String::as_str).collect();
+
     let manifest = SnapshotManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         source: staged.spec.source,
         price_basis: staged.spec.price_basis,
         coverage: staged.coverage.clone(),
         partitions,
-        capabilities: quotes_capabilities(),
-        limitations: quotes_limitations(),
+        auxiliary: aux_refs,
+        capabilities: capabilities(!staged.partitions.is_empty(), &aux_kind_refs),
+        limitations: limitations(&aux_kind_refs),
     };
     let manifest_json = crate::hash::canonical_json(&manifest);
     let manifest_hash = objects.put(manifest_json.as_bytes())?;
@@ -719,8 +1161,11 @@ fn run_import(
         task_id: task_id.clone(),
     });
 
-    // 1) 解析并校验全部暂存文件
+    // 1) 解析并校验全部暂存文件（按表头识别行情/主档/财务；整批拒绝）
+    let declared_aux = spec.auxiliary_kind.as_deref().and_then(AuxKind::parse);
     let mut rows: Vec<QuoteRow> = Vec::new();
+    let mut master_rows: Vec<MasterRecord> = Vec::new();
+    let mut financial_rows: Vec<FinancialRecord> = Vec::new();
     for path in &spec.paths {
         let text = match fs::read_to_string(path) {
             Ok(t) => t,
@@ -733,32 +1178,92 @@ fn run_import(
                 return;
             }
         };
-        match parse_staging_csv(&text) {
-            Ok(mut parsed) => rows.append(&mut parsed),
-            Err(row_errors) => {
-                let detail = row_errors
-                    .iter()
-                    .take(10)
-                    .map(|e| format!("第 {} 行：{}", e.line, e.reason))
-                    .collect::<Vec<_>>()
-                    .join("；");
+        let fail_rows = |task_id: String, errors: Vec<crate::quotes::RowError>| {
+            let detail = errors
+                .iter()
+                .take(10)
+                .map(|e| format!("第 {} 行：{}", e.line, e.reason))
+                .collect::<Vec<_>>()
+                .join("；");
+            send(Completion::Failed {
+                task_id,
+                error: ResearchError::invalid(format!(
+                    "暂存数据校验失败，整批拒绝（共 {} 处）：{detail}",
+                    errors.len()
+                ))
+                .with_field("rows"),
+            });
+        };
+        let header = text.lines().next().unwrap_or("").trim().trim_start_matches('\u{feff}');
+        if header == STAGING_CSV_HEADER {
+            if declared_aux.is_some() {
+                send(Completion::Failed {
+                    task_id,
+                    error: ResearchError::invalid("声明 auxiliary_kind 的导入不允许混入行情文件")
+                        .with_field("paths"),
+                });
+                return;
+            }
+            match parse_staging_csv(&text) {
+                Ok(mut parsed) => rows.append(&mut parsed),
+                Err(e) => {
+                    fail_rows(task_id, e);
+                    return;
+                }
+            }
+        } else {
+            let kind = match sniff_kind(&text) {
+                Some(k) => k,
+                None => {
+                    send(Completion::Failed {
+                        task_id,
+                        error: ResearchError::invalid(format!(
+                            "无法识别暂存文件种类（表头不符）：{path}"
+                        ))
+                        .with_field("paths"),
+                    });
+                    return;
+                }
+            };
+            if declared_aux.is_some_and(|k| k != kind) {
                 send(Completion::Failed {
                     task_id,
                     error: ResearchError::invalid(format!(
-                        "暂存数据校验失败，整批拒绝（共 {} 处）：{detail}",
-                        row_errors.len()
+                        "文件种类 {} 与声明的 auxiliary_kind 不符",
+                        kind.as_str()
                     ))
-                    .with_field("rows"),
+                    .with_field("auxiliary_kind"),
                 });
                 return;
+            }
+            match kind {
+                AuxKind::Master => match parse_master_csv(&text) {
+                    Ok(mut parsed) => master_rows.append(&mut parsed),
+                    Err(e) => {
+                        fail_rows(task_id, e);
+                        return;
+                    }
+                },
+                AuxKind::Financial => match parse_financial_csv(&text) {
+                    Ok(mut parsed) => financial_rows.append(&mut parsed),
+                    Err(e) => {
+                        fail_rows(task_id, e);
+                        return;
+                    }
+                },
             }
         }
     }
     rows = apply_scope(rows, &spec);
-    if rows.is_empty() {
+    // symbols 过滤同样作用于辅助数据
+    if let Some(symbols) = &spec.symbols {
+        master_rows.retain(|r| symbols.contains(&r.instrument_id));
+        financial_rows.retain(|r| symbols.contains(&r.instrument_id));
+    }
+    if rows.is_empty() && master_rows.is_empty() && financial_rows.is_empty() {
         send(Completion::Failed {
             task_id,
-            error: ResearchError::invalid("按标的与日期范围过滤后没有行情行，整批拒绝"),
+            error: ResearchError::invalid("按标的与日期范围过滤后没有数据行，整批拒绝"),
         });
         return;
     }
@@ -769,9 +1274,38 @@ fn run_import(
         });
         return;
     }
+    // 跨文件主键冲突检查（文件内已查，此处查合并后）
+    {
+        let mut seen = std::collections::HashSet::new();
+        for r in &master_rows {
+            if !seen.insert(r.instrument_id.as_str()) {
+                send(Completion::Failed {
+                    task_id,
+                    error: ResearchError::invalid(format!("主档标的重复：{}", r.instrument_id))
+                        .with_field("rows"),
+                });
+                return;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for r in &financial_rows {
+            if !seen.insert((r.instrument_id.as_str(), r.period_end.as_str(), r.revision)) {
+                send(Completion::Failed {
+                    task_id,
+                    error: ResearchError::invalid(format!(
+                        "财务记录重复：{} {} 修订号 {}",
+                        r.instrument_id, r.period_end, r.revision
+                    ))
+                    .with_field("rows"),
+                });
+                return;
+            }
+        }
+    }
 
     // 2) 行批次边界响应取消（测试钩子可注入逐批延迟）
-    let total = rows.len() as u64;
+    let total = (rows.len() + master_rows.len() + financial_rows.len()) as u64;
+    let quote_total = rows.len() as u64;
     for (done, chunk) in rows.chunks(CANCEL_CHECK_ROWS).enumerate() {
         if cancel.load(Ordering::SeqCst) {
             send(Completion::Cancelled { task_id });
@@ -783,7 +1317,7 @@ fn run_import(
         }
         send(Completion::Progress {
             task_id: task_id.clone(),
-            stage: "校验行情行".to_string(),
+            stage: "校验数据行".to_string(),
             done: ((done + 1) * chunk.len()) as u64,
             total,
         });
@@ -833,6 +1367,41 @@ fn run_import(
         });
     }
 
+    // 3b) 辅助数据写规范化 JSON 内容对象到暂存目录（确定性字节 → 确定性哈希）
+    let mut staged_aux: Vec<StagedAux> = Vec::new();
+    for (kind, bytes, n) in [
+        (AuxKind::Master, master_json_bytes(&master_rows), master_rows.len()),
+        (AuxKind::Financial, financial_json_bytes(&financial_rows), financial_rows.len()),
+    ] {
+        if n == 0 {
+            continue;
+        }
+        if cancel.load(Ordering::SeqCst) {
+            send(Completion::Cancelled { task_id });
+            return;
+        }
+        let file_name = format!("aux-{}.json", kind.as_str());
+        let path = staging_dir.join(&file_name);
+        if let Err(e) = fs::write(&path, &bytes) {
+            send(Completion::Failed {
+                task_id,
+                error: ResearchError::invalid(format!("写入辅助数据暂存失败：{e}")),
+            });
+            return;
+        }
+        let sha256 = match sha256_file(&path) {
+            Ok(h) => h,
+            Err(e) => {
+                send(Completion::Failed {
+                    task_id,
+                    error: ResearchError::invalid(format!("辅助数据哈希计算失败：{e}")),
+                });
+                return;
+            }
+        };
+        staged_aux.push(StagedAux { kind, file_name, sha256, rows: n as u64 });
+    }
+
     // 4) 崩溃注入点（UT-S11-03）：分区完成、提交前
     if hooks.crash_after_partition.load(Ordering::SeqCst) {
         send(Completion::Crashed { task_id });
@@ -854,20 +1423,186 @@ fn run_import(
                 Some(hi.map_or(d.clone(), |h| h.max(d))),
             )
         });
+    let instruments = {
+        let mut set = std::collections::BTreeSet::new();
+        set.extend(by_instrument.keys().cloned());
+        set.extend(master_rows.iter().map(|r| r.instrument_id.clone()));
+        set.extend(financial_rows.iter().map(|r| r.instrument_id.clone()));
+        set.len() as u64
+    };
     send(Completion::Succeeded {
         task_id,
         staged: Box::new(StagedImport {
             staging_dir,
             partitions,
+            auxiliary: staged_aux,
             spec,
             coverage: Coverage {
-                instruments: by_instrument.len() as u64,
-                rows: total,
+                instruments,
+                rows: quote_total,
                 start: start.unwrap_or_default(),
                 end: end.unwrap_or_default(),
             },
         }),
     });
+}
+
+// ---------------------------------------------------------------- 预览计算线程
+
+fn run_preview(
+    task_id: String,
+    spec: UniverseSpec,
+    cancel: Arc<AtomicBool>,
+    done_tx: Sender<Completion>,
+    workspace: PathBuf,
+    hooks: Arc<ImportHooks>,
+) {
+    let send = |c: Completion| {
+        let _ = done_tx.send(c);
+    };
+    let fail = |task_id: String, error: ResearchError| send(Completion::Failed { task_id, error });
+    send(Completion::Started {
+        task_id: task_id.clone(),
+    });
+
+    // 加载快照内容（只读连接 + 对象存储）
+    let store = match MetadataStore::open_readonly(&workspace.join("research.db")) {
+        Ok(s) => s,
+        Err(e) => return fail(task_id, e),
+    };
+    let objects = match ObjectStore::new(&workspace) {
+        Ok(o) => o,
+        Err(e) => return fail(task_id, e),
+    };
+    let snapshot = match store.get_snapshot(&spec.snapshot_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => return fail(task_id, ResearchError::not_found(format!("快照不存在：{}", spec.snapshot_id))),
+        Err(e) => return fail(task_id, e),
+    };
+    let manifest: SnapshotManifest = match objects.get(&snapshot.manifest_hash)
+        .and_then(|b| serde_json::from_slice(&b).map_err(|e| {
+            ResearchError::new(ErrorCode::CorruptArtifact, format!("快照清单解析失败：{e}"))
+        })) {
+        Ok(m) => m,
+        Err(e) => return fail(task_id, e),
+    };
+
+    // 主档 / 财务 / 行情 装载（缺能力时为 None，条件评估为未知）
+    let load_aux = |kind: &str| -> Result<Option<Vec<u8>>> {
+        match manifest.aux(kind) {
+            Some(a) => objects.get(&a.sha256).map(Some),
+            None => Ok(None),
+        }
+    };
+    let master: Option<std::collections::BTreeMap<String, MasterRecord>> = match load_aux("master") {
+        Ok(Some(b)) => match master_from_bytes(&b) {
+            Ok(rows) => Some(rows.into_iter().map(|r| (r.instrument_id.clone(), r)).collect()),
+            Err(e) => return fail(task_id, e),
+        },
+        Ok(None) => None,
+        Err(e) => return fail(task_id, e),
+    };
+    let financial: Option<std::collections::BTreeMap<String, Vec<FinancialRecord>>> = match load_aux("financial") {
+        Ok(Some(b)) => match financial_from_bytes(&b) {
+            Ok(rows) => {
+                let mut map: std::collections::BTreeMap<String, Vec<FinancialRecord>> = Default::default();
+                for r in rows {
+                    map.entry(r.instrument_id.clone()).or_default().push(r);
+                }
+                Some(map)
+            }
+            Err(e) => return fail(task_id, e),
+        },
+        Ok(None) => None,
+        Err(e) => return fail(task_id, e),
+    };
+    let quotes: Option<std::collections::BTreeMap<String, Vec<QuoteRow>>> = if manifest.partitions.is_empty() {
+        None
+    } else {
+        let mut map: std::collections::BTreeMap<String, Vec<QuoteRow>> = Default::default();
+        for part in &manifest.partitions {
+            let path = objects.path_of(&part.sha256);
+            match parquet_io::read_quotes_partition(&path) {
+                Ok(rows) => map.insert(part.instrument_id.clone(), rows),
+                Err(e) => return fail(task_id, e),
+            };
+        }
+        Some(map)
+    };
+
+    let ctx = universe::EvalContext {
+        as_of: &spec.as_of,
+        master: master.as_ref(),
+        financial: financial.as_ref(),
+        quotes: quotes.as_ref(),
+        ignore_unknown_conditions: spec.missing_policy == Some(crate::protocol::MissingPolicy::IgnoreCondition),
+    };
+    let candidates = universe::candidates(&ctx);
+    let total = candidates.len() as u64;
+
+    let mut rows: Vec<MemberRow> = Vec::with_capacity(candidates.len());
+    for (idx, instrument) in candidates.iter().enumerate() {
+        // 批次边界响应取消（32 标的）；测试钩子注入逐批延迟
+        if idx % CANCEL_CHECK_ROWS == 0 {
+            if cancel.load(Ordering::SeqCst) {
+                send(Completion::Cancelled { task_id });
+                return;
+            }
+            let delay = hooks.row_delay_ms.load(Ordering::SeqCst);
+            if delay > 0 {
+                std::thread::sleep(Duration::from_millis(delay));
+            }
+            send(Completion::Progress {
+                task_id: task_id.clone(),
+                stage: "评估筛选规则".to_string(),
+                done: idx as u64,
+                total,
+            });
+        }
+        let (verdict, reasons, field_values) = universe::eval_group(&spec.rule, instrument, &ctx);
+        rows.push(MemberRow {
+            instrument_id: instrument.clone(),
+            name: String::new(),
+            as_of: spec.as_of.clone(),
+            verdict: match verdict {
+                Tri::Hit => "pass",
+                Tri::Miss => "exclude",
+                Tri::Unknown => "unknown",
+            }
+            .to_string(),
+            reasons,
+            field_values,
+            available_at: None,
+        });
+    }
+
+    // 提交前最后响应一次取消
+    if cancel.load(Ordering::SeqCst) {
+        send(Completion::Cancelled { task_id });
+        return;
+    }
+
+    let doc = PreviewDoc {
+        kind: "universe_preview".to_string(),
+        as_of: spec.as_of.clone(),
+        snapshot_id: spec.snapshot_id.clone(),
+        mode: spec.mode.as_str().to_string(),
+        membership: spec.membership.as_str().to_string(),
+        rule: spec.rule.clone(),
+        counts: PreviewCounts {
+            pass: rows.iter().filter(|r| r.verdict == "pass").count() as u64,
+            exclude: rows.iter().filter(|r| r.verdict == "exclude").count() as u64,
+            unknown: rows.iter().filter(|r| r.verdict == "unknown").count() as u64,
+        },
+        rows,
+    };
+    let bytes = crate::hash::canonical_json(&doc).into_bytes();
+    let size = bytes.len() as u64;
+    let artifact_hash = match objects.put(&bytes) {
+        Ok(h) => h,
+        Err(e) => return fail(task_id, e),
+    };
+    send(Completion::PreviewSucceeded { task_id, artifact_hash, size });
 }
 
 impl From<&ResearchError> for ErrorBody {
