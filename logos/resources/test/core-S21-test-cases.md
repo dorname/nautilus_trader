@@ -13,7 +13,12 @@
 | UT-S21-05 | S21-AC-01 | 工作区路径含中文与空格 | 正常打开与导入；输出转义正确 |
 | UT-S21-06 | S21-AC-02 | 注入 TICKFLOW_API_KEY 探针后全命令执行 | CLI 输出与日志不含变量名与探针值（凭证红线） |
 | ST-S21-01 | S21-AC-04 | CLI 全链路：import→universe save→run --wait→compare→plan generate/export | 每步退出码 0；导出 CSV sha256 与回执一致；比较含双方指标与差异清单 |
-| ST-S21-02 | S21-AC-04 | run --wait 期间 cancel 子命令取消 | 任务 cancelled 终态无部分产物；再次 show 终态一致 |
+| ST-S21-02 | S21-AC-04 | run submit（不等待）后以 cancel 子命令取消（跨命令独立协调器生命周期） | cancel 确定性 ALREADY_TERMINAL 退出码 3；终态（succeeded 或重启扫描诚实标注 interrupted）无部分产物；再次 show 终态一致 |
+
+> 架构口径（批次 L1 落地澄清）：CLI 每条子命令独立开关协调器（单工作区单活跃协调器），
+> 跨命令不存在活跃协调器，任务跨命令必为终态（完成事件已处理 → succeeded，否则重启扫描 →
+> interrupted），因此跨命令 cancel 的确定性行为即 ALREADY_TERMINAL；「运行中协作取消」
+> 由协调器场景测试（crates/research-domain/tests）与 GUI 长驻协调器形态（批次 L4）承载。
 
 ### reporter
 使用共享reporter写入真实断言结果；fail含error，skip不可算通过。详见 core-09-research-test-cases.md。

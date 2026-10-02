@@ -1,0 +1,27 @@
+[package]
+name = "nautilus-research-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "研究桌面 CLI——协调器库 API 之上的薄壳命令行（import/universe/run/compare/plan）"
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "research"
+path = "src/main.rs"
+
+[dependencies]
+nautilus-research-domain = { path = "../research-domain" }
+nautilus-research-worker = { path = "../research-worker" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+nautilus-research-testkit = { path = "../research-testkit" }

@@ -13,10 +13,10 @@
 ## [code] 代码实现
 
 ### 批次 L1：CLI（crates/research-cli）
-- [ ] 新增 crate 骨架与子命令解析（clap 或手写；import/universe/run/compare/plan）
-- [ ] 子命令对接 Coordinator 类型化命令（幂等回执、等待终态、JSON/表格双输出；退出码契约 0/3/4 对齐 worker）
-- [ ] UT/ST 测试（用例 ID 对齐 core-S21-test-cases.md）＋ OpenLogos reporter
-- [ ] pre_run_command 链追加 `-p nautilus-research-cli` 并重跑 verify 确认 S21 用例入账
+- [x] 新增 crate 骨架与子命令解析（clap 或手写；import/universe/run/compare/plan）
+- [x] 子命令对接 Coordinator 类型化命令（幂等回执、等待终态、JSON/表格双输出；退出码契约 0/3/4 对齐 worker）
+- [x] UT/ST 测试（用例 ID 对齐 core-S21-test-cases.md）＋ OpenLogos reporter
+- [x] pre_run_command 链追加 `-p nautilus-research-cli` 并重跑 verify 确认 S21 用例入账
 
 ### 批次 L2：GUI 依赖与骨架（crates/research-desktop）
 - [ ] eframe/egui/egui_plot 依赖接入（网络拉取后锁定 Cargo.lock，或 vendor 离线化；记录获取方式）

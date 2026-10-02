@@ -40,6 +40,7 @@ members = [
   "crates/portfolio",
   "crates/pyo3",
   "crates/research-domain",
+  "crates/research-cli",
   "crates/research-testkit",
   "crates/research-worker",
   "crates/risk",

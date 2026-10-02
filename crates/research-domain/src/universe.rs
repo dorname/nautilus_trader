@@ -93,8 +93,8 @@ pub struct OrGroup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename = "or")]
 pub enum OrOp {
+    #[serde(rename = "or")]
     Or,
 }
 
@@ -114,8 +114,8 @@ pub struct RuleGroup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename = "and")]
 pub enum AndOp {
+    #[serde(rename = "and")]
     And,
 }
 

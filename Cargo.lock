@@ -6794,6 +6794,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nautilus-research-cli"
+version = "0.65.0"
+dependencies = [
+ "nautilus-research-domain",
+ "nautilus-research-testkit",
+ "nautilus-research-worker",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nautilus-research-domain"
 version = "0.65.0"
 dependencies = [
