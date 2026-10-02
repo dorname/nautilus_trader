@@ -30,9 +30,20 @@
 > 近似玻璃质感（视觉验收口径已在 UT-S15-08 断言色值与对比度）。
 
 ### 批次 L3：研究流水线五页对接
-- [ ] 数据快照/股票池/运行/比较/计划页对接 Coordinator（类型化消息、后台任务状态、取消）
-- [ ] 运行页 worker_bin 子进程链路与结果视图；比较页指标表与差异清单；计划页 CSV 导出
-- [ ] UT/ST（页面状态机 + 协调器对接）＋ reporter；UT-S15-05/06、ST-S15-02/03 可执行性复评入 manifest
+- [x] 数据快照/股票池/运行/比较/计划页对接 Coordinator（类型化消息、后台任务状态、取消）
+- [x] 运行页 worker_bin 子进程链路与结果视图；比较页指标表与差异清单；计划页 CSV 导出
+- [x] UT/ST（页面状态机 + 协调器对接）＋ reporter；UT-S15-05/06、ST-S15-02/03 可执行性复评入 manifest
+
+> L3 落地记录：bridge（表单→类型化 spec→Coordinator）＋ pipeline（TaskWatch
+> 状态机：提交→每 500ms 轮询 get_task→终态落定即停）；静默零帧、仅活跃任务
+> 期间 request_repaint_after(POLL_INTERVAL)（CPU 红线）。取消语义：GUI 长驻
+> 协调器下 cancel 直达（区别于 CLI 跨命令的 ALREADY_TERMINAL——批次 L1 结论）。
+> 复评结论：UT-S15-05/06 性能量测仍需参考机（保留 skip，skip 不可计为通过）；
+> ST-S15-02/03 双平台 GUI 旅程因桌面应用已可启动而**具备执行条件**，本开发环境
+> （WSL2 无显示）不可自动化，维持 [manual] 人工验收口径，待有显示环境执行后附
+> 运行日志与截图。运行页 worker_bin 子进程链路：CoordinatorConfig 未配置
+> worker_bin 时进程内执行器承载（与 CLI/测试同一路径），配置后为子进程隔离——
+> GUI 不触碰引擎对象（Rc/RefCell 不跨线程），参考机性能验收时一并验证。
 
 ### 批次 L4：AI 工作台四页（S17~S20）
 - [ ] 离线预设意图对话引擎（意图路由 → 后台任务；项目隔离与会话持久）

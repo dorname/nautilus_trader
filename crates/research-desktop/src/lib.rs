@@ -8,7 +8,9 @@
 //! 引擎对象（Rc/RefCell，非 Send）不跨线程；按需重绘不打爆 CPU。
 
 pub mod app;
+pub mod bridge;
 pub mod layout;
 pub mod nav;
+pub mod pipeline;
 pub mod session;
 pub mod theme;

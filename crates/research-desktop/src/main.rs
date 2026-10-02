@@ -18,7 +18,13 @@ fn main() {
         native,
         Box::new(|cc| {
             let missing = theme::setup_fonts(&cc.egui_ctx) == 0;
-            Ok(Box::new(ResearchApp::new(missing)) as Box<dyn eframe::App>)
+            let mut app = ResearchApp::new(missing);
+            // 工作区：环境变量 RESEARCH_WORKSPACE 优先，缺省 ./research-workspace
+            let ws = std::env::var_os("RESEARCH_WORKSPACE")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"));
+            app.attach_bridge(ws);
+            Ok(Box::new(app) as Box<dyn eframe::App>)
         }),
     );
     if let Err(e) = result {

@@ -21,6 +21,9 @@ path = "src/main.rs"
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_plot = { workspace = true }
+nautilus-research-domain = { path = "../research-domain" }
+nautilus-research-worker = { path = "../research-worker" }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 nautilus-research-testkit = { path = "../research-testkit" }
