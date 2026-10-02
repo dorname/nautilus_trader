@@ -6,12 +6,14 @@
 
 use egui::{Color32, CornerRadius, FontId, Frame, Margin, Pos2, Stroke};
 
+use crate::ai::{self, Intent};
 use crate::bridge::{CompareForm, DesktopBridge, ImportForm, PlanForm, RunForm, UniverseForm};
 use crate::layout;
 use crate::nav::{Page, ALL_PAGES};
 use crate::pipeline::{terminal_error_text, PageState, TaskWatch, POLL_INTERVAL};
 use crate::session::Session;
 use crate::theme;
+use crate::workspace::Workspace;
 
 /// 提交类页面的轮询键。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,6 +22,45 @@ enum PageKey {
     Universe,
     Run,
     Plan,
+    /// AI 工作台实验运行。
+    AiRun,
+}
+
+/// AI 工作台四子视图（S17~S20：项目/开发/调试/计划桥）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiView {
+    Project,
+    Dev,
+    Debug,
+    PlanBridge,
+}
+
+impl AiView {
+    pub const ALL: [AiView; 4] = [
+        AiView::Project,
+        AiView::Dev,
+        AiView::Debug,
+        AiView::PlanBridge,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Project => "项目",
+            Self::Dev => "开发",
+            Self::Debug => "调试",
+            Self::PlanBridge => "计划桥",
+        }
+    }
+
+    /// 意图目标页 → 子视图（对话路由跳转）。
+    pub fn from_intent(intent: Intent) -> Self {
+        match intent.target_page() {
+            "开发" => Self::Dev,
+            "调试" => Self::Debug,
+            "计划桥" => Self::PlanBridge,
+            _ => Self::Project,
+        }
+    }
 }
 
 /// 研究桌面应用。
@@ -52,6 +93,28 @@ pub struct ResearchApp {
     pub plan_form: PlanForm,
     pub plan_page: PageState<TaskWatch>,
     pub plan_exported: Option<String>,
+
+    // AI 工作台页（S17~S20：会话态随应用存活，切页/切项目不丢失）
+    pub workspace: Workspace,
+    pub ai_view: AiView,
+    pub ai_input: String,
+    pub ai_notice: Option<String>,
+    // 项目视图：需求确认表单
+    pub ai_req_text: String,
+    pub ai_req_acceptance: String,
+    pub ai_req_alloc: f64,
+    pub ai_req_min_amount: String,
+    // 开发视图：设计说明与代码草稿
+    pub ai_design_note: String,
+    pub ai_code_source: String,
+    // 调试视图：实验任务与当前实验引用
+    pub ai_run: PageState<TaskWatch>,
+    pub ai_experiment: Option<usize>,
+    // 计划桥视图：交易日/持仓 JSON/核对结果/导出产物
+    pub ai_plan_trade_date: String,
+    pub ai_plan_json: String,
+    pub ai_plan_issues: Option<Vec<String>>,
+    pub ai_plan_csv: Option<String>,
 }
 
 impl ResearchApp {
@@ -80,6 +143,22 @@ impl ResearchApp {
             plan_form: PlanForm::default(),
             plan_page: PageState::default(),
             plan_exported: None,
+            workspace: Workspace::new(),
+            ai_view: AiView::Project,
+            ai_input: String::new(),
+            ai_notice: None,
+            ai_req_text: String::new(),
+            ai_req_acceptance: String::new(),
+            ai_req_alloc: 30.0,
+            ai_req_min_amount: "1000000".into(),
+            ai_design_note: String::new(),
+            ai_code_source: String::new(),
+            ai_run: PageState::default(),
+            ai_experiment: None,
+            ai_plan_trade_date: String::new(),
+            ai_plan_json: String::new(),
+            ai_plan_issues: None,
+            ai_plan_csv: None,
         }
     }
 
@@ -246,13 +325,14 @@ impl eframe::App for ResearchApp {
 }
 
 impl ResearchApp {
-    /// 活跃任务计数（四页提交类任务）。
+    /// 活跃任务计数（五处提交类任务）。
     fn active_task_count(&self) -> usize {
         [
             &self.snapshot_page.watch,
             &self.universe_page.watch,
             &self.run_page.watch,
             &self.plan_page.watch,
+            &self.ai_run.watch,
         ]
         .iter()
         .filter(|w| w.is_active())
@@ -266,6 +346,7 @@ impl ResearchApp {
             PageKey::Universe => &self.universe_page,
             PageKey::Run => &self.run_page,
             PageKey::Plan => &self.plan_page,
+            PageKey::AiRun => &self.ai_run,
         }
     }
 
@@ -276,7 +357,15 @@ impl ResearchApp {
             PageKey::Universe => self.universe_page = state,
             PageKey::Run => self.run_page = state,
             PageKey::Plan => self.plan_page = state,
+            PageKey::AiRun => self.ai_run = state,
         }
+    }
+
+    /// 终态错误行写回指定页。
+    fn note_page_error(&mut self, key: PageKey, text: String) {
+        let mut state = self.page_state(key).clone();
+        state.note_terminal_error(text);
+        self.set_page_state(key, state);
     }
 
     /// 轮询某页任务：get_task → 状态机推进（终态落定并停止轮询）。
@@ -309,14 +398,7 @@ impl ResearchApp {
             Page::Runs => self.render_runs(ui),
             Page::Compare => self.render_compare(ui),
             Page::Plan => self.render_plan(ui),
-            Page::AiWorkspace => {
-                ui.heading(egui::RichText::new("AI 工作台").color(theme::TEXT));
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(Page::AiWorkspace.placeholder())
-                        .color(theme::TEXT_DIM),
-                );
-            }
+            Page::AiWorkspace => self.render_ai_workspace(ui),
         }
     }
 
@@ -574,7 +656,7 @@ impl ResearchApp {
                             .button(egui::RichText::new("取消").color(theme::DANGER))
                             .clicked()
                         {
-                            self.do_cancel(task_id);
+                            self.do_cancel(task_id, PageKey::Run);
                         }
                     }
                 }
@@ -605,13 +687,14 @@ impl ResearchApp {
         }
     }
 
-    fn do_cancel(&mut self, task_id: String) {
+    fn do_cancel(&mut self, task_id: String, key: PageKey) {
         let Some(bridge) = &self.bridge else { return };
         match bridge.cancel(&task_id) {
             Ok(_) => {}
-            Err(e) => self
-                .run_page
-                .note_terminal_error(format!("取消失败{}", crate::pipeline::rejection_text(&e))),
+            Err(e) => self.note_page_error(
+                key,
+                format!("取消失败{}", crate::pipeline::rejection_text(&e)),
+            ),
         }
     }
 
@@ -824,6 +907,609 @@ impl ResearchApp {
             Err(e) => self
                 .plan_page
                 .note_terminal_error(format!("备注失败{}", crate::pipeline::rejection_text(&e))),
+        }
+    }
+
+    // ------------------------------------------------ AI 工作台页（S17～S20）
+    fn render_ai_workspace(&mut self, ui: &mut egui::Ui) {
+        let project = self.workspace.current().name.clone();
+        ui.heading(
+            egui::RichText::new(format!("AI 工作台 · {project}")).color(theme::TEXT),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(
+                "离线预设意图（无 LLM、无网络）：只能执行预设研究动作，未知请求诚实拒绝",
+            )
+            .color(theme::TEXT_DIM),
+        );
+
+        // 对话区（仅渲染最近 20 条，避免长会话拖慢帧；完整历史留在会话态）
+        let msgs: Vec<(bool, String)> = self
+            .workspace
+            .current()
+            .messages
+            .iter()
+            .rev()
+            .take(20)
+            .rev()
+            .map(|m| (m.role == crate::workspace::Role::User, m.text.clone()))
+            .collect();
+        Frame::NONE
+            .fill(theme::GLASS_SOFT)
+            .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                for (is_user, text) in &msgs {
+                    ui.label(
+                        egui::RichText::new(if *is_user {
+                            format!("你：{text}")
+                        } else {
+                            format!("助手：{text}")
+                        })
+                        .color(if *is_user {
+                            theme::TEXT
+                        } else {
+                            theme::ACCENT_CYAN
+                        }),
+                    );
+                }
+            });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let mut input = self.ai_input.clone();
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut input)
+                    .desired_width(420.0)
+                    .hint_text("试试：确认需求 / 保存版本 / 运行实验 / 核对计划"),
+            );
+            if resp.changed() {
+                self.ai_input = input;
+            }
+            if ui
+                .button(egui::RichText::new("发送").color(theme::ACCENT))
+                .clicked()
+            {
+                self.do_ai_send();
+            }
+        });
+        if let Some(n) = &self.ai_notice {
+            ui.label(egui::RichText::new(n).color(theme::TEXT_DIM));
+        }
+
+        ui.add_space(8.0);
+        // 子视图切换（意图路由会自动跳转；也可手动切）
+        ui.horizontal(|ui| {
+            for v in AiView::ALL {
+                if ui.selectable_label(self.ai_view == v, v.label()).clicked() {
+                    self.ai_view = v;
+                }
+            }
+        });
+        ui.add_space(4.0);
+        match self.ai_view {
+            AiView::Project => self.render_ai_project(ui),
+            AiView::Dev => self.render_ai_dev(ui),
+            AiView::Debug => self.render_ai_debug(ui),
+            AiView::PlanBridge => self.render_ai_plan_bridge(ui),
+        }
+        self.poll(PageKey::AiRun);
+    }
+
+    /// 对话发送：意图路由 → 预设回复 → 目标子视图跳转（Unknown 停留并诚实解释）。
+    fn do_ai_send(&mut self) {
+        let text = std::mem::take(&mut self.ai_input);
+        if text.trim().is_empty() {
+            return;
+        }
+        let intent = ai::route(&text);
+        let reply = ai::reply(&text);
+        let p = self.workspace.current_mut();
+        p.messages.push(crate::workspace::ChatMessage {
+            role: crate::workspace::Role::User,
+            text,
+        });
+        p.messages.push(crate::workspace::ChatMessage {
+            role: crate::workspace::Role::Assistant,
+            text: reply.clone(),
+        });
+        if intent != Intent::Unknown {
+            self.ai_view = AiView::from_intent(intent);
+        }
+        self.ai_notice = Some(reply);
+    }
+
+    // ---- 项目视图：项目隔离 + 需求确认（S17）
+    fn render_ai_project(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("项目（会话与版本隔离；切回时消息与版本保留）")
+                .color(theme::TEXT_DIM),
+        );
+        let names: Vec<(usize, String, bool)> = self
+            .workspace
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.name.clone(), i == self.workspace.active))
+            .collect();
+        ui.horizontal(|ui| {
+            for (i, name, active) in names {
+                if ui.selectable_label(active, name).clicked() {
+                    self.workspace.switch_to(i);
+                }
+            }
+            if ui.button("＋ 新建项目").clicked() {
+                let n = self.workspace.projects.len() + 1;
+                let id = self.workspace.add_project(format!("研究项目 {n}"));
+                self.ai_notice = Some(format!("已新建项目 {id}：会话与版本与原项目互不串扰"));
+            }
+        });
+
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("需求确认（生成 R 版本；确认后不可变）").color(theme::TEXT),
+        );
+        let mut text = self.ai_req_text.clone();
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut text)
+                    .desired_rows(2)
+                    .desired_width(560.0)
+                    .hint_text("研究目标"),
+            )
+            .changed()
+        {
+            self.ai_req_text = text;
+        }
+        ui.horizontal(|ui| {
+            let mut acc = self.ai_req_acceptance.clone();
+            ui.label("验收标准：");
+            if ui
+                .add(egui::TextEdit::singleline(&mut acc).desired_width(180.0))
+                .changed()
+            {
+                self.ai_req_acceptance = acc;
+            }
+            ui.label("投入比例 %：");
+            ui.add(
+                egui::DragValue::new(&mut self.ai_req_alloc)
+                    .range(0.0..=100.0)
+                    .speed(1.0),
+            );
+            let mut min_amt = self.ai_req_min_amount.clone();
+            ui.label("最低成交额：");
+            if ui
+                .add(egui::TextEdit::singleline(&mut min_amt).desired_width(110.0))
+                .changed()
+            {
+                self.ai_req_min_amount = min_amt;
+            }
+            if ui
+                .button(egui::RichText::new("确认需求").color(theme::ACCENT))
+                .clicked()
+            {
+                self.do_confirm_requirement();
+            }
+        });
+        // R 版本列表（当前活动标记）
+        let reqs: Vec<(usize, String)> = self
+            .workspace
+            .current()
+            .reqs
+            .iter()
+            .map(|r| {
+                (
+                    r.id,
+                    format!(
+                        "R{}：{}（投入 {:.0}%，成交额 ≥{:.0}）",
+                        r.id,
+                        r.text,
+                        r.allocation * 100.0,
+                        r.min_amount
+                    ),
+                )
+            })
+            .collect();
+        for (id, desc) in reqs {
+            let active = self.workspace.current().active_req == Some(id);
+            ui.label(
+                egui::RichText::new(format!("{desc}{}", if active { "  ← 当前" } else { "" }))
+                    .color(if active { theme::ACCENT } else { theme::TEXT }),
+            );
+        }
+    }
+
+    fn do_confirm_requirement(&mut self) {
+        let min_amount = self.ai_req_min_amount.trim().parse::<f64>().unwrap_or(-1.0);
+        match self.workspace.confirm_requirement(
+            &self.ai_req_text,
+            &self.ai_req_acceptance,
+            self.ai_req_alloc,
+            min_amount,
+        ) {
+            Ok(id) => {
+                let p = self.workspace.current_mut();
+                p.messages.push(crate::workspace::ChatMessage {
+                    role: crate::workspace::Role::Assistant,
+                    text: format!("已生成需求版本 R{id}：上游已更新，旧版本将不可新运行（历史实验保留）。"),
+                });
+                self.ai_notice = Some(format!("已生成需求版本 R{id}"));
+            }
+            Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    // ---- 开发视图：设计绑定需求 + 版本不可变（S18）
+    fn render_ai_dev(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("开发（设计绑定当前需求；版本不可变并冻结 R/D 引用）")
+                .color(theme::TEXT_DIM),
+        );
+        ui.horizontal(|ui| {
+            let mut note = self.ai_design_note.clone();
+            ui.label("设计说明：");
+            if ui
+                .add(egui::TextEdit::singleline(&mut note).desired_width(240.0))
+                .changed()
+            {
+                self.ai_design_note = note;
+            }
+            if ui.button("生成设计").clicked() {
+                self.do_generate_design();
+            }
+        });
+        let mut src = self.ai_code_source.clone();
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut src)
+                    .desired_rows(4)
+                    .desired_width(560.0)
+                    .font(FontId::monospace(12.0))
+                    .hint_text("策略代码草稿"),
+            )
+            .changed()
+        {
+            self.ai_code_source = src;
+        }
+        if ui
+            .button(egui::RichText::new("保存版本（不可变）").color(theme::ACCENT))
+            .clicked()
+        {
+            self.do_save_version();
+        }
+        // 版本列表：冻结引用 + 新鲜状态
+        let rows: Vec<(usize, usize, usize, bool, bool)> = {
+            let p = self.workspace.current();
+            p.versions
+                .iter()
+                .map(|v| {
+                    (
+                        v.id,
+                        v.req_id,
+                        v.design_id,
+                        self.workspace.version_fresh(v.id),
+                        p.active_version == Some(v.id),
+                    )
+                })
+                .collect()
+        };
+        for (id, req, design, fresh, active) in rows {
+            ui.label(
+                egui::RichText::new(format!(
+                    "v{id}（R{req}/D{design}）{}{}",
+                    if fresh { " 新鲜" } else { " 已过期" },
+                    if active { "  ← 当前" } else { "" }
+                ))
+                .color(if fresh { theme::ACCENT } else { theme::TEXT_DIM }),
+            );
+        }
+    }
+
+    fn do_generate_design(&mut self) {
+        let note = std::mem::take(&mut self.ai_design_note);
+        match self.workspace.generate_design(note) {
+            Ok(id) => self.ai_notice = Some(format!("已生成设计 D{id}，绑定当前需求版本")),
+            Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    fn do_save_version(&mut self) {
+        let src = std::mem::take(&mut self.ai_code_source);
+        match self.workspace.save_version(src) {
+            Ok(id) => {
+                self.ai_notice =
+                    Some(format!("已保存版本 v{id}：冻结 R/D 引用与输入，不可变"))
+            }
+            Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    // ---- 调试视图：实验真实执行（协调器）+ 历史保留（S18/S19）
+    fn render_ai_debug(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("调试（实验冻结当前版本执行；上游过期即拒绝；历史实验不变）")
+                .color(theme::TEXT_DIM),
+        );
+        let (vid, fresh) = {
+            let p = self.workspace.current();
+            (
+                p.active_version,
+                p.active_version
+                    .map(|v| self.workspace.version_fresh(v))
+                    .unwrap_or(false),
+            )
+        };
+        match vid {
+            Some(v) => ui.label(egui::RichText::new(format!(
+                "当前版本 v{v}：{}",
+                if fresh { "可运行" } else { "已过期，请重新保存版本" }
+            ))
+            .color(if fresh { theme::ACCENT } else { theme::DANGER })),
+            None => ui.label(egui::RichText::new("尚无版本：请先在开发页保存").color(theme::DANGER)),
+        };
+        ui.horizontal(|ui| {
+            if ui
+                .button(egui::RichText::new("运行实验").color(theme::ACCENT))
+                .clicked()
+            {
+                self.do_ai_run();
+            }
+            if self.ai_run.watch.is_active() {
+                if let Some(t) = self.ai_run.watch.task_id() {
+                    let t = t.to_string();
+                    if ui
+                        .button(egui::RichText::new("取消").color(theme::DANGER))
+                        .clicked()
+                    {
+                        self.do_cancel(t, PageKey::AiRun);
+                    }
+                }
+            }
+        });
+        render_watch(ui, &self.ai_run);
+        // 实验列表（含历史；取消无产物时收益列为「—」）
+        let exps: Vec<(usize, usize, Option<String>, Option<String>)> = self
+            .workspace
+            .current()
+            .experiments
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    e.version_id,
+                    e.task_id.clone(),
+                    e.total_return.clone(),
+                )
+            })
+            .collect();
+        if !exps.is_empty() {
+            ui.add_space(8.0);
+            egui::Grid::new("ai-exp-grid").show(ui, |ui| {
+                for head in ["实验", "版本", "任务", "期末收益"] {
+                    ui.label(egui::RichText::new(head).color(theme::TEXT_DIM));
+                }
+                ui.end_row();
+                for (id, ver, task, ret) in exps {
+                    ui.label(format!("E{id}"));
+                    ui.label(format!("v{ver}"));
+                    ui.label(
+                        egui::RichText::new(task.as_deref().unwrap_or("（无任务）"))
+                            .font(FontId::monospace(11.0)),
+                    );
+                    ui.label(ret.unwrap_or_else(|| "—".into()));
+                    ui.end_row();
+                }
+            });
+        }
+    }
+
+    /// 运行实验：先在工作台冻结（过期在此拒绝），再提交真实协调器运行。
+    fn do_ai_run(&mut self) {
+        let exp_id = match self.workspace.run_experiment(None) {
+            Ok(id) => id,
+            Err(e) => {
+                self.ai_notice = Some(e);
+                return;
+            }
+        };
+        self.ai_experiment = Some(exp_id);
+        let Some(snapshot_id) = self.pick_snapshot().map(|(_, id)| id) else {
+            self.ai_run
+                .on_submit_failed("尚无数据快照：请先在数据快照页导入");
+            return;
+        };
+        let Some(u) = &self.universe_saved else {
+            self.ai_run
+                .on_submit_failed("尚无股票池版本：请先在股票池页保存");
+            return;
+        };
+        let universe_id = u.universe_id.clone();
+        let form = self.run_form.clone();
+        let Some(bridge) = &self.bridge else { return };
+        match bridge.submit_run(&snapshot_id, &universe_id, &form) {
+            Ok(r) => {
+                let task_id = r.task_id.clone();
+                self.ai_run.on_submitted(r.task_id, "AI 工作台实验运行中…");
+                self.workspace.attach_task(exp_id, task_id);
+            }
+            Err(e) => self
+                .ai_run
+                .on_submit_failed(format!("运行被拒绝{}", crate::pipeline::rejection_text(&e))),
+        }
+    }
+
+    // ---- 计划桥视图：冻结签名 + 核对门控 + 确认导出（S20）
+    fn render_ai_plan_bridge(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("计划桥（计划冻结签名；仅核对通过且确认后可导出 CSV）")
+                .color(theme::TEXT_DIM),
+        );
+        ui.horizontal(|ui| {
+            let mut d = self.ai_plan_trade_date.clone();
+            ui.label("交易日：");
+            if ui
+                .add(egui::TextEdit::singleline(&mut d).desired_width(120.0))
+                .changed()
+            {
+                self.ai_plan_trade_date = d;
+            }
+            ui.label(
+                egui::RichText::new("（数据快照取最新已导入）").color(theme::TEXT_DIM),
+            );
+        });
+        let mut json = self.ai_plan_json.clone();
+        if ui
+            .add(
+                egui::TextEdit::multiline(&mut json)
+                    .desired_rows(4)
+                    .desired_width(560.0)
+                    .font(FontId::monospace(12.0))
+                    .hint_text(r#"{"cash_cny":"10000","total_assets_cny":"20000","positions":[…]}"#),
+            )
+            .changed()
+        {
+            self.ai_plan_json = json;
+        }
+        ui.horizontal(|ui| {
+            if ui.button("生成计划").clicked() {
+                self.do_ai_plan_generate();
+            }
+            if ui.button("核对").clicked() {
+                self.do_ai_plan_check();
+            }
+            if ui
+                .button(egui::RichText::new("确认导出").color(theme::ACCENT))
+                .clicked()
+            {
+                self.do_ai_plan_export();
+            }
+        });
+        if let Some(issues) = &self.ai_plan_issues {
+            if issues.is_empty() {
+                ui.label(egui::RichText::new("核对通过：可确认导出").color(theme::ACCENT));
+            } else {
+                for i in issues {
+                    ui.label(egui::RichText::new(format!("⚠ {i}")).color(theme::DANGER));
+                }
+            }
+        }
+        if let Some(csv) = &self.ai_plan_csv {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("导出内容（含演示标识）：").color(theme::TEXT_DIM));
+            ui.label(egui::RichText::new(csv).font(FontId::monospace(11.0)).color(theme::TEXT));
+        }
+    }
+
+    fn do_ai_plan_generate(&mut self) {
+        let Some(snapshot_id) = self.pick_snapshot().map(|(_, id)| id) else {
+            self.ai_notice = Some("尚无数据快照：请先在数据快照页导入".into());
+            return;
+        };
+        let (cash, total, rows) = match crate::bridge::parse_plan_rows(&self.ai_plan_json) {
+            Ok(x) => x,
+            Err(e) => {
+                self.ai_notice = Some(e);
+                return;
+            }
+        };
+        let date = self.ai_plan_trade_date.trim().to_string();
+        if date.is_empty() {
+            self.ai_notice = Some("请填写交易日".into());
+            return;
+        }
+        match self
+            .workspace
+            .make_plan(snapshot_id, date, cash, total, rows)
+        {
+            Ok(()) => {
+                self.ai_plan_issues = None;
+                self.ai_plan_csv = None;
+                self.ai_notice = Some("已生成计划草稿：账户与数据输入已冻结为签名".into());
+            }
+            Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    fn do_ai_plan_check(&mut self) {
+        // 买入含费合计：Σ 目标买入金额 ×（1 + 佣金率）——费率取运行页成本假设
+        let rate = self
+            .run_form
+            .commission_rate
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let cost = self
+            .workspace
+            .current()
+            .plan
+            .as_ref()
+            .map(|t| {
+                t.rows
+                    .iter()
+                    .filter(|r| r.5 > 0)
+                    .map(|r| r.1 * r.5 as f64 * (1.0 + rate))
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        match self.workspace.check_plan(cost) {
+            Ok(issues) => {
+                self.ai_plan_csv = None;
+                self.ai_notice = Some(if issues.is_empty() {
+                    "核对通过".into()
+                } else {
+                    format!("核对未通过：{} 项问题", issues.len())
+                });
+                self.ai_plan_issues = Some(issues);
+            }
+            Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    /// 确认导出：按当前表单输入重算签名——生成后输入未变才放行（S20 门控）。
+    fn do_ai_plan_export(&mut self) {
+        let (draft_snapshot, version_id) = {
+            let p = self.workspace.current();
+            let Some(t) = &p.plan else {
+                self.ai_notice = Some("尚未生成计划".into());
+                return;
+            };
+            (t.snapshot.clone(), p.active_version)
+        };
+        let Some(version_id) = version_id else {
+            self.ai_notice = Some("当前版本不存在".into());
+            return;
+        };
+        let Ok((cash, _total, rows)) = crate::bridge::parse_plan_rows(&self.ai_plan_json) else {
+            self.ai_notice = Some("持仓 JSON 已不可解析，无法确认导出".into());
+            return;
+        };
+        let sig = crate::workspace::plan_signature(
+            version_id,
+            &draft_snapshot,
+            self.ai_plan_trade_date.trim(),
+            cash,
+            &rows,
+        );
+        match self.workspace.confirm_export(sig) {
+            Ok(csv) => {
+                // 写入工作区导出目录（人工交接；不发送任何订单）
+                let path = self
+                    .bridge
+                    .as_ref()
+                    .map(|b| b.workspace.join("研序-交易计划.csv"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("研序-交易计划.csv"));
+                match std::fs::write(&path, csv.as_bytes()) {
+                    Ok(()) => self.ai_notice = Some(format!("已确认导出：{}", path.display())),
+                    Err(e) => {
+                        self.ai_notice = Some(format!("文件写入失败：{e}（CSV 内容保留在下方）"))
+                    }
+                }
+                self.ai_plan_csv = Some(csv);
+            }
+            Err(e) => {
+                self.ai_plan_csv = None;
+                self.ai_notice = Some(e);
+            }
         }
     }
 

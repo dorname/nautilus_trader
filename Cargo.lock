@@ -7947,7 +7947,10 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "nautilus-research-domain",
  "nautilus-research-testkit",
+ "nautilus-research-worker",
+ "serde_json",
 ]
 
 [[package]]

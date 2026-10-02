@@ -374,3 +374,59 @@ impl DesktopBridge {
         self.coordinator.get_trade_plan(plan_id)
     }
 }
+
+/// AI 工作台计划桥：持仓 JSON →（现金, 总资产, 计划行）。
+/// 行 =（代码, 参考价, 当前持有, 可卖, 目标, 调整数量）；调整 = 目标 − 当前。
+///
+/// ```json
+/// {"cash_cny":"10000","total_assets_cny":"20000",
+///  "positions":[{"instrument_id":"SYN-A","price":10,"quantity":1000,
+///                "sellable_quantity":1000,"target_quantity":1100}]}
+/// ```
+pub fn parse_plan_rows(
+    json: &str,
+) -> Result<(f64, f64, Vec<(String, f64, i64, i64, i64, i64)>), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(json.trim()).map_err(|e| format!("持仓 JSON 解析失败：{e}"))?;
+    let num = |key: &str| -> Result<f64, String> {
+        v.get(key)
+            .and_then(|x| {
+                x.as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| x.as_f64())
+            })
+            .ok_or_else(|| format!("{key} 缺失或非法"))
+    };
+    let cash = num("cash_cny")?;
+    let total = num("total_assets_cny")?;
+    let arr = v
+        .get("positions")
+        .and_then(|x| x.as_array())
+        .ok_or("positions 缺失")?;
+    let mut rows = Vec::new();
+    for p in arr {
+        let symbol = p
+            .get("instrument_id")
+            .and_then(|x| x.as_str())
+            .ok_or("instrument_id 缺失")?
+            .to_string();
+        let price = p
+            .get("price")
+            .and_then(|x| x.as_f64())
+            .ok_or("price 缺失")?;
+        let qty = p
+            .get("quantity")
+            .and_then(|x| x.as_i64())
+            .ok_or("quantity 缺失")?;
+        let sellable = p
+            .get("sellable_quantity")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(qty);
+        let target = p
+            .get("target_quantity")
+            .and_then(|x| x.as_i64())
+            .unwrap_or(qty);
+        rows.push((symbol, price, qty, sellable, target, target - qty));
+    }
+    Ok((cash, total, rows))
+}

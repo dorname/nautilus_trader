@@ -7,6 +7,7 @@
 //! 落地边界（架构 core-05）：GUI 只发类型化消息、接收不可变视图；
 //! 引擎对象（Rc/RefCell，非 Send）不跨线程；按需重绘不打爆 CPU。
 
+pub mod ai;
 pub mod app;
 pub mod bridge;
 pub mod layout;
@@ -14,3 +15,4 @@ pub mod nav;
 pub mod pipeline;
 pub mod session;
 pub mod theme;
+pub mod workspace;
