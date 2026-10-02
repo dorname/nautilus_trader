@@ -19,9 +19,15 @@
 - [x] pre_run_command 链追加 `-p nautilus-research-cli` 并重跑 verify 确认 S21 用例入账
 
 ### 批次 L2：GUI 依赖与骨架（crates/research-desktop）
-- [ ] eframe/egui/egui_plot 依赖接入（网络拉取后锁定 Cargo.lock，或 vendor 离线化；记录获取方式）
-- [ ] 六页导航骨架＋黑色玻璃态主题（1440/1100 布局、会话状态、按需重绘不打爆 CPU）
-- [ ] UT（主题/布局状态/导航路由纯函数）＋ reporter
+- [x] eframe/egui/egui_plot 依赖接入（网络拉取后锁定 Cargo.lock，或 vendor 离线化；记录获取方式）
+- [x] 六页导航骨架＋黑色玻璃态主题（1440/1100 布局、会话状态、按需重绘不打爆 CPU）
+- [x] UT（主题/布局状态/导航路由纯函数）＋ reporter
+
+> L2 落地记录：依赖经网络 `cargo fetch` 拉取并锁定 Cargo.lock——eframe 0.36.2
+> （default-features=false + wgpu/x11/wayland/accesskit）、egui 0.36.2、egui_plot 0.37.0
+> （要求 egui ^0.36，与 eframe 0.36 配对）；工具链 Rust 1.98.1 满足上游 rust_version 1.95。
+> 原型 backdrop-filter 真实模糊为 CSS 能力，egui 即时模式以半透明面板色＋顶部高光描边
+> 近似玻璃质感（视觉验收口径已在 UT-S15-08 断言色值与对比度）。
 
 ### 批次 L3：研究流水线五页对接
 - [ ] 数据快照/股票池/运行/比较/计划页对接 Coordinator（类型化消息、后台任务状态、取消）

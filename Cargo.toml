@@ -41,6 +41,7 @@ members = [
   "crates/pyo3",
   "crates/research-domain",
   "crates/research-cli",
+  "crates/research-desktop",
   "crates/research-testkit",
   "crates/research-worker",
   "crates/risk",
@@ -157,6 +158,14 @@ derive_builder = { version = "0.20.2", default-features = false, features = [
 ] }
 dotenvy = "0.15.7"
 ed25519-dalek = "3.0.0"
+eframe = { version = "0.36.2", default-features = false, features = [
+  "wgpu",
+  "x11",
+  "wayland",
+  "accesskit",
+] }
+egui = "0.36.2"
+egui_plot = "0.37.0"
 enum_dispatch = "0.3.13"
 futures = { version = "0.3.34", default-features = false, features = [
   "std",

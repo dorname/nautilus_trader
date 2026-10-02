@@ -17,6 +17,8 @@ OpenLogos reporter；UT-S15-05/06 性能量测与 ST-S15-02/03 双平台 GUI 旅
 | ST-S15-01 | S15-AC-01 | GeneratePlan→GetTask→ExportPlan→SaveManualNote | 导出哈希一致、股数正确、数据版本和限制齐全；备注不更改回测fills |
 | ST-S15-02 | S15-AC-02 | Windows GUI用固定数据完成五页、取消、重开、中文输入和150%缩放 | 业务结果与F-RUN一致，无自动下单入口，附运行日志和截图 |
 | ST-S15-03 | S15-AC-02 | Linux Wayland／X11分别执行同旅程 | 两会话均可输入／导入／运行／导出，结果与Windows一致，附证据 |
+| UT-S15-07 | S15-AC-02 | 六页导航枚举与会话状态：标题互异、顺序往返、越界回退默认页、切页滚动保留 | 枚举完备（数据快照/股票池/运行/比较/计划/AI 工作台）；会话切页互不串扰（批次 L2 骨架，纯函数承载） |
+| UT-S15-08 | S15-AC-02 | 黑色玻璃态主题 token 与布局断点：#0a0a0a 基底、#22C55E/#06B6D4 主辅色、玻璃三层、1440/1100 断点 | 色值与设计一致；文字对比度 ≥4.5:1；最小窗口下中栏无水平溢出（批次 L2 骨架，纯函数承载） |
 
 ### reporter
 使用共享reporter写入真实断言结果；fail含error，skip不可算通过。详见 core-09-research-test-cases.md。
