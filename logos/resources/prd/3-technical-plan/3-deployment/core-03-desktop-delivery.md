@@ -19,3 +19,18 @@ Python 桥接使用随包隔离运行时，打包其实际所需的Parquet依赖
 
 未来实现提案必须包含打包代码、依赖许可证清单、两端GUI证据和真实UT/ST reporter，再请求verify。若安排安装部署，需独立获得用户授权并执行本方案；部署后再获得smoke授权。当前提案不包含部署执行任务，不宣称安装包已经存在。
 安装包验收：离线启动→导入固定日线→股票池→小型回测→结果→计划CSV→关闭重开。双平台都检查哈希、中文输入、150%缩放、路径、取消和崩溃恢复。用例在 core-desktop-smoke-test-cases.md，任一平台失败不得标记双平台完成。
+
+## 本地开发启动前置
+
+本提案（astock-desktop-launch）交付本地启动形态，不执行部署、不宣称安装包已存在。构建前置：
+
+- **egui/eframe/egui_plot 依赖获取**：网络可用时 `cargo fetch` 后锁定 Cargo.lock；
+  离线环境以 `cargo vendor` 离线化或写入本地缓存。实际获取方式与锁定版本记录于
+  实现 manifest。锁定前不进入后续批次。
+- **本地启动入口**：批次 L1 后 `cargo run -p nautilus-research-cli -- --workspace <路径> <子命令>`；
+  批次 L2 后 `cargo run -p nautilus-research-desktop`。
+- **无显示环境（WSL2 无 WSLg／服务器）**：GUI crate 保持可编译，验收以 CLI 链路＋
+  headless 单元测试承载；渲染与缩放类用例诚实标注 [manual]／skip，不以软件渲染
+  截图冒充双平台 GUI 验收（与上文「不把软件渲染支持当作已验证承诺」一致）。
+- **双平台安装包交付与 smoke**：维持上文门禁——独立部署级提案＋用户授权后才执行；
+  本提案完成不改变该边界。

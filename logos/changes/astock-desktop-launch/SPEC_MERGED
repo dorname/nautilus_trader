@@ -1,0 +1,15 @@
+merged: 2026-10-02
+proposal: astock-desktop-launch
+deltas: 10
+targets:
+- logos/resources/prd/2-product-design/2-page-design/01-no-gui-design-decision.md (MODIFIED 影响)
+- logos/resources/prd/3-technical-plan/1-architecture/core-05-research-architecture.md (ADDED CLI 入口与桌面落地批次)
+- logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S21-cli-research.md (ADDED 新文档)
+- logos/resources/prd/3-technical-plan/3-deployment/core-03-desktop-delivery.md (ADDED 本地开发启动前置)
+- logos/resources/test/core-S15-test-cases.md (MODIFIED)
+- logos/resources/test/core-S17-test-cases.md (MODIFIED)
+- logos/resources/test/core-S18-test-cases.md (MODIFIED)
+- logos/resources/test/core-S19-test-cases.md (MODIFIED)
+- logos/resources/test/core-S20-test-cases.md (MODIFIED)
+- logos/resources/test/core-S21-test-cases.md (ADDED 新文档)
+counter: scenario_counter.next_id 21 -> 22

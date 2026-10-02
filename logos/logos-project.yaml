@@ -4,13 +4,13 @@ project:
   methodology: OpenLogos
 tech_stack:
   language: Rust 1.98.1（rust-toolchain.toml 锁定）
-  gui: egui/eframe + egui_plot（规划；当前离线 registry 未缓存，GUI 批次待依赖可用）
+  gui: egui/eframe + egui_plot（astock-desktop-launch 提案 L2~L4 落地；依赖获取策略见 3-deployment/core-03-desktop-delivery.md）
   metadata: SQLite（rusqlite 0.38 bundled，单写线程 + 只读连接，WAL）
   market_data: Parquet（arrow/parquet 59.3.0，workspace patches 兼容层）
   test: cargo test + nautilus-research-testkit OpenLogos reporter（JSONL → logos/resources/verify/test-results.jsonl）
   python_bridge: python/tests/adapters/astock（通达信/TickFlow 数据子进程，后续批次）
 scenario_counter:
-  next_id: 21
+  next_id: 22
 modules:
 - id: core
   name: 核心功能
