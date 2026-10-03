@@ -324,6 +324,12 @@ fn ut_s14_04_tampered_result_is_corrupt_artifact() {
         let path = ws.join(&rel);
         let mut bytes = fs::read(&path).expect("读取结果对象");
         bytes.push(b'x');
+        // 对象为只读内容（对象存储不可变约定）：非 root 环境需先解除只读才能篡改
+        // （与 objects.rs 孤儿回收「先解除再删除」同一做法；仅改写本测试的临时对象）
+        let mut perms = fs::metadata(&path).expect("读取对象权限").permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        fs::set_permissions(&path, perms).expect("解除只读");
         fs::write(&path, &bytes).expect("篡改结果对象");
 
         // 比较：CORRUPT_ARTIFACT（不展示缓存为新结果）
