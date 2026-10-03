@@ -1,0 +1,5 @@
+merged: 2026-10-03
+proposal: astock-desktop-fidelity
+deltas: 1
+targets:
+- logos/resources/test/core-S15-test-cases.md (MODIFIED UT-S15-07/UT-S15-08)
