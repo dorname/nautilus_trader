@@ -1,7 +1,8 @@
-# 研究桌面实现清单（astock-research-desktop）
+# 研究桌面实现清单（astock-research-desktop / astock-desktop-launch / astock-desktop-fidelity）
 
-> 状态：批次 9 完成（S11～S15 全量 + 引擎基线全量接入：单元 18 条 + 场景 ST-01~03/06~08 + A 股 13 条真实执行接 reporter；ST-04/05 与原型 16 条 [manual] 人工验收）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、crates/baseline-tests、python/tests/adapters/astock
+> 状态：批次 10 完成（统一工作台高保真还原 core-05 原型：六页骨架 → 左侧栏 11 路由 + 工作区画布 + 右对话栏；UT/ST 22 测试全绿接 reporter）· 真相源：crates/research-domain、crates/research-worker、crates/research-testkit、crates/baseline-tests、crates/research-desktop、python/tests/adapters/astock
 > 上游规格：core-05-research-architecture.md / core-research-contracts.yaml / core-01-research-storage.sql / core-S11～S15-test-cases.md / astock-test-cases.md
+> 桌面 GUI 批次沿革：L1～L4（astock-desktop-launch，已归档）落地 CLI 研究链路与六页骨架；批次 10（astock-desktop-fidelity）将 GUI 重构为原型统一工作台形态。
 
 ## 批次 1：S11 数据维护（2026-10-01）
 
@@ -342,6 +343,37 @@ prototype-review/*.jsonl 与部署后冒烟）。
 **装配要点（复现注记）**：BacktestEngine 构建会重置全局消息总线——事件捕获
 订阅必须在引擎构建之后、run 之前注册；事件摘要跨次比对须剔除 event_id/ts 等
 运行期随机字段。
+
+## 批次 10：统一工作台高保真还原（astock-desktop-fidelity，2026-10-03）
+
+**范围**：按 core-05-ai-workspace-prototype.html（权威原型）重构 crates/research-desktop：
+六页骨架 → 统一工作台三区布局（左侧栏唯一导航 / 主区玻璃大卡 / 右对话栏），
+11 路由页面全量迁移，业务动作无损保留（workspace/pipeline/bridge 冻结不动）。
+
+**交付物**：
+
+| 组件 | 路径 | 职责 |
+|---|---|---|
+| 导航 | src/nav.rs | Route 11 路由两组（研究工作区 8：项目概览/需求文档/策略设计/策略开发/事件调试/回测实验/验证报告/交易计划 + 研究资源 3：数据中心/股票池/策略资产）；from_intent 对话跳转映射 |
+| 会话 | src/session.rs | 每路由独立滚动（navigate 冻结来源值 + record_scroll 每帧回写）；字体缺失提示 |
+| 布局 | src/layout.rs | 原型断点：侧栏 212/窄窗 178、对话栏 360/窄窗 320、顶栏 65、footer 28、外留白 12；专注模式收起对话栏；1100 最小窗无水平溢出 |
+| 主题 | src/theme.rs | 「纯黑科技 v3」token：#0A0A0A 基底、#22C55E 主绿、#67E8F9 原型 --cyan-text 亮档（+#06B6D4 设计基档）、文字四层级、玻璃三层、tag/按钮/环境柔光（双 glow Mesh）、CJK 字体加载 |
+| 应用 | src/app.rs | 三区布局骨架 + 11 路由页面 + 右对话栏（气泡/产物卡跳转/任务条/建议 chips/composer Enter 发送/离线声明）+ 运行记录与新建项目浮层 + next_step 概览推断 |
+| 对话引擎 | src/ai.rs | 预设意图 13 类 + 概念辨析优先级（区别/一码事/解释前缀）+ 未知诚实边界 |
+
+**高保真对齐清单（原型 → 实现）**：面包屑「研究项目 / {项目名}」+「● 演示环境」tag +
+「运行记录」按钮；workspace-head「◇ 项目产物」+ `R/D/v` 版本 tag + 「展开工作区 ⤢」；
+chat 头「✧ 研究助手 / 从一个想法，到可追溯的计划 / 预设对话」；composer 占位与
+「↵ 发送 · Shift + ↵ 换行」；footer「● 本地原型 · 合成样本 SYN-202601 · 刷新重置，可导出产物」
++「所有结果可追溯至输入与版本」；建议 chips 随研究阶段推进；disclaimer
+「离线预设交互 · 计算来自合成样本 · 未接入模型」；11 页 eyebrow 文案逐页对齐原型。
+
+**按需重绘（CPU 红线）**：静默零帧；仅活跃任务以 POLL_INTERVAL 轮询 get_task，
+终态落定即停。
+
+**覆盖用例**：UT-S15-07/08（重写为 11 路由与原型布局断言）、UT-S15-09、ST-S15-04、
+UT-S17-16～UT-S20-14、ST-S17-16 回归（22 测试全绿，reporter 已写
+logos/resources/verify/test-results.jsonl）；渲染旅程 ST-S15-02/03 仍为 [manual] 双平台人工验收。
 
 ## 待办批次（环境阻塞，非本机可解）
 

@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nautilus_research_desktop::ai::{self, Intent};
-use nautilus_research_desktop::app::AiView;
 use nautilus_research_desktop::bridge::{
     DesktopBridge, ImportForm, RunForm, UniverseForm,
 };
+use nautilus_research_desktop::nav::Route;
 use nautilus_research_desktop::pipeline::{is_success, TaskWatch};
 use nautilus_research_desktop::workspace::{plan_signature, Role, Workspace};
 use nautilus_research_testkit::case;
@@ -120,12 +120,19 @@ fn ut_s17_16_intent_routing_and_project_isolation() {
         assert_eq!(route_or_panic("明天买什么股票"), Intent::Unknown);
         assert_eq!(route_or_panic(""), Intent::Unknown);
         // 未知意图不编造：回复解释能力边界
-        assert!(ai::reply("明天买什么股票").contains("无法理解"));
-        // 意图 → 子视图路由（对话跳转目标）
-        assert_eq!(AiView::from_intent(Intent::ConfirmRequirement), AiView::Project);
-        assert_eq!(AiView::from_intent(Intent::SaveVersion), AiView::Dev);
-        assert_eq!(AiView::from_intent(Intent::RunExperiment), AiView::Debug);
-        assert_eq!(AiView::from_intent(Intent::PlanExport), AiView::PlanBridge);
+        assert!(ai::reply("明天买什么股票").contains("不能理解"));
+        // 意图 → 统一工作台路由（对话跳转目标）
+        assert_eq!(
+            Route::from_intent(Intent::ConfirmRequirement),
+            Some(Route::Requirements)
+        );
+        assert_eq!(Route::from_intent(Intent::SaveVersion), Some(Route::Develop));
+        assert_eq!(
+            Route::from_intent(Intent::RunExperiment),
+            Some(Route::Experiments)
+        );
+        assert_eq!(Route::from_intent(Intent::PlanExport), Some(Route::Plan));
+        assert_eq!(Route::from_intent(Intent::Unknown), None);
 
         // —— 项目隔离：新项目会话/需求/版本独立；切回保留 ——
         let mut w = Workspace::new();
@@ -352,7 +359,10 @@ fn st_s17_16_ai_workspace_full_journey() {
 
         // —— 对话：意图路由（离线预设）——
         assert_eq!(ai::route("运行实验"), Intent::RunExperiment);
-        assert_eq!(AiView::from_intent(Intent::RunExperiment), AiView::Debug);
+        assert_eq!(
+            Route::from_intent(Intent::RunExperiment),
+            Some(Route::Experiments)
+        );
 
         // —— 项目：需求确认 → 设计 → 版本冻结 ——
         let mut w = Workspace::new();

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "研究桌面 GUI——研序策略研究工作区（egui＋eframe＋egui_plot；六页导航，黑色玻璃态）"
+description = "研究桌面 GUI——研序统一工作台（egui＋eframe＋egui_plot；左侧栏 11 路由＋工作区画布＋右对话栏，纯黑科技玻璃态）"
 repository.workspace = true
 
 [lints]
