@@ -1,100 +1,100 @@
-{"duration_ms":130,"id":"ST-S11-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":182,"id":"UT-S11-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":184,"id":"UT-S11-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":161,"id":"UT-S11-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":181,"id":"UT-S11-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":180,"id":"UT-S11-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":392,"id":"ST-S11-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433545-1791178273689016919","scenario":"S11","status":"pass","timestamp":"2026-10-05T05:31:13Z"}
-{"duration_ms":175,"id":"UT-S12-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":0,"id":"UT-S12-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":0,"id":"UT-S12-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":186,"id":"ST-S12-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":233,"id":"UT-S12-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":235,"id":"ST-S12-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":157,"id":"UT-S12-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433574-1791178274130424661","scenario":"S12","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":0,"id":"UT-S13-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433599-1791178274292961581","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":0,"id":"UT-S13-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433599-1791178274292961581","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":0,"id":"UT-S13-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433599-1791178274292961581","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":366,"id":"UT-S13-14","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433599-1791178274292961581","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":304,"id":"ST-S13-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433611-1791178274968075030","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":330,"id":"ST-S13-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433611-1791178274968075030","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:14Z"}
-{"duration_ms":866,"id":"UT-S13-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433611-1791178274968075030","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"id":"UT-S14-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433645-1791178275536927411","scenario":"S14","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"id":"UT-S14-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433645-1791178275536927411","scenario":"S14","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":300,"id":"UT-S14-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433645-1791178275536927411","scenario":"S14","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":308,"id":"ST-S14-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433645-1791178275536927411","scenario":"S14","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":418,"id":"UT-S14-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433645-1791178275536927411","scenario":"S14","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"error":"需 Windows 参考机与 GUI（批次 6 性能量测）","id":"UT-S15-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"skip","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"error":"需 Linux 参考机与 GUI（批次 6 性能量测，不得复用 Windows 结果）","id":"UT-S15-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"skip","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"error":"需 Windows GUI 双平台旅程（批次 6）","id":"ST-S15-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"skip","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"error":"需 Linux Wayland/X11 双会话旅程（批次 6）","id":"ST-S15-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"skip","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":0,"id":"UT-S15-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:31:15Z"}
-{"duration_ms":188,"id":"UT-S15-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":242,"id":"UT-S15-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":295,"id":"UT-S15-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":307,"id":"ST-S15-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433669-1791178275962554210","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":0,"id":"UT-S13-12","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433696-1791178276279788879","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":18,"id":"UT-S13-10","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433696-1791178276279788879","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":19,"id":"UT-S13-11","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433696-1791178276279788879","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":20,"id":"UT-S13-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433696-1791178276279788879","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":0,"id":"UT-S13-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":19,"id":"ST-S13-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":18,"id":"UT-S13-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":18,"id":"UT-S13-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":0,"id":"UT-S13-09","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":0,"id":"UT-S13-13","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"duration_ms":29,"id":"UT-S13-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-433702-1791178276305674915","scenario":"S13","status":"pass","timestamp":"2026-10-05T05:31:16Z"}
-{"id": "UT-AST-01", "status": "pass", "timestamp": "2026-10-05T05:31:17.752143+00:00", "duration_ms": 8}
-{"id": "UT-AST-02", "status": "pass", "timestamp": "2026-10-05T05:31:17.753582+00:00", "duration_ms": 1}
-{"id": "UT-AST-03", "status": "pass", "timestamp": "2026-10-05T05:31:17.754254+00:00", "duration_ms": 0}
-{"id": "UT-AST-04", "status": "pass", "timestamp": "2026-10-05T05:31:17.754837+00:00", "duration_ms": 0}
-{"id": "UT-AST-05", "status": "pass", "timestamp": "2026-10-05T05:31:17.755782+00:00", "duration_ms": 1}
-{"id": "UT-AST-06", "status": "pass", "timestamp": "2026-10-05T05:31:17.755782+00:00", "duration_ms": 1}
-{"id": "UT-AST-07", "status": "pass", "timestamp": "2026-10-05T05:31:17.755782+00:00", "duration_ms": 1}
-{"id": "UT-AST-08", "status": "pass", "timestamp": "2026-10-05T05:31:17.756383+00:00", "duration_ms": 0}
-{"id": "UT-AST-11", "status": "pass", "timestamp": "2026-10-05T05:31:17.757042+00:00", "duration_ms": 0}
-{"id": "UT-AST-09", "status": "pass", "timestamp": "2026-10-05T05:31:17.761450+00:00", "duration_ms": 4}
-{"id": "UT-AST-10", "status": "pass", "timestamp": "2026-10-05T05:31:17.762928+00:00", "duration_ms": 1}
-{"id": "ST-A1", "status": "pass", "timestamp": "2026-10-05T05:32:06.540263+00:00", "duration_ms": 48777}
-{"id": "ST-A2", "status": "pass", "timestamp": "2026-10-05T05:32:06.541498+00:00", "duration_ms": 1}
-{"duration_ms":4,"id":"UT-ADV-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443787-1791178458675772416","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":5,"id":"UT-ADV-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443787-1791178458675772416","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":7,"id":"UT-BT-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443790-1791178458687170412","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":7,"id":"UT-BT-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443790-1791178458687170412","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-BUS-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443793-1791178458694801508","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-DATA-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443795-1791178458703067844","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":5,"id":"UT-DATA-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443795-1791178458703067844","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-EXEC-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443798-1791178458710929251","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-EXEC-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443798-1791178458710929251","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-MODEL-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443801-1791178458718143786","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-MODEL-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443803-1791178458724725150","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":3,"id":"UT-MODEL-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443803-1791178458724725150","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":5,"id":"UT-PORT-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443806-1791178458733784124","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":6,"id":"UT-PORT-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443806-1791178458733784124","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-RISK-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443809-1791178458742123092","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-RISK-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443809-1791178458742123092","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-RISK-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443809-1791178458742123092","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":6,"id":"ST-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":5,"id":"ST-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":13,"id":"ST-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":6,"id":"ST-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":24,"id":"ST-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":37,"id":"ST-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443813-1791178458753410969","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":4,"id":"UT-SER-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-443821-1791178458792636746","scenario":"SER","status":"pass","timestamp":"2026-10-05T05:34:18Z"}
-{"duration_ms":2,"id":"UT-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":82,"id":"UT-S21-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":145,"id":"UT-S21-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":233,"id":"ST-S21-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":99,"id":"UT-S21-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":175,"id":"UT-S21-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:22Z"}
-{"duration_ms":404,"id":"ST-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:23Z"}
-{"duration_ms":229,"id":"UT-S21-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-444146-1791178462680168106","scenario":"S21","status":"pass","timestamp":"2026-10-05T05:34:23Z"}
-{"duration_ms":0,"id":"UT-S15-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454483-1791178806059672838","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S15-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454483-1791178806059672838","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S15-09","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454486-1791178806062376603","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":567,"id":"ST-S15-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454486-1791178806062376603","scenario":"S15","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S18-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454496-1791178806636883374","scenario":"S18","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454496-1791178806636883374","scenario":"S17","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S19-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454496-1791178806636883374","scenario":"S19","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":0,"id":"UT-S20-14","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454496-1791178806636883374","scenario":"S20","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
-{"duration_ms":213,"id":"ST-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-454496-1791178806636883374","scenario":"S17","status":"pass","timestamp":"2026-10-05T05:40:06Z"}
+{"duration_ms":134,"id":"ST-S11-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":182,"id":"UT-S11-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":186,"id":"UT-S11-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":159,"id":"UT-S11-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":177,"id":"UT-S11-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":177,"id":"UT-S11-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":395,"id":"ST-S11-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475412-1791196117516575320","scenario":"S11","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":184,"id":"UT-S12-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":0,"id":"UT-S12-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":0,"id":"UT-S12-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":189,"id":"ST-S12-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:37Z"}
+{"duration_ms":236,"id":"UT-S12-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":242,"id":"ST-S12-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":158,"id":"UT-S12-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475441-1791196117965897801","scenario":"S12","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":0,"id":"UT-S13-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475466-1791196118129800901","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":0,"id":"UT-S13-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475466-1791196118129800901","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":0,"id":"UT-S13-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475466-1791196118129800901","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":365,"id":"UT-S13-14","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475466-1791196118129800901","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":302,"id":"ST-S13-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475478-1791196118801554108","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":329,"id":"ST-S13-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475478-1791196118801554108","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:38Z"}
+{"duration_ms":886,"id":"UT-S13-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475478-1791196118801554108","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"id":"UT-S14-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475514-1791196119394686958","scenario":"S14","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"id":"UT-S14-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475514-1791196119394686958","scenario":"S14","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":302,"id":"ST-S14-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475514-1791196119394686958","scenario":"S14","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":302,"id":"UT-S14-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475514-1791196119394686958","scenario":"S14","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":417,"id":"UT-S14-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475514-1791196119394686958","scenario":"S14","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"error":"需 Windows 参考机与 GUI（批次 6 性能量测）","id":"UT-S15-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"skip","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"error":"需 Linux 参考机与 GUI（批次 6 性能量测，不得复用 Windows 结果）","id":"UT-S15-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"skip","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"id":"UT-S15-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"error":"需 Windows GUI 双平台旅程（批次 6）","id":"ST-S15-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"skip","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":0,"error":"需 Linux Wayland/X11 双会话旅程（批次 6）","id":"ST-S15-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"skip","timestamp":"2026-10-05T10:28:39Z"}
+{"duration_ms":222,"id":"UT-S15-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":271,"id":"UT-S15-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":330,"id":"UT-S15-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":342,"id":"ST-S15-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475538-1791196119818589336","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":0,"id":"UT-S13-12","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475565-1791196120170904264","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":17,"id":"UT-S13-10","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475565-1791196120170904264","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":17,"id":"UT-S13-11","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475565-1791196120170904264","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":19,"id":"UT-S13-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475565-1791196120170904264","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":0,"id":"UT-S13-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":17,"id":"UT-S13-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":18,"id":"ST-S13-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":17,"id":"UT-S13-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":0,"id":"UT-S13-09","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":0,"id":"UT-S13-13","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"duration_ms":28,"id":"UT-S13-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-475571-1791196120195975951","scenario":"S13","status":"pass","timestamp":"2026-10-05T10:28:40Z"}
+{"id": "UT-AST-01", "status": "pass", "timestamp": "2026-10-05T10:28:41.663406+00:00", "duration_ms": 8}
+{"id": "UT-AST-02", "status": "pass", "timestamp": "2026-10-05T10:28:41.665207+00:00", "duration_ms": 1}
+{"id": "UT-AST-03", "status": "pass", "timestamp": "2026-10-05T10:28:41.665895+00:00", "duration_ms": 0}
+{"id": "UT-AST-04", "status": "pass", "timestamp": "2026-10-05T10:28:41.666584+00:00", "duration_ms": 0}
+{"id": "UT-AST-05", "status": "pass", "timestamp": "2026-10-05T10:28:41.667338+00:00", "duration_ms": 0}
+{"id": "UT-AST-06", "status": "pass", "timestamp": "2026-10-05T10:28:41.667338+00:00", "duration_ms": 0}
+{"id": "UT-AST-07", "status": "pass", "timestamp": "2026-10-05T10:28:41.667338+00:00", "duration_ms": 0}
+{"id": "UT-AST-08", "status": "pass", "timestamp": "2026-10-05T10:28:41.667948+00:00", "duration_ms": 0}
+{"id": "UT-AST-11", "status": "pass", "timestamp": "2026-10-05T10:28:41.668597+00:00", "duration_ms": 0}
+{"id": "UT-AST-09", "status": "pass", "timestamp": "2026-10-05T10:28:41.672352+00:00", "duration_ms": 3}
+{"id": "UT-AST-10", "status": "pass", "timestamp": "2026-10-05T10:28:41.673610+00:00", "duration_ms": 1}
+{"id": "ST-A1", "status": "pass", "timestamp": "2026-10-05T10:29:28.359045+00:00", "duration_ms": 46685}
+{"id": "ST-A2", "status": "pass", "timestamp": "2026-10-05T10:29:28.360093+00:00", "duration_ms": 1}
+{"duration_ms":4,"id":"UT-ADV-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486013-1791196307864370334","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-ADV-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486013-1791196307864370334","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":6,"id":"UT-BT-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486016-1791196307874010526","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":6,"id":"UT-BT-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486016-1791196307874010526","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":3,"id":"UT-BUS-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486019-1791196307881602066","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-DATA-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486021-1791196307888885447","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-DATA-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486021-1791196307888885447","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-EXEC-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486024-1791196307896975853","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-EXEC-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486024-1791196307896975853","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":3,"id":"UT-MODEL-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486027-1791196307903725687","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":3,"id":"UT-MODEL-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486029-1791196307910059972","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":3,"id":"UT-MODEL-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486029-1791196307910059972","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":5,"id":"UT-PORT-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486032-1791196307918468953","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":5,"id":"UT-PORT-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486032-1791196307918468953","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-RISK-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486035-1791196307926786846","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":5,"id":"UT-RISK-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486035-1791196307926786846","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-RISK-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486035-1791196307926786846","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":5,"id":"ST-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":5,"id":"ST-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":13,"id":"ST-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":6,"id":"ST-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":25,"id":"ST-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":38,"id":"ST-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486039-1791196307937041002","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":4,"id":"UT-SER-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486047-1791196307977841648","scenario":"SER","status":"pass","timestamp":"2026-10-05T10:31:47Z"}
+{"duration_ms":0,"id":"UT-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:51Z"}
+{"duration_ms":140,"id":"UT-S21-03","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:51Z"}
+{"duration_ms":204,"id":"UT-S21-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":299,"id":"ST-S21-02","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":105,"id":"UT-S21-05","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":185,"id":"UT-S21-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":468,"id":"ST-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":235,"id":"UT-S21-06","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-486372-1791196311841817222","scenario":"S21","status":"pass","timestamp":"2026-10-05T10:31:52Z"}
+{"duration_ms":0,"id":"UT-S15-07","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496493-1791196664051056033","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S15-08","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496493-1791196664051056033","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S15-09","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496496-1791196664054013794","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":335,"id":"ST-S15-04","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496496-1791196664054013794","scenario":"S15","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496506-1791196664395810542","scenario":"S17","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S18-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496506-1791196664395810542","scenario":"S18","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S19-15","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496506-1791196664395810542","scenario":"S19","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":0,"id":"UT-S20-14","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496506-1791196664395810542","scenario":"S20","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
+{"duration_ms":210,"id":"ST-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-496506-1791196664395810542","scenario":"S17","status":"pass","timestamp":"2026-10-05T10:37:44Z"}
