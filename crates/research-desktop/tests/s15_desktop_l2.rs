@@ -5,7 +5,9 @@
 //! 纯函数断言不触碰图形后端；渲染旅程由 ST-S15-02/03（批次 L3 后人工/双平台）承载。
 
 use nautilus_research_desktop::layout::{self, LayoutPlan};
-use nautilus_research_desktop::nav::{default_route, Route, ALL_ROUTES, RESOURCE_ROUTES, WORKSPACE_ROUTES};
+use nautilus_research_desktop::nav::{
+    ALL_ROUTES, RESOURCE_ROUTES, Route, WORKSPACE_ROUTES, default_route,
+};
 use nautilus_research_desktop::session::Session;
 use nautilus_research_desktop::theme;
 use nautilus_research_testkit::case;
@@ -27,8 +29,17 @@ fn ut_s15_07_nav_routes_and_session() {
         assert_eq!(
             titles,
             vec![
-                "项目概览", "需求文档", "策略设计", "策略开发", "事件调试",
-                "回测实验", "验证报告", "交易计划", "数据中心", "股票池", "策略资产",
+                "项目概览",
+                "需求文档",
+                "策略设计",
+                "策略开发",
+                "事件调试",
+                "回测实验",
+                "验证报告",
+                "交易计划",
+                "数据中心",
+                "股票池",
+                "策略资产",
             ]
         );
         // 分组：工作区 8 路由在前、资源 3 路由在后，且 ALL = 拼接
@@ -91,9 +102,7 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
         assert_ne!(theme::GLASS, theme::GLASS_SOFT);
         assert_ne!(theme::GLASS_SOFT, theme::GLASS_STRONG);
         assert!(
-            theme::GLASS.a() < 255
-                && theme::GLASS_SOFT.a() < 255
-                && theme::GLASS_STRONG.a() < 255
+            theme::GLASS.a() < 255 && theme::GLASS_SOFT.a() < 255 && theme::GLASS_STRONG.a() < 255
         );
         // 对比度（WCAG AA 正文 ≥ 4.5:1）
         assert!(theme::contrast_ratio(theme::TEXT, theme::BASE) >= 4.5);
@@ -129,6 +138,26 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
             (layout::workspace_width(1440.0, LayoutPlan::Comfortable, true) - 1192.0).abs() < 1e-6,
             "专注模式工作区应为 1192"
         );
-        assert_eq!(layout::workspace_width(100.0, LayoutPlan::Comfortable, false), 0.0);
+        assert_eq!(
+            layout::workspace_width(100.0, LayoutPlan::Comfortable, false),
+            0.0
+        );
+        // 首帧守卫（desktop-firstframe-guard）：WSLg 首帧实测约 260×267，
+        // 低于阈值跳帧；正常请求/最小窗口可绘制。守卫阈值下，窄窗工作区钳 0 不为负。
+        assert!(
+            !layout::frame_ready(260.0, 267.0),
+            "WSLg 首帧尺寸应跳过绘制"
+        );
+        assert!(!layout::frame_ready(399.9, 900.0), "宽不足应跳过绘制");
+        assert!(!layout::frame_ready(1440.0, 199.9), "高不足应跳过绘制");
+        assert!(layout::frame_ready(1440.0, 900.0));
+        assert!(
+            layout::frame_ready(theme::MIN_WINDOW.x, theme::MIN_WINDOW.y),
+            "最小窗口 1100×720 必须可绘制"
+        );
+        assert_eq!(
+            layout::workspace_width(260.0, LayoutPlan::Compact, false),
+            0.0
+        );
     });
 }

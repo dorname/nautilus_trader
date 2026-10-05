@@ -129,7 +129,9 @@ impl Project {
             name: name.into(),
             messages: vec![ChatMessage {
                 role: Role::Assistant,
-                text: "你好，我们从研究目标开始。我会把需求、设计、代码与验证证据整理在同一个项目中。".into(),
+                text:
+                    "你好，我们从研究目标开始。我会把需求、设计、代码与验证证据整理在同一个项目中。"
+                        .into(),
             }],
             reqs: Vec::new(),
             active_req: None,
@@ -297,17 +299,13 @@ impl Workspace {
         let Some(v) = p.versions.get(version_id - 1) else {
             return false;
         };
-        let refs_match =
-            p.active_req == Some(v.req_id) && p.active_design == Some(v.design_id);
+        let refs_match = p.active_req == Some(v.req_id) && p.active_design == Some(v.design_id);
         refs_match && p.revision == v.stamp
     }
 
     /// 运行实验（S18：过期拒绝；冻结版本与修订戳；task_id 由 GUI 回填）。
     pub fn run_experiment(&mut self, task_id: Option<String>) -> Result<usize, String> {
-        let version_id = self
-            .current()
-            .active_version
-            .ok_or("请先保存版本")?;
+        let version_id = self.current().active_version.ok_or("请先保存版本")?;
         if !self.version_fresh(version_id) {
             return Err("版本未保存或上游已过期，请保存当前版本后再运行".into());
         }
@@ -343,13 +341,24 @@ impl Workspace {
     /// 同输入 = 版本与修订戳完全一致；否则仅列输入差异。
     pub fn compare_experiments(&self, a: usize, b: usize) -> Result<(bool, Vec<String>), String> {
         let p = self.current();
-        let ea = p.experiments.iter().find(|e| e.id == a).ok_or("实验不存在")?;
-        let eb = p.experiments.iter().find(|e| e.id == b).ok_or("实验不存在")?;
+        let ea = p
+            .experiments
+            .iter()
+            .find(|e| e.id == a)
+            .ok_or("实验不存在")?;
+        let eb = p
+            .experiments
+            .iter()
+            .find(|e| e.id == b)
+            .ok_or("实验不存在")?;
         let same_input = ea.version_id == eb.version_id && ea.stamp == eb.stamp;
         let mut diffs = Vec::new();
         if !same_input {
             if ea.version_id != eb.version_id {
-                diffs.push(format!("代码版本：E{a}=v{}，E{b}=v{}", ea.version_id, eb.version_id));
+                diffs.push(format!(
+                    "代码版本：E{a}=v{}，E{b}=v{}",
+                    ea.version_id, eb.version_id
+                ));
             }
             if ea.stamp != eb.stamp {
                 diffs.push(format!("输入修订：E{a}={}, E{b}={}", ea.stamp, eb.stamp));
@@ -427,7 +436,10 @@ impl Workspace {
             return Err("策略版本或验证报告已过期".into());
         }
         // S20-11：现金 + 持仓市值 = 总资产（参考快照口径）
-        let market_value: f64 = rows.iter().map(|(_, price, cur, _, _, _)| price * *cur as f64).sum();
+        let market_value: f64 = rows
+            .iter()
+            .map(|(_, price, cur, _, _, _)| price * *cur as f64)
+            .sum();
         if (cash + market_value - total_assets).abs() > 0.01 {
             return Err(format!(
                 "账户恒等式不成立：现金 {:.0} + 持仓市值 {:.0} ≠ 总资产 {:.0}",
@@ -482,7 +494,9 @@ impl Workspace {
             issues.push("账户或数据输入已改变，请重新生成计划".into());
         }
         if buys_cost_with_fee > cash {
-            issues.push(format!("可用现金不足：买入合计含费 {buys_cost_with_fee:.0}"));
+            issues.push(format!(
+                "可用现金不足：买入合计含费 {buys_cost_with_fee:.0}"
+            ));
         }
         for (symbol, _price, _current, sellable, _target, delta) in &rows {
             if *delta < 0 && -*delta > *sellable {
@@ -567,7 +581,8 @@ mod tests {
     /// 建好「R→D→v→实验」完整链的工作台。
     fn chained() -> Workspace {
         let mut w = Workspace::new();
-        w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0).unwrap();
+        w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0)
+            .unwrap();
         w.generate_design("EMA 双均线").unwrap();
         w.save_version("fn strategy() {}").unwrap();
         w
@@ -594,7 +609,9 @@ mod tests {
             "成交额须为非负数"
         );
         // 合法确认生成 R1，比例换算 0..=1
-        let r1 = w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap();
+        let r1 = w
+            .confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+            .unwrap();
         assert_eq!(r1, 1);
         assert!((w.current().reqs[0].allocation - 0.3).abs() < 1e-9);
         // 项目隔离：新项目看不到 R1
@@ -613,7 +630,8 @@ mod tests {
         let v1 = w.current().active_version.unwrap();
         assert!(w.version_fresh(v1), "刚保存的版本新鲜");
         // 上游更新（确认新需求）→ 旧版本过期，不可新运行
-        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0).unwrap();
+        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
+            .unwrap();
         assert!(!w.version_fresh(v1));
         assert_eq!(
             w.run_experiment(Some("T1".into())).unwrap_err(),
@@ -634,8 +652,12 @@ mod tests {
             task_id: Some("T0".into()),
             total_return: Some("0.0625".into()),
         });
-        w.confirm_requirement("量价 v3", "夏普>0.6", 50.0, 100.0).unwrap();
-        assert_eq!(w.current().experiments[0].total_return.as_deref(), Some("0.0625"));
+        w.confirm_requirement("量价 v3", "夏普>0.6", 50.0, 100.0)
+            .unwrap();
+        assert_eq!(
+            w.current().experiments[0].total_return.as_deref(),
+            Some("0.0625")
+        );
         // 幂等保存：恢复 v1 的冻结引用后，同源码返回原版本（不产生新冻结戳）
         w.current_mut().active_req = Some(1);
         w.current_mut().active_design = Some(1);
@@ -668,7 +690,12 @@ mod tests {
         assert!(!formal.1, "正式验证恒不通过");
         assert!(formal.2.contains("证据不足"));
         // 报告勾选项里演示项与恒不过的正式项都在
-        assert!(report.checks.iter().any(|(n, _, _)| n == "演示检查（实验已执行）"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|(n, _, _)| n == "演示检查（实验已执行）")
+        );
     }
 
     #[test]
@@ -683,7 +710,8 @@ mod tests {
         assert!(same, "同版本同戳为同输入");
         assert!(diffs.is_empty());
         // 上游更新后新版本实验：跨输入 → 列差异，不归因代码
-        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0).unwrap();
+        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
+            .unwrap();
         w.generate_design("EMA 双均线 v2").unwrap();
         w.save_version("fn strategy_v2() {}").unwrap();
         let e3 = w.run_experiment(Some("T3".into())).unwrap();
@@ -700,18 +728,17 @@ mod tests {
         w.record_experiment(e1, Some("0.0625".into()));
         w.make_report().unwrap();
         // 账户恒等式：现金 10000 + 持仓市值（10 × 1000）= 总资产 20000
-        let rows = |delta: i64| {
-            vec![("SYN-A".to_string(), 10.0, 1000, 1000, 1100, delta)]
-        };
+        let rows = |delta: i64| vec![("SYN-A".to_string(), 10.0, 1000, 1000, 1100, delta)];
         // 恒等式不成立 → 生成即拒绝
-        assert!(w.make_plan("SNAP-1", "2024-01-05", 10000.0, 99999.0, rows(100)).is_err());
-        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows(100)).unwrap();
+        assert!(
+            w.make_plan("SNAP-1", "2024-01-05", 10000.0, 99999.0, rows(100))
+                .is_err()
+        );
+        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows(100))
+            .unwrap();
         // 未核对 → 导出拒绝
         let sig = w.current().plan.as_ref().unwrap().signature;
-        assert_eq!(
-            w.confirm_export(sig).unwrap_err(),
-            "计划未核对或核对未通过"
-        );
+        assert_eq!(w.confirm_export(sig).unwrap_err(), "计划未核对或核对未通过");
         // 核对：可卖不足（卖出超可卖）+ 非整手（买入）逐项暴露
         let mut bad = w.clone();
         bad.current_mut().plan.as_mut().unwrap().rows = vec![
@@ -719,8 +746,15 @@ mod tests {
             ("SYN-B".into(), 9.0, 0, 0, 250, 250),
         ];
         let issues = bad.check_plan(5.0).unwrap();
-        assert!(issues.iter().any(|i| i.contains("SYN-A 可卖数量不足")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("SYN-B 买入数量不是 100 股整数倍")));
+        assert!(
+            issues.iter().any(|i| i.contains("SYN-A 可卖数量不足")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("SYN-B 买入数量不是 100 股整数倍"))
+        );
         // 现金不足
         let issues = w.check_plan(999_999.0).unwrap();
         assert!(issues.iter().any(|i| i.contains("可用现金不足")));

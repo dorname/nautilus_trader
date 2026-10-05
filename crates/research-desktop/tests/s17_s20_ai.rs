@@ -9,12 +9,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nautilus_research_desktop::ai::{self, Intent};
-use nautilus_research_desktop::bridge::{
-    DesktopBridge, ImportForm, RunForm, UniverseForm,
-};
+use nautilus_research_desktop::bridge::{DesktopBridge, ImportForm, RunForm, UniverseForm};
 use nautilus_research_desktop::nav::Route;
-use nautilus_research_desktop::pipeline::{is_success, TaskWatch};
-use nautilus_research_desktop::workspace::{plan_signature, Role, Workspace};
+use nautilus_research_desktop::pipeline::{TaskWatch, is_success};
+use nautilus_research_desktop::workspace::{Role, Workspace, plan_signature};
 use nautilus_research_testkit::case;
 
 fn temp_workspace(tag: &str) -> PathBuf {
@@ -39,15 +37,33 @@ fn write_file(dir: &Path, name: &str, content: &str) -> String {
 /// 24 个交易日行情（2023-12-04 起，收盘 10..33 阶梯上行）。
 fn rising_bars(code: &str, dir: &Path, name: &str) -> String {
     let dates = [
-        "2023-12-04", "2023-12-05", "2023-12-06", "2023-12-07", "2023-12-08",
-        "2023-12-11", "2023-12-12", "2023-12-13", "2023-12-14", "2023-12-15",
-        "2023-12-18", "2023-12-19", "2023-12-20", "2023-12-21", "2023-12-22",
-        "2023-12-25", "2023-12-26", "2023-12-27", "2023-12-28", "2023-12-29",
-        "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05",
+        "2023-12-04",
+        "2023-12-05",
+        "2023-12-06",
+        "2023-12-07",
+        "2023-12-08",
+        "2023-12-11",
+        "2023-12-12",
+        "2023-12-13",
+        "2023-12-14",
+        "2023-12-15",
+        "2023-12-18",
+        "2023-12-19",
+        "2023-12-20",
+        "2023-12-21",
+        "2023-12-22",
+        "2023-12-25",
+        "2023-12-26",
+        "2023-12-27",
+        "2023-12-28",
+        "2023-12-29",
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2024-01-05",
     ];
-    let mut body = String::from(
-        "instrument_id,trade_date,open,high,low,close,volume_shares,amount_cny\n",
-    );
+    let mut body =
+        String::from("instrument_id,trade_date,open,high,low,close,volume_shares,amount_cny\n");
     for (i, d) in dates.iter().enumerate() {
         let close = 10 + i as i32;
         body.push_str(&format!(
@@ -57,8 +73,7 @@ fn rising_bars(code: &str, dir: &Path, name: &str) -> String {
     write_file(dir, name, &body)
 }
 
-const RULE_ALL_PASS: &str =
-    r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#;
+const RULE_ALL_PASS: &str = r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#;
 
 /// GUI 形态的等待：以页面轮询语义（get_task + TaskWatch::poll）推进到终态。
 fn watch_to_terminal(bridge: &DesktopBridge, watch: &mut TaskWatch) -> bool {
@@ -126,7 +141,10 @@ fn ut_s17_16_intent_routing_and_project_isolation() {
             Route::from_intent(Intent::ConfirmRequirement),
             Some(Route::Requirements)
         );
-        assert_eq!(Route::from_intent(Intent::SaveVersion), Some(Route::Develop));
+        assert_eq!(
+            Route::from_intent(Intent::SaveVersion),
+            Some(Route::Develop)
+        );
         assert_eq!(
             Route::from_intent(Intent::RunExperiment),
             Some(Route::Experiments)
@@ -136,17 +154,22 @@ fn ut_s17_16_intent_routing_and_project_isolation() {
 
         // —— 项目隔离：新项目会话/需求/版本独立；切回保留 ——
         let mut w = Workspace::new();
-        assert_eq!(w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap(), 1);
+        assert_eq!(
+            w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+                .unwrap(),
+            1
+        );
         w.add_project("对照项目");
         assert!(w.current().reqs.is_empty());
         assert!(w.switch_to(9) == false, "越界切换保持不变");
         assert!(w.switch_to(0));
         assert_eq!(w.current().reqs.len(), 1);
-        assert!(w
-            .current()
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Assistant));
+        assert!(
+            w.current()
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Assistant)
+        );
 
         // —— 需求确认校验：空正文 / 越界 / 负成交额拒绝，合法生成 R 版本 ——
         assert_eq!(
@@ -165,7 +188,9 @@ fn ut_s17_16_intent_routing_and_project_isolation() {
             w.confirm_requirement("t", "a", 0.0, -0.01).unwrap_err(),
             "成交额须为非负数"
         );
-        let r1 = w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0).unwrap();
+        let r1 = w
+            .confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0)
+            .unwrap();
         assert_eq!(r1, 2, "同项目内需求版本顺延编号");
         assert!((w.current().reqs[1].allocation - 0.3).abs() < 1e-9);
     });
@@ -184,7 +209,8 @@ fn ut_s18_15_version_freeze_and_staleness() {
         let mut w = Workspace::new();
         // 无需求时生成设计拒绝；确认后设计绑定 R1
         assert!(w.generate_design("无需求设计").is_err());
-        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap();
+        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+            .unwrap();
         let d1 = w.generate_design("EMA 双均线").unwrap();
         let v1 = w.save_version("fn strategy() {}").unwrap();
         // 版本冻结 R1/D1 与保存时刻修订计数
@@ -201,13 +227,17 @@ fn ut_s18_15_version_freeze_and_staleness() {
         // 上游更新（确认新需求）→ 旧版本过期：不可新运行，历史实验不变
         let e1 = w.run_experiment(Some("T0".into())).unwrap();
         w.record_experiment(e1, Some("0.0625".into()));
-        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0).unwrap();
+        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
+            .unwrap();
         assert!(!w.version_fresh(v1));
         assert_eq!(
             w.run_experiment(None).unwrap_err(),
             "版本未保存或上游已过期，请保存当前版本后再运行"
         );
-        assert_eq!(w.current().experiments[0].total_return.as_deref(), Some("0.0625"));
+        assert_eq!(
+            w.current().experiments[0].total_return.as_deref(),
+            Some("0.0625")
+        );
         // 恢复冻结引用仍过期：冻结戳落后即过期
         w.current_mut().active_req = Some(1);
         assert!(!w.version_fresh(v1), "冻结戳落后即过期");
@@ -219,7 +249,8 @@ fn ut_s18_15_version_freeze_and_staleness() {
 fn ut_s19_15_evidence_boundary_and_comparison() {
     case("UT-S19-15", || {
         let mut w = Workspace::new();
-        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap();
+        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+            .unwrap();
         w.generate_design("EMA").unwrap();
         w.save_version("fn v1() {}").unwrap();
         // 无实验 → 拒绝生成验证结论
@@ -243,7 +274,8 @@ fn ut_s19_15_evidence_boundary_and_comparison() {
         let e2 = w.run_experiment(Some("T2".into())).unwrap();
         let (same, diffs) = w.compare_experiments(e1, e2).unwrap();
         assert!(same && diffs.is_empty(), "同版本同戳为同输入");
-        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0).unwrap();
+        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
+            .unwrap();
         w.generate_design("EMA v2").unwrap();
         w.save_version("fn v2() {}").unwrap();
         let e3 = w.run_experiment(Some("T3".into())).unwrap();
@@ -259,7 +291,8 @@ fn ut_s19_15_evidence_boundary_and_comparison() {
 fn ut_s20_14_plan_check_and_gated_export() {
     case("UT-S20-14", || {
         let mut w = Workspace::new();
-        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap();
+        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+            .unwrap();
         w.generate_design("EMA").unwrap();
         w.save_version("fn v1() {}").unwrap();
         let e1 = w.run_experiment(Some("T1".into())).unwrap();
@@ -267,8 +300,12 @@ fn ut_s20_14_plan_check_and_gated_export() {
         assert_eq!(w.current().report.as_ref().unwrap().run_id, e1);
         let rows = || vec![("SYN-A".to_string(), 10.0, 1000, 1000, 1100, 100)];
         // 账户恒等式（现金+持仓市值=总资产）不成立 → 生成即拒绝
-        assert!(w.make_plan("SNAP-1", "2024-01-05", 10000.0, 99999.0, rows()).is_err());
-        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows()).unwrap();
+        assert!(
+            w.make_plan("SNAP-1", "2024-01-05", 10000.0, 99999.0, rows())
+                .is_err()
+        );
+        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows())
+            .unwrap();
         let sig = w.current().plan.as_ref().unwrap().signature;
 
         // 未核对 → 导出拒绝；核对不过逐项暴露
@@ -279,8 +316,15 @@ fn ut_s20_14_plan_check_and_gated_export() {
             ("SYN-B".into(), 9.0, 0, 0, 250, 250),
         ];
         let issues = bad.check_plan(5.0).unwrap();
-        assert!(issues.iter().any(|i| i.contains("SYN-A 可卖数量不足")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("SYN-B 买入数量不是 100 股整数倍")));
+        assert!(
+            issues.iter().any(|i| i.contains("SYN-A 可卖数量不足")),
+            "{issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("SYN-B 买入数量不是 100 股整数倍"))
+        );
         // 现金不足
         let issues = w.check_plan(999_999.0).unwrap();
         assert!(issues.iter().any(|i| i.contains("可用现金不足")));
@@ -288,11 +332,13 @@ fn ut_s20_14_plan_check_and_gated_export() {
         // 报告缺失 → 核对暴露
         let mut no_report = w.clone();
         no_report.current_mut().report = None;
-        assert!(no_report
-            .check_plan(1500.0)
-            .unwrap()
-            .iter()
-            .any(|i| i.contains("验证报告缺失")));
+        assert!(
+            no_report
+                .check_plan(1500.0)
+                .unwrap()
+                .iter()
+                .any(|i| i.contains("验证报告缺失"))
+        );
 
         // 核对通过 → 确认导出：CSV 含演示标识/版本/交易日/调整数量
         assert!(w.check_plan(1500.0).unwrap().is_empty());
@@ -347,7 +393,9 @@ fn st_s17_16_ai_workspace_full_journey() {
                 fixed_membership: true,
                 ignore_missing: false,
             };
-            let r = bridge.submit_preview(&snapshot_id, &form).expect("预览提交");
+            let r = bridge
+                .submit_preview(&snapshot_id, &form)
+                .expect("预览提交");
             TaskWatch::submitted(r.task_id, "预览中…")
         };
         assert!(watch_to_terminal(&bridge, &mut watch), "预览应到终态");
@@ -386,10 +434,12 @@ fn st_s17_16_ai_workspace_full_journey() {
         w.make_report().expect("生成报告");
         let report = w.current().report.as_ref().unwrap();
         assert!(report.demo_pass());
-        assert!(report
-            .checks
-            .iter()
-            .any(|(n, ok, msg)| n == "正式策略验证" && !ok && msg.contains("证据不足")));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|(n, ok, msg)| n == "正式策略验证" && !ok && msg.contains("证据不足"))
+        );
 
         // —— 计划桥：生成 → 核对 → 确认导出 CSV 落盘（含演示标识）——
         let plan_json = r#"{"cash_cny":"10000","total_assets_cny":"20000","positions":[{"instrument_id":"SYN-A","price":10,"quantity":1000,"sellable_quantity":1000,"target_quantity":1100}]}"#;
@@ -413,7 +463,10 @@ fn st_s17_16_ai_workspace_full_journey() {
             .expect("更新需求");
         assert!(!w.version_fresh(v1));
         assert!(w.run_experiment(None).is_err(), "过期版本拒绝新实验");
-        assert_eq!(w.current().experiments[0].task_id.as_deref(), e1_task.as_deref());
+        assert_eq!(
+            w.current().experiments[0].task_id.as_deref(),
+            e1_task.as_deref()
+        );
 
         // —— 新版本下取消旅程：长驻协调器取消直达（完成则 ALREADY_TERMINAL 容双态）——
         w.generate_design("EMA v2").expect("生成设计 v2");

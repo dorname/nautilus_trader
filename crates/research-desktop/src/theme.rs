@@ -152,7 +152,11 @@ pub enum TagKind {
 /// 徽章（原型 .tag：mono 10px、圆角 5、着色描边；返回可点击响应）。
 pub fn tag_ui(ui: &mut egui::Ui, text: &str, kind: TagKind) -> egui::Response {
     let (fg, bg, bd) = match kind {
-        TagKind::Neutral => (MUTED, Color32::from_rgba_premultiplied(13, 13, 14, 13), BORDER_STRONG),
+        TagKind::Neutral => (
+            MUTED,
+            Color32::from_rgba_premultiplied(13, 13, 14, 13),
+            BORDER_STRONG,
+        ),
         TagKind::Accent => (
             ACCENT_TEXT,
             Color32::from_rgba_premultiplied(7, 23, 13, 26),

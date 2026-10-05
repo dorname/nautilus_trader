@@ -14,20 +14,56 @@ use egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Se
 use crate::ai;
 use crate::bridge::{CompareForm, DesktopBridge, ImportForm, PlanForm, RunForm, UniverseForm};
 use crate::layout::{self, LayoutPlan};
-use crate::nav::{Route, RESOURCE_GROUP, RESOURCE_ROUTES, WORKSPACE_GROUP, WORKSPACE_ROUTES};
-use crate::pipeline::{terminal_error_text, PageState, TaskWatch, POLL_INTERVAL};
+use crate::nav::{RESOURCE_GROUP, RESOURCE_ROUTES, Route, WORKSPACE_GROUP, WORKSPACE_ROUTES};
+use crate::pipeline::{POLL_INTERVAL, PageState, TaskWatch, terminal_error_text};
 use crate::session::Session;
 use crate::theme::{self, TagKind};
 use crate::workspace::{Role, Workspace};
 
 /// 设计页处理图节点（静态结构说明，非运行数据）。
 const NODES: [(&str, &str, &str, &str, u32); 6] = [
-    ("data", "读取数据", "信号日可见数据", "截止信号日的可见收盘行情 → 价格与成交额样本", 3),
-    ("filter", "股票池过滤", "流动性与股票池", "当期股票池与最低成交额 → 入选或排除原因", 4),
-    ("signal", "形成信号", "收盘后形成信号", "信号日收盘信息 → 目标标的与投入比例", 5),
-    ("size", "计算仓位", "目标与资金约束", "资金、价格、费用与交易单位 → 目标股数与资金检查", 8),
-    ("fill", "模拟成交", "下一交易日开盘", "下一交易日开盘与申请数量 → 成交或拒绝、剩余现金", 10),
-    ("metric", "计算指标", "现金与持仓估值", "逐日现金、持仓与收盘价 → 净值、收益和回撤", 11),
+    (
+        "data",
+        "读取数据",
+        "信号日可见数据",
+        "截止信号日的可见收盘行情 → 价格与成交额样本",
+        3,
+    ),
+    (
+        "filter",
+        "股票池过滤",
+        "流动性与股票池",
+        "当期股票池与最低成交额 → 入选或排除原因",
+        4,
+    ),
+    (
+        "signal",
+        "形成信号",
+        "收盘后形成信号",
+        "信号日收盘信息 → 目标标的与投入比例",
+        5,
+    ),
+    (
+        "size",
+        "计算仓位",
+        "目标与资金约束",
+        "资金、价格、费用与交易单位 → 目标股数与资金检查",
+        8,
+    ),
+    (
+        "fill",
+        "模拟成交",
+        "下一交易日开盘",
+        "下一交易日开盘与申请数量 → 成交或拒绝、剩余现金",
+        10,
+    ),
+    (
+        "metric",
+        "计算指标",
+        "现金与持仓估值",
+        "逐日现金、持仓与收盘价 → 净值、收益和回撤",
+        11,
+    ),
 ];
 
 /// 提交类页面的轮询键。
@@ -126,7 +162,8 @@ impl ResearchApp {
             snapshot_page: PageState::default(),
             universe_saved: None,
             universe_form: UniverseForm {
-                rule_text: r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#.into(),
+                rule_text: r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#
+                    .into(),
                 as_of: String::new(),
                 strict: true,
                 fixed_membership: true,
@@ -281,9 +318,17 @@ impl eframe::App for ResearchApp {
         // 水平间距手动管理（卡片间隙 = APP_GAP）
         ui.spacing_mut().item_spacing.x = 0.0;
 
+        // 首帧守卫：WSLg 等环境 winit 首帧可能给出远小于请求值的窗口尺寸
+        // （实测约 260×267），此时宽度减侧栏与对话栏必为负——跳过本帧等尺寸就绪
+        let root = ui.max_rect();
+        if !layout::frame_ready(root.width(), root.height()) {
+            ui.ctx().request_repaint();
+            return;
+        }
+
         let plan = layout::plan_for_width(ui.max_rect().width());
         let outer = ui.max_rect().shrink(layout::APP_GAP);
-        ui.allocate_ui(outer.size(), |ui| {
+        ui.allocate_ui(sz(outer.width(), outer.height()), |ui| {
             ui.horizontal(|ui| {
                 self.render_sidebar(ui, plan);
                 ui.add_space(layout::APP_GAP);
@@ -292,7 +337,12 @@ impl eframe::App for ResearchApp {
         });
 
         // 轮询所有提交类任务：get_task → 状态机推进（终态落定并停止轮询）
-        for key in [PageKey::Snapshot, PageKey::Universe, PageKey::Plan, PageKey::Run] {
+        for key in [
+            PageKey::Snapshot,
+            PageKey::Universe,
+            PageKey::Plan,
+            PageKey::Run,
+        ] {
             self.poll(key);
         }
         // 按需重绘：有活跃任务才定时轮询；否则事件驱动，静默零帧（CPU 红线）
@@ -357,10 +407,7 @@ impl ResearchApp {
                     .width(w)
                     .show_ui(ui, |ui| {
                         for (i, name) in &names {
-                            if ui
-                                .selectable_label(*i == active, name.clone())
-                                .clicked()
-                            {
+                            if ui.selectable_label(*i == active, name.clone()).clicked() {
                                 self.workspace.switch_to(*i);
                             }
                         }
@@ -391,7 +438,11 @@ impl ResearchApp {
                     ui.separator();
                     ui.add_space(10.0);
                     if self.session.font_missing {
-                        ui.label(lbl("未找到系统中文字体，中文可能显示为方块", 9.0, theme::RED));
+                        ui.label(lbl(
+                            "未找到系统中文字体，中文可能显示为方块",
+                            9.0,
+                            theme::RED,
+                        ));
                         ui.add_space(4.0);
                     }
                     ui.horizontal(|ui| {
@@ -422,8 +473,7 @@ impl ResearchApp {
         let count = (route == Route::Experiments)
             .then(|| self.workspace.current().experiments.len())
             .filter(|n| *n > 0);
-        let (rect, resp) =
-            ui.allocate_exact_size(egui::vec2(w, 30.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 30.0), Sense::click());
         let fill = if active {
             Color32::from_rgba_premultiplied(5, 20, 11, 20)
         } else if resp.hovered() {
@@ -438,7 +488,12 @@ impl ResearchApp {
         };
         ui.painter().rect_filled(rect, CornerRadius::same(7), fill);
         if active {
-            ui.painter().rect_stroke(rect, CornerRadius::same(7), stroke, egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::same(7),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
         }
         let tx = rect.left() + 11.0;
         let cy = rect.center().y;
@@ -500,7 +555,7 @@ impl ResearchApp {
     fn render_topbar(&mut self, ui: &mut egui::Ui, w: f32) {
         let project = self.workspace.current().name.clone();
         let resp = ui
-            .allocate_ui(egui::vec2(w, layout::TOPBAR_H), |ui| {
+            .allocate_ui(sz(w, layout::TOPBAR_H), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(25.0);
                     ui.label(lbl("研究项目", 12.0, theme::MUTED));
@@ -521,7 +576,10 @@ impl ResearchApp {
             .response;
         let r = resp.rect;
         ui.painter().line_segment(
-            [Pos2::new(r.left(), r.bottom()), Pos2::new(r.right(), r.bottom())],
+            [
+                Pos2::new(r.left(), r.bottom()),
+                Pos2::new(r.right(), r.bottom()),
+            ],
             Stroke::new(1.0, theme::BORDER),
         );
     }
@@ -529,10 +587,14 @@ impl ResearchApp {
     /// footer：本地原型声明 + 溯源声明。
     fn render_footer(&mut self, ui: &mut egui::Ui, w: f32) {
         let resp = ui
-            .allocate_ui(egui::vec2(w, layout::FOOTER_H), |ui| {
+            .allocate_ui(sz(w, layout::FOOTER_H), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(20.0);
-                    ui.label(lbl("● 本地原型 · 合成样本 SYN-202601 · 刷新重置，可导出产物", 9.0, theme::FAINT));
+                    ui.label(lbl(
+                        "● 本地原型 · 合成样本 SYN-202601 · 刷新重置，可导出产物",
+                        9.0,
+                        theme::FAINT,
+                    ));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(20.0);
                         ui.label(lbl("所有结果可追溯至输入与版本", 9.0, theme::FAINT));
@@ -549,7 +611,7 @@ impl ResearchApp {
 
     /// 主体：工作区画布（含 workspace-head）+ 右对话栏（专注模式收起）。
     fn render_body(&mut self, ui: &mut egui::Ui, w: f32, h: f32, plan: LayoutPlan) {
-        ui.allocate_ui(egui::vec2(w, h), |ui| {
+        ui.allocate_ui(sz(w, h), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let chat_w = if self.focus {
@@ -567,20 +629,26 @@ impl ResearchApp {
 
     /// 工作区画布：workspace-head（◇ 项目产物 + 版本 tag + 专注开关）+ 路由页面。
     fn render_canvas(&mut self, ui: &mut egui::Ui, w: f32, h: f32) {
-        ui.allocate_ui(egui::vec2(w, h), |ui| {
+        ui.allocate_ui(sz(w, h), |ui| {
             ui.set_min_width(w);
             // workspace-head
             let version_tag = {
                 let p = self.workspace.current();
                 format!(
                     "R{} / D{} / v{}",
-                    p.active_req.map(|i| i.to_string()).unwrap_or_else(|| "—".into()),
-                    p.active_design.map(|i| i.to_string()).unwrap_or_else(|| "—".into()),
-                    p.active_version.map(|i| i.to_string()).unwrap_or_else(|| "—".into()),
+                    p.active_req
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    p.active_design
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                    p.active_version
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "—".into()),
                 )
             };
             let head = ui
-                .allocate_ui(egui::vec2(w, 44.0), |ui| {
+                .allocate_ui(sz(w, 44.0), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.add_space(23.0);
                         ui.label(lbl("◇", 12.0, theme::ACCENT_TEXT));
@@ -590,7 +658,11 @@ impl ResearchApp {
                         theme::tag_ui(ui, &version_tag, TagKind::Neutral);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(23.0);
-                            let label = if self.focus { "返回对话 ⤡" } else { "展开工作区 ⤢" };
+                            let label = if self.focus {
+                                "返回对话 ⤡"
+                            } else {
+                                "展开工作区 ⤢"
+                            };
                             if ui.add(theme::ghost_button(label)).clicked() {
                                 self.focus = !self.focus;
                             }
@@ -600,7 +672,10 @@ impl ResearchApp {
                 .response;
             let hr = head.rect;
             ui.painter().line_segment(
-                [Pos2::new(hr.left(), hr.bottom()), Pos2::new(hr.right(), hr.bottom())],
+                [
+                    Pos2::new(hr.left(), hr.bottom()),
+                    Pos2::new(hr.right(), hr.bottom()),
+                ],
                 Stroke::new(1.0, theme::BORDER),
             );
 
@@ -651,7 +726,7 @@ impl ResearchApp {
 impl ResearchApp {
     /// 右对话栏：研究助手头部 + 消息流（含产物卡）+ 任务条 + 建议与输入。
     fn render_chat(&mut self, ui: &mut egui::Ui, w: f32, h: f32) {
-        ui.allocate_ui(egui::vec2(w, h), |ui| {
+        ui.allocate_ui(sz(w, h), |ui| {
             ui.set_min_width(w);
             let left_line = ui.painter().line_segment(
                 [
@@ -663,13 +738,16 @@ impl ResearchApp {
             let _ = left_line;
 
             // 头部：✧ 研究助手 / 从一个想法，到可追溯的计划 + 预设对话 tag
-            ui.allocate_ui(egui::vec2(w, 64.0), |ui| {
+            ui.allocate_ui(sz(w, 64.0), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(22.0);
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(5, 20, 11, 20))
                         .corner_radius(CornerRadius::same(8))
-                        .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 51)))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_premultiplied(8, 26, 15, 51),
+                        ))
                         .inner_margin(Margin::symmetric(7, 5))
                         .show(ui, |ui| {
                             ui.label(lbl("✧", 13.0, theme::ACCENT_TEXT));
@@ -731,14 +809,17 @@ impl ResearchApp {
                 .active_task()
                 .map(|(id, label, key)| (id.to_string(), label, key));
             if let Some((task_id, label, key)) = task {
-                ui.allocate_ui(egui::vec2(w, 40.0), |ui| {
+                ui.allocate_ui(sz(w, 40.0), |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
                         ui.set_min_width(ui.available_width());
                         Frame::NONE
                             .fill(Color32::from_rgba_premultiplied(5, 20, 11, 15))
                             .corner_radius(CornerRadius::same(8))
-                            .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 51)))
+                            .stroke(Stroke::new(
+                                1.0,
+                                Color32::from_rgba_premultiplied(8, 26, 15, 51),
+                            ))
                             .inner_margin(Margin::symmetric(12, 10))
                             .show(ui, |ui| {
                                 ui.label(mono(ellipsis(&label, 18), 11.0, theme::ACCENT_TEXT));
@@ -761,7 +842,11 @@ impl ResearchApp {
                     ui.horizontal_wrapped(|ui| {
                         for s in self.suggestions() {
                             if ui
-                                .add(egui::Button::new(lbl(s, 10.0, theme::MUTED)).fill(theme::GLASS).corner_radius(CornerRadius::same(7)))
+                                .add(
+                                    egui::Button::new(lbl(s, 10.0, theme::MUTED))
+                                        .fill(theme::GLASS)
+                                        .corner_radius(CornerRadius::same(7)),
+                                )
                                 .clicked()
                             {
                                 self.do_ai_send_text(s.to_string());
@@ -773,7 +858,10 @@ impl ResearchApp {
                     Frame::NONE
                         .fill(theme::GLASS_STRONG)
                         .corner_radius(CornerRadius::same(12))
-                        .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 77)))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_premultiplied(8, 26, 15, 77),
+                        ))
                         .inner_margin(Margin::same(11))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
@@ -804,7 +892,11 @@ impl ResearchApp {
                         });
                     ui.add_space(6.0);
                     ui.centered_and_justified(|ui| {
-                        ui.label(lbl("离线预设交互 · 计算来自合成样本 · 未接入模型", 9.0, theme::FAINT));
+                        ui.label(lbl(
+                            "离线预设交互 · 计算来自合成样本 · 未接入模型",
+                            9.0,
+                            theme::FAINT,
+                        ));
                     });
                 });
             });
@@ -812,7 +904,13 @@ impl ResearchApp {
     }
 
     /// 单条消息：meta + 气泡 + 产物卡（可点击跳转路由）。
-    fn render_message(&mut self, ui: &mut egui::Ui, is_user: bool, text: &str, card: Option<Route>) {
+    fn render_message(
+        &mut self,
+        ui: &mut egui::Ui,
+        is_user: bool,
+        text: &str,
+        card: Option<Route>,
+    ) {
         ui.add_space(10.0);
         if is_user {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -847,7 +945,10 @@ impl ResearchApp {
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(6, 21, 12, 26))
                         .corner_radius(CornerRadius::same(9))
-                        .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 56)))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_premultiplied(8, 26, 15, 56),
+                        ))
                         .inner_margin(Margin::symmetric(13, 10))
                         .show(ui, |ui| {
                             ui.label(lbl(title, 12.0, theme::TEXT));
@@ -897,7 +998,10 @@ impl ResearchApp {
             Frame::NONE
                 .fill(Color32::from_rgba_premultiplied(38, 12, 12, 26))
                 .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(38, 12, 12, 71)))
+                .stroke(Stroke::new(
+                    1.0,
+                    Color32::from_rgba_premultiplied(38, 12, 12, 71),
+                ))
                 .inner_margin(Margin::symmetric(14, 12))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
@@ -919,7 +1023,10 @@ impl ResearchApp {
         Frame::NONE
             .fill(Color32::from_rgba_premultiplied(39, 28, 5, 15))
             .corner_radius(CornerRadius::same(8))
-            .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(39, 28, 5, 64)))
+            .stroke(Stroke::new(
+                1.0,
+                Color32::from_rgba_premultiplied(39, 28, 5, 64),
+            ))
             .inner_margin(Margin::symmetric(14, 12))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
@@ -933,14 +1040,23 @@ impl ResearchApp {
         let waiting = self.active_task().map(|(_, label, _)| label.to_string());
         let (next_label, next_route, next_reason) = next_step(&self.workspace);
         let (next_label, next_route, next_reason) = match waiting {
-            Some(label) => ("等待任务完成".to_string(), self.session.route, format!("{label}正在执行，可在对话区取消")),
+            Some(label) => (
+                "等待任务完成".to_string(),
+                self.session.route,
+                format!("{label}正在执行，可在对话区取消"),
+            ),
             None => (next_label, next_route, next_reason),
         };
         let (project_name, versions_len, exps_len) = {
             let p = self.workspace.current();
             (p.name.clone(), p.versions.len(), p.experiments.len())
         };
-        page_header(ui, "项目 / 研究概览", "让每一步研究，都有依据。", "需求、策略与实验在这里连接成一条完整的研究路径。");
+        page_header(
+            ui,
+            "项目 / 研究概览",
+            "让每一步研究，都有依据。",
+            "需求、策略与实验在这里连接成一条完整的研究路径。",
+        );
 
         // hero
         Frame::NONE
@@ -952,7 +1068,11 @@ impl ResearchApp {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     theme::tag_ui(ui, "A股 · 日线", TagKind::Accent);
-                    theme::tag_ui(ui, &format!("项目 {:02}", self.workspace.current().id), TagKind::Neutral);
+                    theme::tag_ui(
+                        ui,
+                        &format!("项目 {:02}", self.workspace.current().id),
+                        TagKind::Neutral,
+                    );
                 });
                 ui.add_space(10.0);
                 ui.label(lbl(&project_name, 20.0, theme::TEXT));
@@ -962,12 +1082,14 @@ impl ResearchApp {
                 ui.horizontal(|ui| {
                     if ui.add(theme::primary_button(&next_label)).clicked() {
                         let from = self.session.route;
-                        self.session.navigate(next_route, self.session.scroll_of(from));
+                        self.session
+                            .navigate(next_route, self.session.scroll_of(from));
                     }
                     ui.add_space(8.0);
                     if ui.add(theme::ghost_button("了解验证流程")).clicked() {
                         let from = self.session.route;
-                        self.session.navigate(Route::Validate, self.session.scroll_of(from));
+                        self.session
+                            .navigate(Route::Validate, self.session.scroll_of(from));
                     }
                 });
             });
@@ -977,11 +1099,23 @@ impl ResearchApp {
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 24.0) / 3.0;
             for (top, value, bottom) in [
-                ("研究阶段", next_route.title().to_string(), "逐步构建研究证据".to_string()),
-                ("策略版本", format!("{versions_len:02}"), "保存后不可覆盖".to_string()),
-                ("已完成实验", format!("{exps_len:02}"), "输入与结果可追溯".to_string()),
+                (
+                    "研究阶段",
+                    next_route.title().to_string(),
+                    "逐步构建研究证据".to_string(),
+                ),
+                (
+                    "策略版本",
+                    format!("{versions_len:02}"),
+                    "保存后不可覆盖".to_string(),
+                ),
+                (
+                    "已完成实验",
+                    format!("{exps_len:02}"),
+                    "输入与结果可追溯".to_string(),
+                ),
             ] {
-                ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
+                ui.allocate_ui(sz(w, 0.0), |ui| {
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
                         .corner_radius(CornerRadius::same(10))
@@ -1009,7 +1143,9 @@ impl ResearchApp {
                 .unwrap_or_else(|| "待确认".into());
             let design_state = match p.active_design {
                 Some(d) => {
-                    let fresh = p.active_req.is_some_and(|r| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
+                    let fresh = p
+                        .active_req
+                        .is_some_and(|r| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
                     format!("D{d} {}", if fresh { "已保存" } else { "已过期" })
                 }
                 None => "待设计".into(),
@@ -1022,54 +1158,126 @@ impl ResearchApp {
                 None => "待开发".into(),
             };
             let exp_state = match p.active_version {
-                Some(v) if p.experiments.iter().any(|e| e.version_id == v) => "当前版本已运行".into(),
+                Some(v) if p.experiments.iter().any(|e| e.version_id == v) => {
+                    "当前版本已运行".into()
+                }
                 _ => "当前版本待运行".into(),
             };
-            let val_state = if report_ready(&self.workspace) { "演示检查通过".into() } else { "待验证".into() };
+            let val_state = if report_ready(&self.workspace) {
+                "演示检查通过".into()
+            } else {
+                "待验证".into()
+            };
             vec![
-                (Route::Requirements, "需求与研究假设".into(), "定义目标、数据范围与验收标准".into(), req_state, if p.active_req.is_some() { TagKind::Accent } else { TagKind::Neutral }),
-                (Route::Design, "设计与处理逻辑".into(), "系统流程图 · 调仓周期时序图".into(), design_state, if p.active_design.is_some() { TagKind::Accent } else { TagKind::Neutral }),
-                (Route::Develop, "策略实现".into(), "编辑代码、检查并保存不可变版本".into(), dev_state, if p.active_version.is_some() { TagKind::Accent } else { TagKind::Neutral }),
-                (Route::Experiments, "调试与回测实验".into(), "解释事件成因，比较历史模拟结果".into(), exp_state, TagKind::Neutral),
-                (Route::Validate, "验证与交易计划".into(), "证据检查、账户核对与人工清单".into(), val_state, if report_ready(&self.workspace) { TagKind::Accent } else { TagKind::Neutral }),
+                (
+                    Route::Requirements,
+                    "需求与研究假设".into(),
+                    "定义目标、数据范围与验收标准".into(),
+                    req_state,
+                    if p.active_req.is_some() {
+                        TagKind::Accent
+                    } else {
+                        TagKind::Neutral
+                    },
+                ),
+                (
+                    Route::Design,
+                    "设计与处理逻辑".into(),
+                    "系统流程图 · 调仓周期时序图".into(),
+                    design_state,
+                    if p.active_design.is_some() {
+                        TagKind::Accent
+                    } else {
+                        TagKind::Neutral
+                    },
+                ),
+                (
+                    Route::Develop,
+                    "策略实现".into(),
+                    "编辑代码、检查并保存不可变版本".into(),
+                    dev_state,
+                    if p.active_version.is_some() {
+                        TagKind::Accent
+                    } else {
+                        TagKind::Neutral
+                    },
+                ),
+                (
+                    Route::Experiments,
+                    "调试与回测实验".into(),
+                    "解释事件成因，比较历史模拟结果".into(),
+                    exp_state,
+                    TagKind::Neutral,
+                ),
+                (
+                    Route::Validate,
+                    "验证与交易计划".into(),
+                    "证据检查、账户核对与人工清单".into(),
+                    val_state,
+                    if report_ready(&self.workspace) {
+                        TagKind::Accent
+                    } else {
+                        TagKind::Neutral
+                    },
+                ),
             ]
         };
-        panel(ui, "研究路径", Some(("同一项目 · 全程关联", TagKind::Neutral)), |ui| {
-            for (i, (route, title, desc, state, kind)) in stages.iter().enumerate() {
-                let inner = ui
-                    .horizontal(|ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.add_space(2.0);
-                        // 步号圆圈
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(25.0, 25.0), Sense::hover());
-                        let c = rect.center();
-                        ui.painter().circle_stroke(c, 12.0, Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 64)));
-                        ui.painter().text(c, ALIGN2_CENTER, format!("{:02}", i + 1), FontId::monospace(10.0), theme::ACCENT_TEXT);
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.label(lbl(title, 12.0, theme::TEXT));
-                            ui.label(lbl(desc, 10.0, theme::MUTED));
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            theme::tag_ui(ui, state, *kind);
-                            ui.add_space(6.0);
-                            ui.label(lbl("→", 12.0, theme::FAINT));
-                        });
-                    })
-                    .response;
-                let resp = inner.interact(Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(resp.rect, CornerRadius::same(7), Color32::from_rgba_premultiplied(250, 250, 250, 8));
+        panel(
+            ui,
+            "研究路径",
+            Some(("同一项目 · 全程关联", TagKind::Neutral)),
+            |ui| {
+                for (i, (route, title, desc, state, kind)) in stages.iter().enumerate() {
+                    let inner = ui
+                        .horizontal(|ui| {
+                            ui.set_min_width(ui.available_width());
+                            ui.add_space(2.0);
+                            // 步号圆圈
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(25.0, 25.0), Sense::hover());
+                            let c = rect.center();
+                            ui.painter().circle_stroke(
+                                c,
+                                12.0,
+                                Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 64)),
+                            );
+                            ui.painter().text(
+                                c,
+                                ALIGN2_CENTER,
+                                format!("{:02}", i + 1),
+                                FontId::monospace(10.0),
+                                theme::ACCENT_TEXT,
+                            );
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(lbl(title, 12.0, theme::TEXT));
+                                ui.label(lbl(desc, 10.0, theme::MUTED));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                theme::tag_ui(ui, state, *kind);
+                                ui.add_space(6.0);
+                                ui.label(lbl("→", 12.0, theme::FAINT));
+                            });
+                        })
+                        .response;
+                    let resp = inner.interact(Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(
+                            resp.rect,
+                            CornerRadius::same(7),
+                            Color32::from_rgba_premultiplied(250, 250, 250, 8),
+                        );
+                    }
+                    if resp.clicked() {
+                        let from = self.session.route;
+                        self.session.navigate(*route, self.session.scroll_of(from));
+                    }
+                    if i + 1 < stages.len() {
+                        ui.add_space(4.0);
+                    }
                 }
-                if resp.clicked() {
-                    let from = self.session.route;
-                    self.session.navigate(*route, self.session.scroll_of(from));
-                }
-                if i + 1 < stages.len() {
-                    ui.add_space(4.0);
-                }
-            }
-        });
+            },
+        );
 
         ui.add_space(10.0);
         ui.label(lbl(
@@ -1092,65 +1300,81 @@ impl ResearchApp {
             });
             (saved, dirty)
         };
-        page_header(ui, "阶段 01 / 定义问题", "研究需求", "把想法转成明确的约束与可检验的标准。");
+        page_header(
+            ui,
+            "阶段 01 / 定义问题",
+            "研究需求",
+            "把想法转成明确的约束与可检验的标准。",
+        );
         if draft_dirty {
-            Self::warn_banner(ui, "需求草稿尚未确认或保存。运行使用已确认版本，草稿尚未生效。");
+            Self::warn_banner(
+                ui,
+                "需求草稿尚未确认或保存。运行使用已确认版本，草稿尚未生效。",
+            );
         }
 
-        panel(ui, "需求文档", Some(("可直接编辑", TagKind::Neutral)), |ui| {
-            ui.label(field("研究目标与处理逻辑"));
-            let mut text = self.ai_req_text.clone();
-            if ui
-                .add(
-                    egui::TextEdit::multiline(&mut text)
-                        .desired_rows(4)
-                        .desired_width(ui.available_width()),
-                )
-                .changed()
-            {
-                self.ai_req_text = text;
-            }
-            ui.add_space(12.0);
-            ui.label(field("验收标准"));
-            let mut acc = self.ai_req_acceptance.clone();
-            if ui
-                .add(
-                    egui::TextEdit::multiline(&mut acc)
-                        .desired_rows(3)
-                        .desired_width(ui.available_width()),
-                )
-                .changed()
-            {
-                self.ai_req_acceptance = acc;
-            }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(field("目标投入比例（%）"));
-                    ui.add(
-                        egui::DragValue::new(&mut self.ai_req_alloc)
-                            .range(0.0..=100.0)
-                            .speed(1.0),
-                    );
+        panel(
+            ui,
+            "需求文档",
+            Some(("可直接编辑", TagKind::Neutral)),
+            |ui| {
+                ui.label(field("研究目标与处理逻辑"));
+                let mut text = self.ai_req_text.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut text)
+                            .desired_rows(4)
+                            .desired_width(ui.available_width()),
+                    )
+                    .changed()
+                {
+                    self.ai_req_text = text;
+                }
+                ui.add_space(12.0);
+                ui.label(field("验收标准"));
+                let mut acc = self.ai_req_acceptance.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut acc)
+                            .desired_rows(3)
+                            .desired_width(ui.available_width()),
+                    )
+                    .changed()
+                {
+                    self.ai_req_acceptance = acc;
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(field("目标投入比例（%）"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.ai_req_alloc)
+                                .range(0.0..=100.0)
+                                .speed(1.0),
+                        );
+                    });
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.label(field("最低成交额（元）"));
+                        let mut v = self.ai_req_min_amount.clone();
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut v).desired_width(160.0))
+                            .changed()
+                        {
+                            self.ai_req_min_amount = v;
+                        }
+                    });
                 });
                 ui.add_space(14.0);
-                ui.vertical(|ui| {
-                    ui.label(field("最低成交额（元）"));
-                    let mut v = self.ai_req_min_amount.clone();
-                    if ui.add(egui::TextEdit::singleline(&mut v).desired_width(160.0)).changed() {
-                        self.ai_req_min_amount = v;
-                    }
-                });
-            });
-            ui.add_space(14.0);
-            if ui.add(theme::primary_button("确认需求")).clicked() {
-                self.do_confirm_requirement();
-            }
-            ui.add_space(10.0);
-            ui.label(note(
+                if ui.add(theme::primary_button("确认需求")).clicked() {
+                    self.do_confirm_requirement();
+                }
+                ui.add_space(10.0);
+                ui.label(note(
                 "确认后生成需求版本。修改上游规格会使旧设计、代码与验证结论过期，历史实验仍保持原样。",
             ));
-        });
+            },
+        );
 
         ui.add_space(6.0);
         let history: Vec<(usize, String, bool)> = {
@@ -1161,7 +1385,12 @@ impl ResearchApp {
                 .map(|r| {
                     (
                         r.id,
-                        format!("需求 R{} · 投入 {:.0}% · 成交额 ≥{:.0}", r.id, r.allocation * 100.0, r.min_amount),
+                        format!(
+                            "需求 R{} · 投入 {:.0}% · 成交额 ≥{:.0}",
+                            r.id,
+                            r.allocation * 100.0,
+                            r.min_amount
+                        ),
                         p.active_req == Some(r.id),
                     )
                 })
@@ -1202,12 +1431,27 @@ impl ResearchApp {
             };
             (req_ok, state)
         };
-        let kind = if design_state.contains("已保存") { TagKind::Accent } else { TagKind::Neutral };
-        page_header(ui, "阶段 02 / 处理逻辑", "策略设计", "文档、处理图与代码，共用同一份策略逻辑。");
+        let kind = if design_state.contains("已保存") {
+            TagKind::Accent
+        } else {
+            TagKind::Neutral
+        };
+        page_header(
+            ui,
+            "阶段 02 / 处理逻辑",
+            "策略设计",
+            "文档、处理图与代码，共用同一份策略逻辑。",
+        );
         if !req_ok {
-            if empty_panel(ui, "等待确认需求", "系统流程图与时序图会从同一份策略结构生成。", Some("打开需求文档")) {
+            if empty_panel(
+                ui,
+                "等待确认需求",
+                "系统流程图与时序图会从同一份策略结构生成。",
+                Some("打开需求文档"),
+            ) {
                 let from = self.session.route;
-                self.session.navigate(Route::Requirements, self.session.scroll_of(from));
+                self.session
+                    .navigate(Route::Requirements, self.session.scroll_of(from));
             }
             return;
         }
@@ -1230,10 +1474,13 @@ impl ResearchApp {
                 let r = &p.reqs[p.active_req.unwrap_or(1) - 1];
                 (r.allocation, r.min_amount)
             };
-            kv(ui, &[
-                ("投入比例", format!("{:.0}%（沿用需求版本）", alloc * 100.0)),
-                ("最低成交额", format!("≥{min_amt:.0} 元")),
-            ]);
+            kv(
+                ui,
+                &[
+                    ("投入比例", format!("{:.0}%（沿用需求版本）", alloc * 100.0)),
+                    ("最低成交额", format!("≥{min_amt:.0} 元")),
+                ],
+            );
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 if ui.add(theme::primary_button("保存设计版本")).clicked() {
@@ -1258,7 +1505,10 @@ impl ResearchApp {
                 ui.vertical(|ui| {
                     ui.label(note("图描述预期行为；运行事件描述实际结果。"));
                 });
-                if ui.add(tab_button("时序图", !self.design_tab_flow)).clicked() {
+                if ui
+                    .add(tab_button("时序图", !self.design_tab_flow))
+                    .clicked()
+                {
                     self.design_tab_flow = false;
                 }
                 ui.add_space(4.0);
@@ -1285,14 +1535,25 @@ impl ResearchApp {
                     });
                     ui.add_space(6.0);
                 }
-                ui.label(note("跨交易日 · 信号与执行分离（信号日收盘形成信号，下一交易日开盘执行）。"));
+                ui.label(note(
+                    "跨交易日 · 信号与执行分离（信号日收盘形成信号，下一交易日开盘执行）。",
+                ));
             } else {
                 // 时序图：文字化时序（六节点五步）
-                kv(ui, &[
-                    ("信号日", "① 可见行情 → ② 入选样本 → ③ 目标比例（收盘后形成信号）".to_string()),
-                    ("执行日", "④ 资金约束 → ⑤ 成交回报（此时才读取开盘价）".to_string()),
-                    ("估值", "现金与持仓按当日收盘估值".to_string()),
-                ]);
+                kv(
+                    ui,
+                    &[
+                        (
+                            "信号日",
+                            "① 可见行情 → ② 入选样本 → ③ 目标比例（收盘后形成信号）".to_string(),
+                        ),
+                        (
+                            "执行日",
+                            "④ 资金约束 → ⑤ 成交回报（此时才读取开盘价）".to_string(),
+                        ),
+                        ("估值", "现金与持仓按当日收盘估值".to_string()),
+                    ],
+                );
             }
             ui.add_space(10.0);
             // 节点检查
@@ -1305,14 +1566,21 @@ impl ResearchApp {
             ui.horizontal(|ui| {
                 ui.label(lbl(format!("节点检查 · {name}"), 12.0, theme::TEXT));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::tag_ui(ui, NODES[self.design_node.min(NODES.len() - 1)].0, TagKind::Neutral);
+                    theme::tag_ui(
+                        ui,
+                        NODES[self.design_node.min(NODES.len() - 1)].0,
+                        TagKind::Neutral,
+                    );
                 });
             });
             ui.add_space(6.0);
-            kv(ui, &[
-                ("输入 / 输出", io.to_string()),
-                ("源码映射", format!("示例源码第 {line} 行")),
-            ]);
+            kv(
+                ui,
+                &[
+                    ("输入 / 输出", io.to_string()),
+                    ("源码映射", format!("示例源码第 {line} 行")),
+                ],
+            );
         });
     }
 
@@ -1326,7 +1594,11 @@ impl ResearchApp {
             .corner_radius(CornerRadius::same(9))
             .stroke(Stroke::new(
                 1.0,
-                if selected { theme::ACCENT } else { Color32::from_rgb(0x24, 0x3B, 0x2E) },
+                if selected {
+                    theme::ACCENT
+                } else {
+                    Color32::from_rgb(0x24, 0x3B, 0x2E)
+                },
             ))
             .inner_margin(Margin::symmetric(14, 10))
             .show(ui, |ui| {
@@ -1359,31 +1631,44 @@ impl ResearchApp {
             };
             (design_ok, state)
         };
-        page_header(ui, "阶段 03 / 策略实现", "策略开发", "保存明确的版本，再把它交给实验与验证。");
+        page_header(
+            ui,
+            "阶段 03 / 策略实现",
+            "策略开发",
+            "保存明确的版本，再把它交给实验与验证。",
+        );
         if !design_ok {
             Self::warn_banner(ui, "当前没有匹配需求的设计。请先在策略设计页保存设计版本。");
         }
 
-        panel(ui, "策略源码", Some((&version_state, TagKind::Accent)), |ui| {
-            let mut src = self.ai_code_source.clone();
-            if ui
-                .add(
-                    egui::TextEdit::multiline(&mut src)
-                        .desired_rows(10)
-                        .desired_width(ui.available_width())
-                        .font(FontId::monospace(12.0)),
-                )
-                .changed()
-            {
-                self.ai_code_source = src;
-            }
-            ui.add_space(8.0);
-            ui.label(note("源码为研究草稿记录，桌面不在本地执行任意代码；实验运行由协调器以 EMA 模板与运行参数执行。"));
-            ui.add_space(12.0);
-            if ui.add(theme::primary_button("保存版本（不可变）")).clicked() {
-                self.do_save_version();
-            }
-        });
+        panel(
+            ui,
+            "策略源码",
+            Some((&version_state, TagKind::Accent)),
+            |ui| {
+                let mut src = self.ai_code_source.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut src)
+                            .desired_rows(10)
+                            .desired_width(ui.available_width())
+                            .font(FontId::monospace(12.0)),
+                    )
+                    .changed()
+                {
+                    self.ai_code_source = src;
+                }
+                ui.add_space(8.0);
+                ui.label(note("源码为研究草稿记录，桌面不在本地执行任意代码；实验运行由协调器以 EMA 模板与运行参数执行。"));
+                ui.add_space(12.0);
+                if ui
+                    .add(theme::primary_button("保存版本（不可变）"))
+                    .clicked()
+                {
+                    self.do_save_version();
+                }
+            },
+        );
 
         ui.add_space(6.0);
         let versions: Vec<(usize, usize, usize, bool, bool)> = {
@@ -1416,12 +1701,27 @@ impl ResearchApp {
                     ui.add_space(8.0);
                     theme::tag_ui(
                         ui,
-                        if active { "当前" } else if fresh { "可选" } else { "过期" },
-                        if active { TagKind::Accent } else { TagKind::Neutral },
+                        if active {
+                            "当前"
+                        } else if fresh {
+                            "可选"
+                        } else {
+                            "过期"
+                        },
+                        if active {
+                            TagKind::Accent
+                        } else {
+                            TagKind::Neutral
+                        },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.add(theme::ghost_button("查看")).clicked() {
-                            self.view_source = self.workspace.current().versions.get(id - 1).map(|v| (v.id, v.source.clone()));
+                            self.view_source = self
+                                .workspace
+                                .current()
+                                .versions
+                                .get(id - 1)
+                                .map(|v| (v.id, v.source.clone()));
                         }
                     });
                 });
@@ -1437,13 +1737,31 @@ impl ResearchApp {
             .current()
             .experiments
             .iter()
-            .map(|e| (e.id, e.version_id, e.task_id.clone(), e.total_return.clone()))
+            .map(|e| {
+                (
+                    e.id,
+                    e.version_id,
+                    e.task_id.clone(),
+                    e.total_return.clone(),
+                )
+            })
             .collect();
-        page_header(ui, "阶段 04 / 解释运行行为", "事件调试", "回放实验证据，查看任务状态与比较归因。");
+        page_header(
+            ui,
+            "阶段 04 / 解释运行行为",
+            "事件调试",
+            "回放实验证据，查看任务状态与比较归因。",
+        );
         if exps.is_empty() {
-            if empty_panel(ui, "还没有实验记录", "先保存一个策略版本并运行实验。历史实验与任务证据在此保留。", Some("打开策略开发")) {
+            if empty_panel(
+                ui,
+                "还没有实验记录",
+                "先保存一个策略版本并运行实验。历史实验与任务证据在此保留。",
+                Some("打开策略开发"),
+            ) {
                 let from = self.session.route;
-                self.session.navigate(Route::Develop, self.session.scroll_of(from));
+                self.session
+                    .navigate(Route::Develop, self.session.scroll_of(from));
             }
             return;
         }
@@ -1453,53 +1771,80 @@ impl ResearchApp {
             let p = self.workspace.current();
             (
                 p.active_version,
-                p.active_version.map(|v| self.workspace.version_fresh(v)).unwrap_or(false),
+                p.active_version
+                    .map(|v| self.workspace.version_fresh(v))
+                    .unwrap_or(false),
             )
         };
-        panel(ui, "当前版本与运行", Some(("证据来自任务引用", TagKind::Neutral)), |ui| {
-            match vid {
-                Some(v) => ui.label(lbl(
-                    format!("当前版本 v{v}：{}", if fresh { "可运行" } else { "已过期，请重新保存版本" }),
-                    12.0,
-                    if fresh { theme::ACCENT } else { theme::RED },
-                )),
-                None => ui.label(lbl("尚无版本：请先在策略开发页保存", 12.0, theme::RED)),
-            };
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.add(theme::primary_button("运行实验")).clicked() {
-                    self.do_ai_run();
-                }
-                if self.ai_run.watch.is_active() {
-                    if let Some(t) = self.ai_run.watch.task_id() {
-                        let t = t.to_string();
-                        if ui.add(theme::ghost_button("取消")).clicked() {
-                            self.do_cancel(t, PageKey::Run);
+        panel(
+            ui,
+            "当前版本与运行",
+            Some(("证据来自任务引用", TagKind::Neutral)),
+            |ui| {
+                match vid {
+                    Some(v) => ui.label(lbl(
+                        format!(
+                            "当前版本 v{v}：{}",
+                            if fresh {
+                                "可运行"
+                            } else {
+                                "已过期，请重新保存版本"
+                            }
+                        ),
+                        12.0,
+                        if fresh { theme::ACCENT } else { theme::RED },
+                    )),
+                    None => ui.label(lbl("尚无版本：请先在策略开发页保存", 12.0, theme::RED)),
+                };
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary_button("运行实验")).clicked() {
+                        self.do_ai_run();
+                    }
+                    if self.ai_run.watch.is_active() {
+                        if let Some(t) = self.ai_run.watch.task_id() {
+                            let t = t.to_string();
+                            if ui.add(theme::ghost_button("取消")).clicked() {
+                                self.do_cancel(t, PageKey::Run);
+                            }
                         }
                     }
-                }
-            });
-            render_watch(ui, &self.ai_run);
-            ui.add_space(8.0);
-            ui.label(note("调试解释代码为什么这样运行；回测回答历史模拟表现。此处为任务级证据，逐事件回放属于后续生产能力。"));
-        });
+                });
+                render_watch(ui, &self.ai_run);
+                ui.add_space(8.0);
+                ui.label(note("调试解释代码为什么这样运行；回测回答历史模拟表现。此处为任务级证据，逐事件回放属于后续生产能力。"));
+            },
+        );
 
         ui.add_space(6.0);
-        panel(ui, "实验记录", Some(("历史实验不变", TagKind::Neutral)), |ui| {
-            egui::Grid::new("debug-exp-grid").show(ui, |ui| {
-                for head in ["实验", "版本", "任务", "期末收益"] {
-                    ui.label(mono(head, 10.0, theme::FAINT));
-                }
-                ui.end_row();
-                for (id, ver, task, ret) in &exps {
-                    ui.label(mono(format!("E{id}"), 11.0, theme::TEXT2));
-                    ui.label(mono(format!("v{ver}"), 11.0, theme::TEXT2));
-                    ui.label(mono(task.clone().unwrap_or_else(|| "（无任务）".into()), 11.0, theme::MUTED));
-                    ui.label(mono(ret.clone().unwrap_or_else(|| "—".into()), 11.0, theme::TEXT2));
+        panel(
+            ui,
+            "实验记录",
+            Some(("历史实验不变", TagKind::Neutral)),
+            |ui| {
+                egui::Grid::new("debug-exp-grid").show(ui, |ui| {
+                    for head in ["实验", "版本", "任务", "期末收益"] {
+                        ui.label(mono(head, 10.0, theme::FAINT));
+                    }
                     ui.end_row();
-                }
-            });
-        });
+                    for (id, ver, task, ret) in &exps {
+                        ui.label(mono(format!("E{id}"), 11.0, theme::TEXT2));
+                        ui.label(mono(format!("v{ver}"), 11.0, theme::TEXT2));
+                        ui.label(mono(
+                            task.clone().unwrap_or_else(|| "（无任务）".into()),
+                            11.0,
+                            theme::MUTED,
+                        ));
+                        ui.label(mono(
+                            ret.clone().unwrap_or_else(|| "—".into()),
+                            11.0,
+                            theme::TEXT2,
+                        ));
+                        ui.end_row();
+                    }
+                });
+            },
+        );
 
         ui.add_space(6.0);
         let ids: Vec<usize> = exps.iter().map(|(id, _, _, _)| *id).collect();
@@ -1532,9 +1877,14 @@ impl ResearchApp {
                     match self.workspace.compare_experiments(a, b) {
                         Ok((same, diffs)) => {
                             let text = if same {
-                                format!("E{a} 与 E{b}：同输入（同版本同修订戳）。若结果分歧，归因代码。")
+                                format!(
+                                    "E{a} 与 E{b}：同输入（同版本同修订戳）。若结果分歧，归因代码。"
+                                )
                             } else {
-                                format!("E{a} 与 E{b}：输入不同：{}。仅并列查看，不作代码效果归因。", diffs.join("；"))
+                                format!(
+                                    "E{a} 与 E{b}：输入不同：{}。仅并列查看，不作代码效果归因。",
+                                    diffs.join("；")
+                                )
                             };
                             self.tell(text, None);
                         }
@@ -1543,7 +1893,9 @@ impl ResearchApp {
                 }
             });
             ui.add_space(8.0);
-            ui.label(note("同输入实验的分歧归因代码；跨输入实验先列出输入差异，不归因代码。"));
+            ui.label(note(
+                "同输入实验的分歧归因代码；跨输入实验先列出输入差异，不归因代码。",
+            ));
         });
         self.poll(PageKey::Run);
     }
@@ -1555,24 +1907,51 @@ impl ResearchApp {
             (
                 p.versions.len(),
                 p.experiments.len(),
-                p.experiments.iter().rev().find_map(|e| e.total_return.clone()),
                 p.experiments
                     .iter()
-                    .map(|e| (e.id, e.version_id, e.task_id.clone(), e.total_return.clone()))
+                    .rev()
+                    .find_map(|e| e.total_return.clone()),
+                p.experiments
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.id,
+                            e.version_id,
+                            e.task_id.clone(),
+                            e.total_return.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>(),
             )
         };
-        page_header(ui, "实验 / 历史模拟", "回测实验", "冻结输入、运行模拟，再比较结果。");
+        page_header(
+            ui,
+            "实验 / 历史模拟",
+            "回测实验",
+            "冻结输入、运行模拟，再比较结果。",
+        );
 
         // 指标卡 ×3
         ui.horizontal(|ui| {
             let w = (ui.available_width() - 24.0) / 3.0;
             for (top, value, bottom) in [
-                ("策略版本", format!("{versions_len:02}"), "保存后不可覆盖".to_string()),
-                ("已完成实验", format!("{exps_len:02}"), "输入与结果可追溯".to_string()),
-                ("最近收益", last_ret.clone().unwrap_or_else(|| "—".into()), "完成实验后回填".to_string()),
+                (
+                    "策略版本",
+                    format!("{versions_len:02}"),
+                    "保存后不可覆盖".to_string(),
+                ),
+                (
+                    "已完成实验",
+                    format!("{exps_len:02}"),
+                    "输入与结果可追溯".to_string(),
+                ),
+                (
+                    "最近收益",
+                    last_ret.clone().unwrap_or_else(|| "—".into()),
+                    "完成实验后回填".to_string(),
+                ),
             ] {
-                ui.allocate_ui(egui::vec2(w, 0.0), |ui| {
+                ui.allocate_ui(sz(w, 0.0), |ui| {
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
                         .corner_radius(CornerRadius::same(10))
@@ -1601,118 +1980,150 @@ impl ResearchApp {
             .as_ref()
             .map(|u| u.universe_id.clone())
             .unwrap_or_else(|| "尚无（请在股票池保存）".into());
-        panel(ui, "运行参数", Some(("EMA 模板 · 严格模式", TagKind::Neutral)), |ui| {
-            ui.horizontal(|ui| {
-                for (name, key) in [("fast", 0u8), ("slow", 1), ("top_k", 2)] {
-                    ui.label(mono(name, 11.0, theme::MUTED));
-                    match key {
-                        0 => {
-                            ui.add(egui::DragValue::new(&mut self.run_form.fast));
+        panel(
+            ui,
+            "运行参数",
+            Some(("EMA 模板 · 严格模式", TagKind::Neutral)),
+            |ui| {
+                ui.horizontal(|ui| {
+                    for (name, key) in [("fast", 0u8), ("slow", 1), ("top_k", 2)] {
+                        ui.label(mono(name, 11.0, theme::MUTED));
+                        match key {
+                            0 => {
+                                ui.add(egui::DragValue::new(&mut self.run_form.fast));
+                            }
+                            1 => {
+                                ui.add(egui::DragValue::new(&mut self.run_form.slow));
+                            }
+                            _ => {
+                                ui.add(egui::DragValue::new(&mut self.run_form.top_k));
+                            }
                         }
-                        1 => {
-                            ui.add(egui::DragValue::new(&mut self.run_form.slow));
-                        }
-                        _ => {
-                            ui.add(egui::DragValue::new(&mut self.run_form.top_k));
-                        }
+                        ui.add_space(10.0);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(field("起止"));
+                    let mut s = self.run_form.start.clone();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut s).desired_width(100.0))
+                        .changed()
+                    {
+                        self.run_form.start = s;
+                    }
+                    let mut e = self.run_form.end.clone();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut e).desired_width(100.0))
+                        .changed()
+                    {
+                        self.run_form.end = e;
                     }
                     ui.add_space(10.0);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(field("起止"));
-                let mut s = self.run_form.start.clone();
-                if ui.add(egui::TextEdit::singleline(&mut s).desired_width(100.0)).changed() {
-                    self.run_form.start = s;
-                }
-                let mut e = self.run_form.end.clone();
-                if ui.add(egui::TextEdit::singleline(&mut e).desired_width(100.0)).changed() {
-                    self.run_form.end = e;
-                }
-                ui.add_space(10.0);
-                ui.label(field("资金"));
-                let mut c = self.run_form.capital.clone();
-                if ui.add(egui::TextEdit::singleline(&mut c).desired_width(100.0)).changed() {
-                    self.run_form.capital = c;
-                }
-            });
-            ui.collapsing("成本假设", |ui| {
-                for (name, field_i) in [
-                    ("佣金率", 0u8),
-                    ("最低佣金", 1),
-                    ("卖出税", 2),
-                    ("其他费", 3),
-                    ("滑点 bps", 4),
-                    ("参与率", 5),
-                ] {
-                    ui.horizontal(|ui| {
-                        ui.label(field(name));
-                        let mut v = match field_i {
-                            0 => self.run_form.commission_rate.clone(),
-                            1 => self.run_form.min_commission.clone(),
-                            2 => self.run_form.sell_tax.clone(),
-                            3 => self.run_form.other_fee.clone(),
-                            4 => self.run_form.slippage_bps.clone(),
-                            _ => self.run_form.participation.clone(),
-                        };
-                        if ui.add(egui::TextEdit::singleline(&mut v).desired_width(120.0)).changed() {
-                            match field_i {
-                                0 => self.run_form.commission_rate = v,
-                                1 => self.run_form.min_commission = v,
-                                2 => self.run_form.sell_tax = v,
-                                3 => self.run_form.other_fee = v,
-                                4 => self.run_form.slippage_bps = v,
-                                _ => self.run_form.participation = v,
+                    ui.label(field("资金"));
+                    let mut c = self.run_form.capital.clone();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut c).desired_width(100.0))
+                        .changed()
+                    {
+                        self.run_form.capital = c;
+                    }
+                });
+                ui.collapsing("成本假设", |ui| {
+                    for (name, field_i) in [
+                        ("佣金率", 0u8),
+                        ("最低佣金", 1),
+                        ("卖出税", 2),
+                        ("其他费", 3),
+                        ("滑点 bps", 4),
+                        ("参与率", 5),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.label(field(name));
+                            let mut v = match field_i {
+                                0 => self.run_form.commission_rate.clone(),
+                                1 => self.run_form.min_commission.clone(),
+                                2 => self.run_form.sell_tax.clone(),
+                                3 => self.run_form.other_fee.clone(),
+                                4 => self.run_form.slippage_bps.clone(),
+                                _ => self.run_form.participation.clone(),
+                            };
+                            if ui
+                                .add(egui::TextEdit::singleline(&mut v).desired_width(120.0))
+                                .changed()
+                            {
+                                match field_i {
+                                    0 => self.run_form.commission_rate = v,
+                                    1 => self.run_form.min_commission = v,
+                                    2 => self.run_form.sell_tax = v,
+                                    3 => self.run_form.other_fee = v,
+                                    4 => self.run_form.slippage_bps = v,
+                                    _ => self.run_form.participation = v,
+                                }
                             }
+                        });
+                    }
+                });
+                kv(
+                    ui,
+                    &[("数据快照", snapshot_status), ("股票池", universe_status)],
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary_button("运行当前版本")).clicked() {
+                        self.do_ai_run();
+                    }
+                    if self.ai_run.watch.is_active() {
+                        if let Some(t) = self.ai_run.watch.task_id() {
+                            let t = t.to_string();
+                            if ui.add(theme::ghost_button("取消")).clicked() {
+                                self.do_cancel(t, PageKey::Run);
+                            }
+                        }
+                    }
+                });
+                render_watch(ui, &self.ai_run);
+            },
+        );
+
+        ui.add_space(6.0);
+        panel(
+            ui,
+            "实验记录",
+            Some(("证据可追溯", TagKind::Neutral)),
+            |ui| {
+                if exps.is_empty() {
+                    ui.label(note("还没有实验。选择已保存且未过期的策略版本运行。"));
+                } else {
+                    egui::Grid::new("exp-grid").show(ui, |ui| {
+                        for head in ["实验", "版本", "任务", "期末收益", ""] {
+                            ui.label(mono(head, 10.0, theme::FAINT));
+                        }
+                        ui.end_row();
+                        for (id, ver, task, ret) in &exps {
+                            ui.label(mono(format!("E{id} / v{ver}"), 11.0, theme::TEXT2));
+                            ui.label(mono(
+                                task.clone().unwrap_or_else(|| "—".into()),
+                                11.0,
+                                theme::MUTED,
+                            ));
+                            ui.label(mono(
+                                ret.clone().unwrap_or_else(|| "—".into()),
+                                11.0,
+                                theme::TEXT2,
+                            ));
+                            ui.end_row();
                         }
                     });
                 }
-            });
-            kv(ui, &[
-                ("数据快照", snapshot_status),
-                ("股票池", universe_status),
-            ]);
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.add(theme::primary_button("运行当前版本")).clicked() {
-                    self.do_ai_run();
-                }
-                if self.ai_run.watch.is_active() {
-                    if let Some(t) = self.ai_run.watch.task_id() {
-                        let t = t.to_string();
-                        if ui.add(theme::ghost_button("取消")).clicked() {
-                            self.do_cancel(t, PageKey::Run);
-                        }
-                    }
-                }
-            });
-            render_watch(ui, &self.ai_run);
-        });
-
-        ui.add_space(6.0);
-        panel(ui, "实验记录", Some(("证据可追溯", TagKind::Neutral)), |ui| {
-            if exps.is_empty() {
-                ui.label(note("还没有实验。选择已保存且未过期的策略版本运行。"));
-            } else {
-                egui::Grid::new("exp-grid").show(ui, |ui| {
-                    for head in ["实验", "版本", "任务", "期末收益", ""] {
-                        ui.label(mono(head, 10.0, theme::FAINT));
-                    }
-                    ui.end_row();
-                    for (id, ver, task, ret) in &exps {
-                        ui.label(mono(format!("E{id} / v{ver}"), 11.0, theme::TEXT2));
-                        ui.label(mono(task.clone().unwrap_or_else(|| "—".into()), 11.0, theme::MUTED));
-                        ui.label(mono(ret.clone().unwrap_or_else(|| "—".into()), 11.0, theme::TEXT2));
-                        ui.end_row();
-                    }
-                });
-            }
-        });
+            },
+        );
 
         ui.add_space(6.0);
         // 运行比较（协调器运行 ID 比较）
         panel(ui, "运行比较", None, |ui| {
-            ui.label(note("2..5 个运行 ID（逗号分割；ID 见任务记录），跨输入比较不归因代码。"));
+            ui.label(note(
+                "2..5 个运行 ID（逗号分割；ID 见任务记录），跨输入比较不归因代码。",
+            ));
             let mut text = self.compare_form.run_ids_text.clone();
             if ui
                 .add(
@@ -1743,7 +2154,11 @@ impl ResearchApp {
                     ui.end_row();
                     for r in &cmp.runs {
                         let m = &r.metrics;
-                        ui.label(mono(&r.run_id[..12.min(r.run_id.len())], 11.0, theme::TEXT2));
+                        ui.label(mono(
+                            &r.run_id[..12.min(r.run_id.len())],
+                            11.0,
+                            theme::TEXT2,
+                        ));
                         ui.label(mono(format!("{}~{}", r.start, r.end), 11.0, theme::TEXT2));
                         ui.label(mono(fmt_metric(&m.total_return), 11.0, theme::TEXT2));
                         ui.label(mono(fmt_metric(&m.sharpe), 11.0, theme::TEXT2));
@@ -1752,14 +2167,21 @@ impl ResearchApp {
                     }
                 });
                 for d in &cmp.differences {
-                    ui.label(lbl(format!("差异 [{}] {}", d.kind, d.detail), 11.0, theme::ACCENT_CYAN));
+                    ui.label(lbl(
+                        format!("差异 [{}] {}", d.kind, d.detail),
+                        11.0,
+                        theme::ACCENT_CYAN,
+                    ));
                 }
             }
         });
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.add(theme::primary_button("生成当前版本验证报告")).clicked() {
+            if ui
+                .add(theme::primary_button("生成当前版本验证报告"))
+                .clicked()
+            {
                 self.do_make_report();
             }
             ui.add_space(8.0);
@@ -1770,7 +2192,12 @@ impl ResearchApp {
 
     // ---- 验证报告 ------------------------------------------------------------
     fn render_validate(&mut self, ui: &mut egui::Ui) {
-        page_header(ui, "阶段 05 / 检查证据", "策略验证", "先看证据，再形成有边界的结论。");
+        page_header(
+            ui,
+            "阶段 05 / 检查证据",
+            "策略验证",
+            "先看证据，再形成有边界的结论。",
+        );
         Self::warn_banner(
             ui,
             "演示检查通过，只表示本样本下的流程与约束检查完成。真实策略验证仍需真实数据、样本外和稳健性证据。",
@@ -1781,45 +2208,75 @@ impl ResearchApp {
             Some(rep) => {
                 let rd = {
                     let p = self.workspace.current();
-                    p.versions.get(rep.version_id - 1).map(|v| (v.req_id, v.design_id))
+                    p.versions
+                        .get(rep.version_id - 1)
+                        .map(|v| (v.req_id, v.design_id))
                 };
-                let head_badge = rd.map(|(r, d)| format!("R{r} / D{d}")).unwrap_or_else(|| "—".into());
-                panel(ui, &format!("当前版本 · v{}", rep.version_id), Some((&head_badge, TagKind::Neutral)), |ui| {
-                    ui.horizontal(|ui| {
-                        theme::tag_ui(
-                            ui,
-                            &format!("演示检查：{}", if rep.demo_pass() { "通过" } else { "失败" }),
-                            if rep.demo_pass() { TagKind::Accent } else { TagKind::Bad },
-                        );
-                        theme::tag_ui(ui, "正式验证：证据不足", TagKind::Warn);
-                    });
-                    ui.add_space(10.0);
-                    for (name, ok, detail) in &rep.checks {
+                let head_badge = rd
+                    .map(|(r, d)| format!("R{r} / D{d}"))
+                    .unwrap_or_else(|| "—".into());
+                panel(
+                    ui,
+                    &format!("当前版本 · v{}", rep.version_id),
+                    Some((&head_badge, TagKind::Neutral)),
+                    |ui| {
                         ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.label(lbl(name, 11.0, theme::TEXT2));
-                                ui.label(lbl(detail, 10.0, theme::ACCENT_TEXT));
-                            });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                theme::tag_ui(ui, if *ok { "通过" } else { "失败" }, if *ok { TagKind::Accent } else { TagKind::Bad });
-                            });
+                            theme::tag_ui(
+                                ui,
+                                &format!(
+                                    "演示检查：{}",
+                                    if rep.demo_pass() { "通过" } else { "失败" }
+                                ),
+                                if rep.demo_pass() {
+                                    TagKind::Accent
+                                } else {
+                                    TagKind::Bad
+                                },
+                            );
+                            theme::tag_ui(ui, "正式验证：证据不足", TagKind::Warn);
                         });
-                        ui.add_space(8.0);
-                    }
-                    ui.add_space(4.0);
-                    if ui
-                        .add(theme::ghost_button(&format!("打开实验 E{} 的证据 →", rep.run_id)))
-                        .clicked()
-                    {
-                        let from = self.session.route;
-                        self.session.navigate(Route::Debug, self.session.scroll_of(from));
-                    }
-                });
+                        ui.add_space(10.0);
+                        for (name, ok, detail) in &rep.checks {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(lbl(name, 11.0, theme::TEXT2));
+                                    ui.label(lbl(detail, 10.0, theme::ACCENT_TEXT));
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    theme::tag_ui(
+                                        ui,
+                                        if *ok { "通过" } else { "失败" },
+                                        if *ok { TagKind::Accent } else { TagKind::Bad },
+                                    );
+                                });
+                            });
+                            ui.add_space(8.0);
+                        }
+                        ui.add_space(4.0);
+                        if ui
+                            .add(theme::ghost_button(&format!(
+                                "打开实验 E{} 的证据 →",
+                                rep.run_id
+                            )))
+                            .clicked()
+                        {
+                            let from = self.session.route;
+                            self.session
+                                .navigate(Route::Debug, self.session.scroll_of(from));
+                        }
+                    },
+                );
             }
             None => {
-                if empty_panel(ui, "尚未形成验证结论", "先运行当前代码版本。报告只使用实际产生的实验，不用手工勾选替代证据。", Some("打开回测实验")) {
+                if empty_panel(
+                    ui,
+                    "尚未形成验证结论",
+                    "先运行当前代码版本。报告只使用实际产生的实验，不用手工勾选替代证据。",
+                    Some("打开回测实验"),
+                ) {
                     let from = self.session.route;
-                    self.session.navigate(Route::Experiments, self.session.scroll_of(from));
+                    self.session
+                        .navigate(Route::Experiments, self.session.scroll_of(from));
                 }
             }
         }
@@ -1853,7 +2310,8 @@ impl ResearchApp {
         ui.horizontal(|ui| {
             if ui.add(theme::primary_button("继续演示交易计划")).clicked() {
                 let from = self.session.route;
-                self.session.navigate(Route::Plan, self.session.scroll_of(from));
+                self.session
+                    .navigate(Route::Plan, self.session.scroll_of(from));
             }
             ui.add_space(8.0);
             ui.label(note("仅演示核对流程，不构成正式交易许可"));
@@ -1867,7 +2325,12 @@ impl ResearchApp {
     // ---- 交易计划 ------------------------------------------------------------
     fn render_plan_page(&mut self, ui: &mut egui::Ui) {
         let ready = report_ready(&self.workspace);
-        page_header(ui, "阶段 06 / 从策略到计划", "交易计划", "一次前向核对：现在持有什么，下一步计划调整什么。");
+        page_header(
+            ui,
+            "阶段 06 / 从策略到计划",
+            "交易计划",
+            "一次前向核对：现在持有什么，下一步计划调整什么。",
+        );
         if !ready {
             Self::warn_banner(
                 ui,
@@ -1878,24 +2341,31 @@ impl ResearchApp {
         // 计划桥（S20：冻结签名 + 核对门控 + 确认导出）
         let plan_source = {
             let p = self.workspace.current();
-            p.plan.as_ref().map(|t| {
-                format!("v{} · {} · {}", t.version_id, t.snapshot, t.trade_date)
-            })
+            p.plan
+                .as_ref()
+                .map(|t| format!("v{} · {} · {}", t.version_id, t.snapshot, t.trade_date))
         };
-        panel(ui, "计划输入", Some(("独立账户快照", TagKind::Neutral)), |ui| {
-            ui.horizontal(|ui| {
-                ui.label(field("交易日"));
-                let mut d = self.ai_plan_trade_date.clone();
-                if ui.add(egui::TextEdit::singleline(&mut d).desired_width(120.0)).changed() {
-                    self.ai_plan_trade_date = d;
-                }
-                ui.add_space(10.0);
-                ui.label(note("数据快照取最新已导入"));
-            });
-            ui.add_space(8.0);
-            ui.label(field("手工持仓 JSON"));
-            let mut json = self.ai_plan_json.clone();
-            if ui
+        panel(
+            ui,
+            "计划输入",
+            Some(("独立账户快照", TagKind::Neutral)),
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(field("交易日"));
+                    let mut d = self.ai_plan_trade_date.clone();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut d).desired_width(120.0))
+                        .changed()
+                    {
+                        self.ai_plan_trade_date = d;
+                    }
+                    ui.add_space(10.0);
+                    ui.label(note("数据快照取最新已导入"));
+                });
+                ui.add_space(8.0);
+                ui.label(field("手工持仓 JSON"));
+                let mut json = self.ai_plan_json.clone();
+                if ui
                 .add(
                     egui::TextEdit::multiline(&mut json)
                         .desired_rows(4)
@@ -1907,42 +2377,45 @@ impl ResearchApp {
             {
                 self.ai_plan_json = json;
             }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.add(theme::primary_button("生成计划")).clicked() {
-                    self.do_ai_plan_generate();
-                }
-                ui.add_space(8.0);
-                if ui.add(theme::ghost_button("核对")).clicked() {
-                    self.do_ai_plan_check();
-                }
-                ui.add_space(8.0);
-                if ui.add(theme::primary_button("确认导出")).clicked() {
-                    self.do_ai_plan_export();
-                }
-            });
-            if let Some(issues) = &self.ai_plan_issues {
-                ui.add_space(8.0);
-                if issues.is_empty() {
-                    ui.label(lbl("核对通过：可确认导出", 11.0, theme::ACCENT_TEXT));
-                } else {
-                    for i in issues {
-                        ui.label(lbl(format!("⚠ {i}"), 11.0, theme::RED));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary_button("生成计划")).clicked() {
+                        self.do_ai_plan_generate();
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(theme::ghost_button("核对")).clicked() {
+                        self.do_ai_plan_check();
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(theme::primary_button("确认导出")).clicked() {
+                        self.do_ai_plan_export();
+                    }
+                });
+                if let Some(issues) = &self.ai_plan_issues {
+                    ui.add_space(8.0);
+                    if issues.is_empty() {
+                        ui.label(lbl("核对通过：可确认导出", 11.0, theme::ACCENT_TEXT));
+                    } else {
+                        for i in issues {
+                            ui.label(lbl(format!("⚠ {i}"), 11.0, theme::RED));
+                        }
                     }
                 }
-            }
-            if let Some(src) = &plan_source {
-                ui.add_space(8.0);
-                kv(ui, &[("来源", src.clone())]);
-            }
-            if let Some(csv) = &self.ai_plan_csv {
-                ui.add_space(8.0);
-                ui.label(note("导出内容（含演示标识）："));
-                ui.label(mono(csv, 11.0, theme::TEXT));
-            }
-            ui.add_space(6.0);
-            ui.label(note("计划使用独立参考快照，绑定策略版本并冻结账户输入；确认导出不发送任何订单。"));
-        });
+                if let Some(src) = &plan_source {
+                    ui.add_space(8.0);
+                    kv(ui, &[("来源", src.clone())]);
+                }
+                if let Some(csv) = &self.ai_plan_csv {
+                    ui.add_space(8.0);
+                    ui.label(note("导出内容（含演示标识）："));
+                    ui.label(mono(csv, 11.0, theme::TEXT));
+                }
+                ui.add_space(6.0);
+                ui.label(note(
+                    "计划使用独立参考快照，绑定策略版本并冻结账户输入；确认导出不发送任何订单。",
+                ));
+            },
+        );
 
         ui.add_space(6.0);
         // 协调器计划（生产对接面板：生成 → 导出 → 备注）
@@ -1950,7 +2423,10 @@ impl ResearchApp {
             ui.horizontal(|ui| {
                 ui.label(field("as_of"));
                 let mut as_of = self.plan_form.as_of.clone();
-                if ui.add(egui::TextEdit::singleline(&mut as_of).desired_width(120.0)).changed() {
+                if ui
+                    .add(egui::TextEdit::singleline(&mut as_of).desired_width(120.0))
+                    .changed()
+                {
                     self.plan_form.as_of = as_of;
                 }
             });
@@ -1971,7 +2447,10 @@ impl ResearchApp {
             ui.add_space(10.0);
             let enabled = self.bridge.is_some() && !self.plan_page.watch.is_active();
             ui.add_enabled_ui(enabled, |ui| {
-                if ui.add(theme::primary_button("生成计划（协调器）")).clicked() {
+                if ui
+                    .add(theme::primary_button("生成计划（协调器）"))
+                    .clicked()
+                {
                     self.do_plan();
                 }
             });
@@ -1983,20 +2462,22 @@ impl ResearchApp {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             let mut path = self.plan_form.export_path.clone();
-                            let resp = ui.add(
-                                egui::TextEdit::singleline(&mut path).desired_width(300.0),
-                            );
+                            let resp =
+                                ui.add(egui::TextEdit::singleline(&mut path).desired_width(300.0));
                             if resp.changed() {
                                 self.plan_form.export_path = path.clone();
                             }
-                            if ui.add(theme::ghost_button("导出 CSV")).clicked() && !path.is_empty() {
+                            if ui.add(theme::ghost_button("导出 CSV")).clicked() && !path.is_empty()
+                            {
                                 self.do_export(&plan_id);
                             }
                         });
                         ui.horizontal(|ui| {
                             let mut note_text = self.plan_form.note_text.clone();
                             if ui
-                                .add(egui::TextEdit::singleline(&mut note_text).desired_width(300.0))
+                                .add(
+                                    egui::TextEdit::singleline(&mut note_text).desired_width(300.0),
+                                )
                                 .changed()
                             {
                                 self.plan_form.note_text = note_text;
@@ -2027,42 +2508,52 @@ impl ResearchApp {
 
     // ---- 数据中心 ------------------------------------------------------------
     fn render_data(&mut self, ui: &mut egui::Ui) {
-        page_header(ui, "资源 / 行情与快照", "数据中心", "统一管理研究输入，历史实验始终引用原快照。");
-        panel(ui, "数据导入", Some(("可重复导入", TagKind::Neutral)), |ui| {
-            ui.label(field("导入暂存数据（每行一个 CSV 路径）"));
-            let mut edited = self.import_form.paths.join("\n");
-            let response = ui.add(
-                egui::TextEdit::multiline(&mut edited)
-                    .desired_rows(3)
-                    .desired_width(ui.available_width()),
-            );
-            if response.changed() {
-                self.import_form.paths = edited
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect();
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(field("价格口径"));
-                ui.add_space(4.0);
-                for (i, name) in ["raw", "qfq", "hfq"].iter().enumerate() {
-                    if ui.radio(self.import_form.price_basis == i, *name).clicked() {
-                        self.import_form.price_basis = i;
+        page_header(
+            ui,
+            "资源 / 行情与快照",
+            "数据中心",
+            "统一管理研究输入，历史实验始终引用原快照。",
+        );
+        panel(
+            ui,
+            "数据导入",
+            Some(("可重复导入", TagKind::Neutral)),
+            |ui| {
+                ui.label(field("导入暂存数据（每行一个 CSV 路径）"));
+                let mut edited = self.import_form.paths.join("\n");
+                let response = ui.add(
+                    egui::TextEdit::multiline(&mut edited)
+                        .desired_rows(3)
+                        .desired_width(ui.available_width()),
+                );
+                if response.changed() {
+                    self.import_form.paths = edited
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(field("价格口径"));
+                    ui.add_space(4.0);
+                    for (i, name) in ["raw", "qfq", "hfq"].iter().enumerate() {
+                        if ui.radio(self.import_form.price_basis == i, *name).clicked() {
+                            self.import_form.price_basis = i;
+                        }
                     }
-                }
-            });
-            ui.add_space(10.0);
-            let enabled = self.bridge.is_some() && !self.snapshot_page.watch.is_active();
-            ui.add_enabled_ui(enabled, |ui| {
-                if ui.add(theme::primary_button("导入")).clicked() {
-                    self.do_import();
-                }
-            });
-            render_watch(ui, &self.snapshot_page);
-        });
+                });
+                ui.add_space(10.0);
+                let enabled = self.bridge.is_some() && !self.snapshot_page.watch.is_active();
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.add(theme::primary_button("导入")).clicked() {
+                        self.do_import();
+                    }
+                });
+                render_watch(ui, &self.snapshot_page);
+            },
+        );
 
         ui.add_space(6.0);
         let snapshots: Vec<(String, String, String)> = self
@@ -2084,14 +2575,24 @@ impl ResearchApp {
             .unwrap_or_default();
         panel(ui, "快照清单", None, |ui| {
             if snapshots.is_empty() {
-                ui.label(note(self.bridge_error.as_deref().unwrap_or("尚无快照。导入后历史实验将引用原快照。")));
+                ui.label(note(
+                    self.bridge_error
+                        .as_deref()
+                        .unwrap_or("尚无快照。导入后历史实验将引用原快照。"),
+                ));
             }
             for (id, as_of, hash) in snapshots {
-                ui.label(mono(format!("{id}  as_of={as_of}  清单 {hash}…"), 11.0, theme::TEXT));
+                ui.label(mono(
+                    format!("{id}  as_of={as_of}  清单 {hash}…"),
+                    11.0,
+                    theme::TEXT,
+                ));
                 ui.add_space(4.0);
             }
             ui.add_space(4.0);
-            ui.label(note("模拟更新或再次导入会创建新的快照引用，使当前版本与结论过期；历史实验不变。"));
+            ui.label(note(
+                "模拟更新或再次导入会创建新的快照引用，使当前版本与结论过期；历史实验不变。",
+            ));
         });
         self.poll(PageKey::Snapshot);
     }
@@ -2102,69 +2603,98 @@ impl ResearchApp {
             .universe_saved
             .as_ref()
             .map(|u| format!("已保存 {}", u.universe_id));
-        page_header(ui, "资源 / 可研究的标的", "股票池", "规则预览与版本保存；历史实验继续引用当时的规则和成员。");
-        panel(ui, "筛选规则", Some((saved_state.as_deref().unwrap_or("未保存"), if self.universe_saved.is_some() { TagKind::Accent } else { TagKind::Neutral })), |ui| {
-            ui.label(field("规则 JSON（RuleAST）"));
-            let mut rule = self.universe_form.rule_text.clone();
-            if ui
-                .add(
-                    egui::TextEdit::multiline(&mut rule)
-                        .desired_rows(4)
-                        .desired_width(ui.available_width())
-                        .font(FontId::monospace(12.0)),
-                )
-                .changed()
-            {
-                self.universe_form.rule_text = rule;
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(field("as_of"));
-                let mut as_of = self.universe_form.as_of.clone();
-                if ui.add(egui::TextEdit::singleline(&mut as_of).desired_width(110.0)).changed() {
-                    self.universe_form.as_of = as_of;
+        page_header(
+            ui,
+            "资源 / 可研究的标的",
+            "股票池",
+            "规则预览与版本保存；历史实验继续引用当时的规则和成员。",
+        );
+        panel(
+            ui,
+            "筛选规则",
+            Some((
+                saved_state.as_deref().unwrap_or("未保存"),
+                if self.universe_saved.is_some() {
+                    TagKind::Accent
+                } else {
+                    TagKind::Neutral
+                },
+            )),
+            |ui| {
+                ui.label(field("规则 JSON（RuleAST）"));
+                let mut rule = self.universe_form.rule_text.clone();
+                if ui
+                    .add(
+                        egui::TextEdit::multiline(&mut rule)
+                            .desired_rows(4)
+                            .desired_width(ui.available_width())
+                            .font(FontId::monospace(12.0)),
+                    )
+                    .changed()
+                {
+                    self.universe_form.rule_text = rule;
                 }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(field("as_of"));
+                    let mut as_of = self.universe_form.as_of.clone();
+                    if ui
+                        .add(egui::TextEdit::singleline(&mut as_of).desired_width(110.0))
+                        .changed()
+                    {
+                        self.universe_form.as_of = as_of;
+                    }
+                    ui.add_space(10.0);
+                    ui.checkbox(&mut self.universe_form.strict, "严格模式");
+                    ui.checkbox(&mut self.universe_form.fixed_membership, "固定成员");
+                });
                 ui.add_space(10.0);
-                ui.checkbox(&mut self.universe_form.strict, "严格模式");
-                ui.checkbox(&mut self.universe_form.fixed_membership, "固定成员");
-            });
-            ui.add_space(10.0);
-            let enabled = self.bridge.is_some() && !self.universe_page.watch.is_active();
-            ui.add_enabled_ui(enabled, |ui| {
-                if ui.add(theme::primary_button("预览")).clicked() {
-                    self.do_preview();
-                }
-            });
-            render_watch(ui, &self.universe_page);
+                let enabled = self.bridge.is_some() && !self.universe_page.watch.is_active();
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.add(theme::primary_button("预览")).clicked() {
+                        self.do_preview();
+                    }
+                });
+                render_watch(ui, &self.universe_page);
 
-            // 预览成功：三态原因 + 保存版本
-            if let Some(v) = self.universe_page.watch.terminal() {
-                if crate::pipeline::is_success(v) {
-                    if let Some(bridge) = &self.bridge {
-                        let task_id = self.universe_page.watch.task_id().map(str::to_string);
-                        if let Some(task_id) = task_id {
-                            if let Ok(p) = bridge.preview(&task_id) {
-                                ui.add_space(8.0);
-                                ui.label(lbl(
-                                    format!("通过 {} / 排除 {} / 未知 {}", p.pass, p.exclude, p.unknown),
-                                    12.0,
-                                    theme::TEXT,
-                                ));
-                                ui.add_space(8.0);
-                                if ui.add(theme::primary_button("保存股票池版本")).clicked() {
-                                    let (ph, ih) = (p.preview_hash.clone(), p.input_hash.clone());
-                                    self.do_save_universe(&task_id, &ph, &ih);
+                // 预览成功：三态原因 + 保存版本
+                if let Some(v) = self.universe_page.watch.terminal() {
+                    if crate::pipeline::is_success(v) {
+                        if let Some(bridge) = &self.bridge {
+                            let task_id = self.universe_page.watch.task_id().map(str::to_string);
+                            if let Some(task_id) = task_id {
+                                if let Ok(p) = bridge.preview(&task_id) {
+                                    ui.add_space(8.0);
+                                    ui.label(lbl(
+                                        format!(
+                                            "通过 {} / 排除 {} / 未知 {}",
+                                            p.pass, p.exclude, p.unknown
+                                        ),
+                                        12.0,
+                                        theme::TEXT,
+                                    ));
+                                    ui.add_space(8.0);
+                                    if ui.add(theme::primary_button("保存股票池版本")).clicked()
+                                    {
+                                        let (ph, ih) =
+                                            (p.preview_hash.clone(), p.input_hash.clone());
+                                        self.do_save_universe(&task_id, &ph, &ih);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if let Some(u) = &self.universe_saved {
-                ui.add_space(6.0);
-                ui.label(lbl(format!("已保存：{}（成员 {}）", u.universe_id, u.count), 11.0, theme::ACCENT_TEXT));
-            }
-        });
+                if let Some(u) = &self.universe_saved {
+                    ui.add_space(6.0);
+                    ui.label(lbl(
+                        format!("已保存：{}（成员 {}）", u.universe_id, u.count),
+                        11.0,
+                        theme::ACCENT_TEXT,
+                    ));
+                }
+            },
+        );
         self.poll(PageKey::Universe);
     }
 
@@ -2185,52 +2715,74 @@ impl ResearchApp {
                 })
                 .collect()
         };
-        page_header(ui, "资源 / 可复用的策略", "策略资产", "当前项目的策略版本与上游引用。");
+        page_header(
+            ui,
+            "资源 / 可复用的策略",
+            "策略资产",
+            "当前项目的策略版本与上游引用。",
+        );
         if versions.is_empty() {
-            if empty_panel(ui, "尚无策略版本", "从需求与设计开始，代码保存后会归档到当前项目资产中。", Some("打开策略开发")) {
+            if empty_panel(
+                ui,
+                "尚无策略版本",
+                "从需求与设计开始，代码保存后会归档到当前项目资产中。",
+                Some("打开策略开发"),
+            ) {
                 let from = self.session.route;
-                self.session.navigate(Route::Develop, self.session.scroll_of(from));
+                self.session
+                    .navigate(Route::Develop, self.session.scroll_of(from));
             }
             return;
         }
-        panel(ui, "版本库", Some(("当前项目", TagKind::Neutral)), |ui| {
-            for (id, req, design, fresh, active) in versions {
-                ui.horizontal(|ui| {
-                    ui.label(mono(format!("v{id}"), 12.0, theme::TEXT));
-                    ui.add_space(6.0);
-                    ui.label(mono(format!("R{req} / D{design}"), 11.0, theme::MUTED));
-                    ui.add_space(8.0);
-                    theme::tag_ui(
-                        ui,
-                        if active {
-                            "当前选择"
-                        } else if fresh {
-                            "可用于研究"
-                        } else {
-                            "上游已过期"
-                        },
-                        if active {
-                            TagKind::Accent
-                        } else if fresh {
-                            TagKind::Neutral
-                        } else {
-                            TagKind::Warn
-                        },
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(theme::ghost_button("查看")).clicked() {
-                            self.view_source = self.workspace.current().versions.get(id - 1).map(|v| (v.id, v.source.clone()));
-                        }
+        panel(
+            ui,
+            "版本库",
+            Some(("当前项目", TagKind::Neutral)),
+            |ui| {
+                for (id, req, design, fresh, active) in versions {
+                    ui.horizontal(|ui| {
+                        ui.label(mono(format!("v{id}"), 12.0, theme::TEXT));
+                        ui.add_space(6.0);
+                        ui.label(mono(format!("R{req} / D{design}"), 11.0, theme::MUTED));
+                        ui.add_space(8.0);
+                        theme::tag_ui(
+                            ui,
+                            if active {
+                                "当前选择"
+                            } else if fresh {
+                                "可用于研究"
+                            } else {
+                                "上游已过期"
+                            },
+                            if active {
+                                TagKind::Accent
+                            } else if fresh {
+                                TagKind::Neutral
+                            } else {
+                                TagKind::Warn
+                            },
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.add(theme::ghost_button("查看")).clicked() {
+                                self.view_source = self
+                                    .workspace
+                                    .current()
+                                    .versions
+                                    .get(id - 1)
+                                    .map(|v| (v.id, v.source.clone()));
+                            }
+                        });
                     });
-                });
-                ui.add_space(6.0);
-            }
-            ui.add_space(4.0);
-            if ui.add(theme::primary_button("打开编辑器")).clicked() {
-                let from = self.session.route;
-                self.session.navigate(Route::Develop, self.session.scroll_of(from));
-            }
-        });
+                    ui.add_space(6.0);
+                }
+                ui.add_space(4.0);
+                if ui.add(theme::primary_button("打开编辑器")).clicked() {
+                    let from = self.session.route;
+                    self.session
+                        .navigate(Route::Develop, self.session.scroll_of(from));
+                }
+            },
+        );
     }
 
     // ---- 浮层 ----------------------------------------------------------------
@@ -2240,16 +2792,20 @@ impl ResearchApp {
             .open(&mut self.show_logs)
             .default_width(520.0)
             .show(ctx, |ui| {
-                ui.label(note("只记录任务动作、依据和产物，不展示模型内部推理。所有任务均为离线演示。"));
+                ui.label(note(
+                    "只记录任务动作、依据和产物，不展示模型内部推理。所有任务均为离线演示。",
+                ));
                 ui.add_space(8.0);
-                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                    if self.logs.is_empty() {
-                        ui.label(note("暂无任务记录"));
-                    }
-                    for l in &self.logs {
-                        ui.label(mono(l, 11.0, theme::TEXT2));
-                    }
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        if self.logs.is_empty() {
+                            ui.label(note("暂无任务记录"));
+                        }
+                        for l in &self.logs {
+                            ui.label(mono(l, 11.0, theme::TEXT2));
+                        }
+                    });
             });
 
         // 版本只读查看
@@ -2667,7 +3223,10 @@ impl ResearchApp {
             self.ai_req_acceptance.clone(),
             self.ai_req_alloc,
         );
-        match self.workspace.confirm_requirement(&text, &acceptance, alloc, min_amount) {
+        match self
+            .workspace
+            .confirm_requirement(&text, &acceptance, alloc, min_amount)
+        {
             Ok(id) => {
                 self.tell(
                     format!("需求 R{id} 已确认。下一步保存设计说明。旧实验保留，新研究将使用此需求版本。"),
@@ -2728,7 +3287,10 @@ impl ResearchApp {
             self.ai_notice = Some("请填写交易日".into());
             return;
         }
-        match self.workspace.make_plan(snapshot_id, date, cash, total, rows) {
+        match self
+            .workspace
+            .make_plan(snapshot_id, date, cash, total, rows)
+        {
             Ok(()) => {
                 self.ai_plan_issues = None;
                 self.ai_plan_csv = None;
@@ -2836,12 +3398,20 @@ impl ResearchApp {
 /// 报告是否可用（当前版本 + 新鲜 + 演示检查通过）。
 fn report_ready(w: &Workspace) -> bool {
     let p = w.current();
-    p.report
-        .as_ref()
-        .is_some_and(|r| r.version_id == p.active_version.unwrap_or(0) && w.version_fresh(p.active_version.unwrap_or(0)) && r.demo_pass())
+    p.report.as_ref().is_some_and(|r| {
+        r.version_id == p.active_version.unwrap_or(0)
+            && w.version_fresh(p.active_version.unwrap_or(0))
+            && r.demo_pass()
+    })
 }
 
 // ================================================================ 绘制辅助
+
+/// `allocate_ui` 期望尺寸：极端窄窗（首帧守卫之外的双保险）下把负宽/高钳 0——
+/// egui 对负 desired size 直接断言 panic（desktop-firstframe-guard）。
+fn sz(w: f32, h: f32) -> egui::Vec2 {
+    egui::vec2(w.max(0.0), h.max(0.0))
+}
 
 /// 正文文字。
 fn lbl(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
@@ -2874,7 +3444,15 @@ fn concepts(text: impl Into<String>) -> egui::RichText {
 
 /// tab 小按钮（选中 = 主描边）。
 fn tab_button(text: &str, active: bool) -> egui::Button<'_> {
-    let t = lbl(text, 10.0, if active { theme::ACCENT_TEXT } else { theme::MUTED });
+    let t = lbl(
+        text,
+        10.0,
+        if active {
+            theme::ACCENT_TEXT
+        } else {
+            theme::MUTED
+        },
+    );
     egui::Button::new(t)
         .fill(theme::GLASS)
         .stroke(if active {
@@ -2896,7 +3474,12 @@ fn page_header(ui: &mut egui::Ui, eyebrow: &str, title: &str, subtitle: &str) {
 }
 
 /// 玻璃面板：标题头（含徽章）+ 内边距内容。
-fn panel(ui: &mut egui::Ui, title: &str, badge: Option<(&str, TagKind)>, body: impl FnOnce(&mut egui::Ui)) {
+fn panel(
+    ui: &mut egui::Ui,
+    title: &str,
+    badge: Option<(&str, TagKind)>,
+    body: impl FnOnce(&mut egui::Ui),
+) {
     Frame::NONE
         .fill(theme::GLASS)
         .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
@@ -2922,12 +3505,13 @@ fn panel(ui: &mut egui::Ui, title: &str, badge: Option<(&str, TagKind)>, body: i
                 });
             let hr = head.response.rect;
             ui.painter().line_segment(
-                [Pos2::new(hr.left(), hr.bottom()), Pos2::new(hr.right(), hr.bottom())],
+                [
+                    Pos2::new(hr.left(), hr.bottom()),
+                    Pos2::new(hr.right(), hr.bottom()),
+                ],
                 Stroke::new(1.0, theme::BORDER),
             );
-            Frame::NONE
-                .inner_margin(Margin::same(19))
-                .show(ui, body);
+            Frame::NONE.inner_margin(Margin::same(19)).show(ui, body);
         });
     ui.add_space(12.0);
 }
@@ -3030,9 +3614,13 @@ mod tests {
     fn next_step_follows_research_chain() {
         let mut w = Workspace::new();
         let (label, route, _) = next_step(&w);
-        assert_eq!((label.as_str(), route), ("确认研究需求", Route::Requirements));
+        assert_eq!(
+            (label.as_str(), route),
+            ("确认研究需求", Route::Requirements)
+        );
 
-        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0).unwrap();
+        w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
+            .unwrap();
         assert_eq!(next_step(&w).1, Route::Design);
 
         w.generate_design("EMA 双均线").unwrap();
@@ -3052,7 +3640,8 @@ mod tests {
 
         // 计划生成 → 未核对 → 核对
         let rows = vec![("SYN-A".to_string(), 10.0, 1000, 1000, 1100, 100)];
-        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows).unwrap();
+        w.make_plan("SNAP-1", "2024-01-05", 10000.0, 20000.0, rows)
+            .unwrap();
         assert_eq!(next_step(&w).1, Route::Plan);
         let checked = w.check_plan(1500.0).unwrap();
         assert!(checked.is_empty());

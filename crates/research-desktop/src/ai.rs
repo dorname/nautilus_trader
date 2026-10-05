@@ -59,7 +59,11 @@ pub fn route(text: &str) -> Intent {
         Intent::GenerateDesign
     } else if t.contains("保存版本") || t.contains("冻结版本") || t.contains("代码") {
         Intent::SaveVersion
-    } else if t.contains("运行实验") || t.contains("跑实验") || t.contains("运行回测") || t.contains("运行策略") {
+    } else if t.contains("运行实验")
+        || t.contains("跑实验")
+        || t.contains("运行回测")
+        || t.contains("运行策略")
+    {
         Intent::RunExperiment
     } else if t.contains("比较") {
         Intent::CompareExperiments

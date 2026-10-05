@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use nautilus_research_desktop::bridge::{
     CompareForm, DesktopBridge, ImportForm, PlanForm, RunForm, UniverseForm,
 };
-use nautilus_research_desktop::pipeline::{is_success, terminal_error_text, TaskWatch};
+use nautilus_research_desktop::pipeline::{TaskWatch, is_success, terminal_error_text};
 use nautilus_research_testkit::case;
 
 fn temp_workspace(tag: &str) -> PathBuf {
@@ -35,15 +35,33 @@ fn write_file(dir: &Path, name: &str, content: &str) -> String {
 /// 24 个交易日行情（2023-12-04 起，收盘 10..33 阶梯上行）。
 fn rising_bars(code: &str, dir: &Path, name: &str) -> String {
     let dates = [
-        "2023-12-04", "2023-12-05", "2023-12-06", "2023-12-07", "2023-12-08",
-        "2023-12-11", "2023-12-12", "2023-12-13", "2023-12-14", "2023-12-15",
-        "2023-12-18", "2023-12-19", "2023-12-20", "2023-12-21", "2023-12-22",
-        "2023-12-25", "2023-12-26", "2023-12-27", "2023-12-28", "2023-12-29",
-        "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05",
+        "2023-12-04",
+        "2023-12-05",
+        "2023-12-06",
+        "2023-12-07",
+        "2023-12-08",
+        "2023-12-11",
+        "2023-12-12",
+        "2023-12-13",
+        "2023-12-14",
+        "2023-12-15",
+        "2023-12-18",
+        "2023-12-19",
+        "2023-12-20",
+        "2023-12-21",
+        "2023-12-22",
+        "2023-12-25",
+        "2023-12-26",
+        "2023-12-27",
+        "2023-12-28",
+        "2023-12-29",
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2024-01-05",
     ];
-    let mut body = String::from(
-        "instrument_id,trade_date,open,high,low,close,volume_shares,amount_cny\n",
-    );
+    let mut body =
+        String::from("instrument_id,trade_date,open,high,low,close,volume_shares,amount_cny\n");
     for (i, d) in dates.iter().enumerate() {
         let close = 10 + i as i32;
         body.push_str(&format!(
@@ -53,8 +71,7 @@ fn rising_bars(code: &str, dir: &Path, name: &str) -> String {
     write_file(dir, name, &body)
 }
 
-const RULE_ALL_PASS: &str =
-    r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#;
+const RULE_ALL_PASS: &str = r#"{"op":"and","children":[{"field":"close","op":"gte","value":"0"}]}"#;
 
 /// GUI 形态的等待：以页面轮询语义（get_task + TaskWatch::poll）推进到终态。
 fn watch_to_terminal(bridge: &DesktopBridge, watch: &mut TaskWatch) -> bool {
@@ -89,22 +106,20 @@ fn ut_s15_09_page_state_machine() {
         assert!(w.is_active());
         assert_eq!(w.task_id(), Some("T1"));
 
-        let view = |task_id: &str, succeeded: bool| {
-            nautilus_research_domain::protocol::TaskView {
-                task_id: task_id.into(),
-                state: if succeeded {
-                    nautilus_research_domain::TaskState::Succeeded
-                } else {
-                    nautilus_research_domain::TaskState::Running
-                },
-                last_seq: 1,
-                progress: None,
-                artifact_hash: None,
-                snapshot_id: None,
-                error: None,
-                children: Vec::new(),
-                parent_id: None,
-            }
+        let view = |task_id: &str, succeeded: bool| nautilus_research_domain::protocol::TaskView {
+            task_id: task_id.into(),
+            state: if succeeded {
+                nautilus_research_domain::TaskState::Succeeded
+            } else {
+                nautilus_research_domain::TaskState::Running
+            },
+            last_seq: 1,
+            progress: None,
+            artifact_hash: None,
+            snapshot_id: None,
+            error: None,
+            children: Vec::new(),
+            parent_id: None,
         };
 
         // 运行中推进；其他任务视图不推进
@@ -141,8 +156,7 @@ fn ut_s15_09_page_state_machine() {
         );
 
         // PageState：提交成功清错误；提交失败复位 Idle 并保留错误
-        let mut ps: nautilus_research_desktop::pipeline::PageState<TaskWatch> =
-            Default::default();
+        let mut ps: nautilus_research_desktop::pipeline::PageState<TaskWatch> = Default::default();
         ps.on_submitted("T3", "预览中…");
         assert!(ps.error.is_none() && ps.watch.is_active());
         ps.on_submit_failed("缺少必填参数");
@@ -188,7 +202,9 @@ fn st_s15_04_desktop_bridge_full_pipeline() {
                 fixed_membership: true,
                 ignore_missing: false,
             };
-            let r = bridge.submit_preview(&snapshot_id, &form).expect("预览提交");
+            let r = bridge
+                .submit_preview(&snapshot_id, &form)
+                .expect("预览提交");
             TaskWatch::submitted(r.task_id, "预览中…")
         };
         assert!(watch_to_terminal(&bridge, &mut watch), "预览应到终态");
@@ -257,7 +273,12 @@ fn st_s15_04_desktop_bridge_full_pipeline() {
         };
         let mut watch = {
             let r = bridge
-                .submit_plan(&snapshot_id, &universe.universe_id, &plan_form, &run_form("0"))
+                .submit_plan(
+                    &snapshot_id,
+                    &universe.universe_id,
+                    &plan_form,
+                    &run_form("0"),
+                )
                 .expect("计划提交");
             TaskWatch::submitted(r.task_id, "计划生成中…")
         };
@@ -286,10 +307,7 @@ fn st_s15_04_desktop_bridge_full_pipeline() {
         let mut watch = TaskWatch::submitted(r.task_id, "回测运行中…");
         let cancel = bridge.cancel(&task_id);
         match cancel {
-            Ok(v) => assert_eq!(
-                v.state,
-                nautilus_research_domain::TaskState::Cancelling
-            ),
+            Ok(v) => assert_eq!(v.state, nautilus_research_domain::TaskState::Cancelling),
             Err(e) => {
                 // 进程内执行器很快，任务可能已成功：ALREADY_TERMINAL 合法
                 assert_eq!(

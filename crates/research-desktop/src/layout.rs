@@ -25,6 +25,13 @@ pub const CARD_RADIUS: f32 = 16.0;
 /// 窄窗断点（原型 @media max-width:1200px；最小窗口 1100 落在窄档）。
 pub const NARROW_MAX_W: f32 = 1200.0;
 
+/// 首帧守卫宽度阈值：WSLg 等环境 winit 首帧可能返回远小于请求值的窗口尺寸
+/// （实测约 260×267，`with_inner_size`/`with_min_inner_size` 均未生效），
+/// 低于阈值的帧跳过绘制，等待尺寸就绪（见 app::ui）。
+pub const FIRST_FRAME_MIN_W: f32 = 400.0;
+/// 首帧守卫高度阈值（与 FIRST_FRAME_MIN_W 同源）。
+pub const FIRST_FRAME_MIN_H: f32 = 200.0;
+
 /// 布局档位：由窗口宽度决定侧栏/对话栏宽度（纯函数，可测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutPlan {
@@ -71,6 +78,13 @@ pub fn workspace_width(window_w: f32, plan: LayoutPlan, focus: bool) -> f32 {
 /// 最小窗口（1100，窄档，含对话栏）下工作区仍有可用宽度（无水平溢出的下界自检）。
 pub fn min_workspace_usable() -> bool {
     workspace_width(MIN_WINDOW.x, plan_for_width(MIN_WINDOW.x), false) > 0.0
+}
+
+/// 首帧守卫判据：根矩形达到可绘制下限才进入布局（纯函数，UT-S15-08 承载）。
+/// 守卫的意义：极端窄帧下 `可用宽 − 侧栏 − 对话栏` 必为负，而 egui 的
+/// `allocate_ui` 对负期望尺寸直接断言 panic（desktop-firstframe-guard）。
+pub fn frame_ready(w: f32, h: f32) -> bool {
+    w >= FIRST_FRAME_MIN_W && h >= FIRST_FRAME_MIN_H
 }
 
 #[cfg(test)]

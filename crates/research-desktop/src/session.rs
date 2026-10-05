@@ -1,7 +1,7 @@
 //! 会话状态：当前路由与每路由滚动位置（页面切换互不干扰；落盘持久化在
 //! 对接协调器会话存储时实现，本批仅内存态）。
 
-use crate::nav::{default_route, Route};
+use crate::nav::{Route, default_route};
 
 /// 统一工作台会话状态。
 #[derive(Debug, Clone)]

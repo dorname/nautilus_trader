@@ -5,7 +5,9 @@
 
 use std::path::PathBuf;
 
-use nautilus_research_domain::plan::{ExportReceipt, ExportSpec, HoldingInput, ManualNote, NoteRef};
+use nautilus_research_domain::plan::{
+    ExportReceipt, ExportSpec, HoldingInput, ManualNote, NoteRef,
+};
 use nautilus_research_domain::protocol::{
     CompareSpec, CompareView, Comparison, CostSpec, EffectiveRange, ImportSource, ImportSpec,
     Membership, MissingPolicy, PlanSpec, PriceBasis, Rebalance, RunSpec, SaveUniverseSpec,
@@ -160,7 +162,10 @@ impl DesktopBridge {
             price_basis: Self::price_basis(form.price_basis),
             auxiliary_kind: form.auxiliary_kind.clone(),
         };
-        let key = format!("gui-{}", &nautilus_research_domain::hash::hash_canonical(&spec)[..24]);
+        let key = format!(
+            "gui-{}",
+            &nautilus_research_domain::hash::hash_canonical(&spec)[..24]
+        );
         self.coordinator
             .import_data(&format!("req-{key}"), &key, spec)
     }
@@ -193,7 +198,10 @@ impl DesktopBridge {
                 .ignore_missing
                 .then_some(MissingPolicy::IgnoreCondition),
         };
-        let key = format!("gui-{}", &nautilus_research_domain::hash::hash_canonical(&spec)[..24]);
+        let key = format!(
+            "gui-{}",
+            &nautilus_research_domain::hash::hash_canonical(&spec)[..24]
+        );
         self.coordinator
             .preview_universe(&format!("req-{key}"), &key, spec)
     }
@@ -212,8 +220,12 @@ impl DesktopBridge {
             input_hash: input_hash.to_string(),
             name: name.to_string(),
         };
-        let key = format!("gui-{}", &nautilus_research_domain::hash::hash_canonical(&spec)[..24]);
-        self.coordinator.save_universe(&format!("req-{key}"), &key, spec)
+        let key = format!(
+            "gui-{}",
+            &nautilus_research_domain::hash::hash_canonical(&spec)[..24]
+        );
+        self.coordinator
+            .save_universe(&format!("req-{key}"), &key, spec)
     }
 
     /// 运行页：提交回测（EMA 模板）。
@@ -250,8 +262,12 @@ impl DesktopBridge {
             grid: None,
             seed: 0,
         };
-        let key = format!("gui-{}", &nautilus_research_domain::hash::hash_canonical(&spec)[..24]);
-        self.coordinator.submit_run(&format!("req-{key}"), &key, spec)
+        let key = format!(
+            "gui-{}",
+            &nautilus_research_domain::hash::hash_canonical(&spec)[..24]
+        );
+        self.coordinator
+            .submit_run(&format!("req-{key}"), &key, spec)
     }
 
     fn costs(&self, form: &RunForm) -> CostSpec {
@@ -341,7 +357,10 @@ impl DesktopBridge {
             allow_historical: false,
             mode: UniverseMode::Strict,
         };
-        let key = format!("gui-{}", &nautilus_research_domain::hash::hash_canonical(&spec)[..24]);
+        let key = format!(
+            "gui-{}",
+            &nautilus_research_domain::hash::hash_canonical(&spec)[..24]
+        );
         self.coordinator
             .generate_plan(&format!("req-{key}"), &key, spec)
     }
@@ -370,7 +389,10 @@ impl DesktopBridge {
     }
 
     /// 计划页：读取交易计划文档（核对视图）。
-    pub fn trade_plan(&self, plan_id: &str) -> CmdResult<nautilus_research_domain::plan::TradePlanDoc> {
+    pub fn trade_plan(
+        &self,
+        plan_id: &str,
+    ) -> CmdResult<nautilus_research_domain::plan::TradePlanDoc> {
         self.coordinator.get_trade_plan(plan_id)
     }
 }

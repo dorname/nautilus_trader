@@ -141,9 +141,9 @@ pub fn rejection_text(e: &nautilus_research_domain::ResearchError) -> String {
 
 /// 终态错误的中文行（错误体透传）。
 pub fn terminal_error_text(view: &TaskView) -> Option<String> {
-    view.error.as_ref().map(|e| {
-        format!("任务失败（{}）：{}", e.code, e.message)
-    })
+    view.error
+        .as_ref()
+        .map(|e| format!("任务失败（{}）：{}", e.code, e.message))
 }
 
 #[cfg(test)]
@@ -229,7 +229,10 @@ mod tests {
         ps2.on_submit_failed("缺少必填参数");
         assert!(!ps2.watch.is_active());
         assert!(matches!(ps2.watch, TaskWatch::Idle));
-        assert_eq!(ps2.error.as_ref().map(|e| e.text.as_str()), Some("缺少必填参数"));
+        assert_eq!(
+            ps2.error.as_ref().map(|e| e.text.as_str()),
+            Some("缺少必填参数")
+        );
 
         // is_success 判定
         assert!(is_success(&view("T", TaskState::Succeeded)));
