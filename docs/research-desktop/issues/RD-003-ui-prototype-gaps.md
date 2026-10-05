@@ -2,7 +2,7 @@
 
 - **类型**：UI 保真
 - **优先级**：P1
-- **状态**：open
+- **状态**：fixed（2026-10-05，提案 desktop-issue-fixes-rd003-rd006）
 - **权威原型**：`core-05-ai-workspace-prototype.html`
 - **实现**：`theme.rs` / `layout.rs` / `icons.rs` / `app.rs`
 - **已归档相关**：`desktop-fidelity-visuals`（图标 / hero 双环 / empty 图标已补；净值曲线明确缩减）
