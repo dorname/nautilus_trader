@@ -1,0 +1,6 @@
+merged: 2026-10-05
+proposal: desktop-issue-docs-rd002-rd004
+deltas: 2
+targets:
+- logos/resources/prd/2-product-design/2-page-design/core-02-research-pages.md (MODIFIED 界面结构：降级为历史线框，口径统一至 core-05 + 实现常量，删除默认浅色 — RD-002)
+- logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md (ADDED 演示原型与生产桌面映射：数据中心/股票池分叉声明 — RD-004)
