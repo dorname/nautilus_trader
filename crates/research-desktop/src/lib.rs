@@ -14,6 +14,7 @@
 pub mod ai;
 pub mod app;
 pub mod bridge;
+pub mod icons;
 pub mod layout;
 pub mod nav;
 pub mod pipeline;

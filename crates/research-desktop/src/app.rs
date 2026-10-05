@@ -13,6 +13,7 @@ use egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Se
 
 use crate::ai;
 use crate::bridge::{CompareForm, DesktopBridge, ImportForm, PlanForm, RunForm, UniverseForm};
+use crate::icons;
 use crate::layout::{self, LayoutPlan};
 use crate::nav::{RESOURCE_GROUP, RESOURCE_ROUTES, Route, WORKSPACE_GROUP, WORKSPACE_ROUTES};
 use crate::pipeline::{POLL_INTERVAL, PageState, TaskWatch, terminal_error_text};
@@ -495,7 +496,22 @@ impl ResearchApp {
                 egui::StrokeKind::Inside,
             );
         }
-        let tx = rect.left() + 11.0;
+        // 16px 图标（原型 .nav button svg：激活态取 --accent-text，非激活随文字 muted）
+        let icon_rect = egui::Rect::from_center_size(
+            Pos2::new(rect.left() + 11.0 + 8.0, rect.center().y),
+            egui::Vec2::splat(16.0),
+        );
+        icons::paint_icon(
+            ui.painter(),
+            icon_rect,
+            icons::for_route(route),
+            if active {
+                theme::ACCENT_TEXT
+            } else {
+                theme::MUTED
+            },
+        );
+        let tx = rect.left() + 11.0 + 24.0;
         let cy = rect.center().y;
         ui.painter().text(
             Pos2::new(tx, cy),
@@ -1058,13 +1074,35 @@ impl ResearchApp {
             "需求、策略与实验在这里连接成一条完整的研究路径。",
         );
 
-        // hero
+        // hero（原型 .hero：110° 线性渐变底 + 右侧 hero-orbit 双环）
         Frame::NONE
-            .fill(Color32::from_rgb(0x0E, 0x13, 0x10))
             .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
             .stroke(Stroke::new(1.0, theme::BORDER))
             .inner_margin(Margin::same(24))
             .show(ui, |ui| {
+                let hero_rect = ui.max_rect();
+                // 110° 渐变底（左上亮 → 右下暗）
+                {
+                    let mut mesh = egui::Mesh::default();
+                    mesh.colored_vertex(hero_rect.left_top(), icons::HERO_GRADIENT_FROM);
+                    mesh.colored_vertex(hero_rect.right_top(), icons::HERO_GRADIENT_TO);
+                    mesh.colored_vertex(hero_rect.right_bottom(), icons::HERO_GRADIENT_TO);
+                    mesh.colored_vertex(hero_rect.left_bottom(), icons::HERO_GRADIENT_TO);
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    ui.painter().add(egui::Shape::mesh(mesh));
+                }
+                // hero-orbit：右上 110px 双环（窄窗 70px 降透明度）
+                let narrow = layout::plan_for_width(ui.max_rect().width()) == LayoutPlan::Compact;
+                let side = if narrow { 70.0 } else { 110.0 };
+                let orbit_rect = egui::Rect::from_center_size(
+                    Pos2::new(
+                        hero_rect.right() - 20.0 - side / 2.0,
+                        hero_rect.top() + 30.0 + side / 2.0,
+                    ),
+                    egui::Vec2::splat(side),
+                );
+                icons::paint_hero_orbit(ui.painter(), orbit_rect, narrow);
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     theme::tag_ui(ui, "A股 · 日线", TagKind::Accent);
@@ -3528,6 +3566,16 @@ fn empty_panel(ui: &mut egui::Ui, title: &str, desc: &str, action: Option<&str>)
             ui.set_min_width(ui.available_width());
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
+                // 原型 .empty .icon：30px flow 图标（#3d5c4a 深绿）
+                let (icon_rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(30.0), Sense::hover());
+                icons::paint_icon(
+                    ui.painter(),
+                    icon_rect,
+                    icons::IconKind::Flow,
+                    Color32::from_rgb(0x3D, 0x5C, 0x4A),
+                );
+                ui.add_space(10.0);
                 ui.label(lbl(title, 15.0, theme::TEXT));
                 ui.add_space(8.0);
                 ui.label(lbl(desc, 12.0, theme::MUTED));

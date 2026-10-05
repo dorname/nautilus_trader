@@ -9,7 +9,7 @@ use nautilus_research_desktop::nav::{
     ALL_ROUTES, RESOURCE_ROUTES, Route, WORKSPACE_ROUTES, default_route,
 };
 use nautilus_research_desktop::session::Session;
-use nautilus_research_desktop::theme;
+use nautilus_research_desktop::{icons, theme};
 use nautilus_research_testkit::case;
 
 /// UT-S15-07：统一工作台导航路由与会话状态
@@ -159,5 +159,31 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
             layout::workspace_width(260.0, LayoutPlan::Compact, false),
             0.0
         );
+        // 导航图标（desktop-fidelity-visuals）：11 路由全覆盖、折线非空、
+        // 策略开发/策略资产同为 code（原型 routes 表）。
+        for r in ALL_ROUTES {
+            let kind = icons::for_route(r);
+            assert!(
+                icons::strokes(kind).iter().all(|s| s.len() >= 2),
+                "路由 {r:?} 图标存在少于 2 点的笔画"
+            );
+        }
+        assert_eq!(
+            icons::for_route(Route::Develop),
+            icons::for_route(Route::Library)
+        );
+        assert_eq!(icons::for_route(Route::Overview), icons::IconKind::Home);
+        assert_eq!(icons::for_route(Route::Pool), icons::IconKind::Pool);
+        // hero 装饰（原型 .hero-orbit）：渐变端色与双环色值、采样点规模
+        assert_eq!(
+            icons::HERO_GRADIENT_FROM,
+            Color32::from_rgb(0x0F, 0x15, 0x12)
+        );
+        assert_eq!(icons::HERO_GRADIENT_TO, Color32::from_rgb(0x0A, 0x0B, 0x0A));
+        let (c, e1, e2) = icons::hero_orbit_points(110.0);
+        assert_eq!(c.len(), 49, "r42 圆 48 段采样");
+        assert_eq!(e1.len(), 49);
+        assert_eq!(e2.len(), 49);
+        assert_ne!(e1, e2, "±40° 双椭圆必须互异");
     });
 }
