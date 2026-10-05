@@ -211,3 +211,5 @@ __pycache__/
 /examples/tongxindadata/
 .git/cursor/
 /research-workspace/
+.specstory/
+.cursorindexingignore
