@@ -1,3 +1,5 @@
+## MODIFIED — S15 测试用例 > S15 测试用例
+
 # S15 测试用例
 
 ## S15 测试用例
@@ -26,10 +28,3 @@ OpenLogos reporter；UT-S15-05/06 性能量测与 ST-S15-02/03 双平台 GUI 旅
 
 ### reporter
 使用共享reporter写入真实断言结果；fail含error，skip不可算通过。详见 core-09-research-test-cases.md。
-
-## 性能验收用例
-
-| ID | 验收点 | 输入与步骤 | 必须断言 |
-|---|---|---|---|
-| UT-S15-05 | S15-AC-02 | Windows参考机和需求所列数据规模 | 冷启动≤5秒、输入p95≤100ms、预览≤10秒、回测≤60秒、GUI≤512MiB、worker≤8GiB，记录实测 |
-| UT-S15-06 | S15-AC-02 | Linux参考机和相同数据规模 | 同上，分别保存环境及实测数据，不能复用Windows结果 |

@@ -1,0 +1,5 @@
+merged: 2026-10-05
+proposal: desktop-equity-curve-rd005
+deltas: 1
+targets:
+- logos/resources/test/core-S15-test-cases.md (MODIFIED S15 测试用例表：新增 UT-S15-10 / ST-S15-05 — RD-005 净值曲线接线)
