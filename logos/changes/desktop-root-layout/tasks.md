@@ -1,0 +1,9 @@
+# 实现任务
+
+## [code] 代码实现
+
+- [x] `crates/research-desktop/src/layout.rs`：新增 `columns(outer_w, plan) -> (f32, f32)` 与 `rows(outer_h) -> (f32, f32, f32)` 列/行切分纯函数（各段非负、和 ≤ outer）
+- [x] `crates/research-desktop/src/app.rs`：`ui()` 根改为 outer 矩形显式切列（`allocate_new_ui` 建 sidebar/main 两个列 Ui）
+- [x] `crates/research-desktop/src/app.rs`：render_sidebar/render_main/render_body 改为列内垂直三段/两段显式分配（弃用 horizontal 内 available_height()）
+- [x] `crates/research-desktop/tests/s15_desktop_l2.rs`：UT-S15-08 补 columns/rows 切分断言（含窄窗/最小窗口/异常输入非负）
+- [x] 限核回归 22 用例全绿 + 重建实跑截图目检对照原型三区骨架

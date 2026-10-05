@@ -185,5 +185,20 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
         assert_eq!(e1.len(), 49);
         assert_eq!(e2.len(), 49);
         assert_ne!(e1, e2, "±40° 双椭圆必须互异");
+        // 根布局切分（desktop-root-layout）：列/行各段非负；正常窗口 main 为正。
+        let (sb, main) = layout::columns(1440.0 - 24.0, LayoutPlan::Comfortable);
+        assert_eq!(sb, 212.0);
+        assert!((main - (1416.0 - 212.0 - 12.0)).abs() < 1e-6);
+        let (sb, main) = layout::columns(1100.0 - 24.0, LayoutPlan::Compact);
+        assert_eq!(sb, 178.0);
+        assert!(main > 0.0);
+        // 极端窄窗：main 钳 0 不为负（侧栏宽不可压，总和允许超出——由首帧守卫兜底）
+        let (_, main) = layout::columns(200.0, LayoutPlan::Comfortable);
+        assert_eq!(main, 0.0);
+        let (top, body, foot) = layout::rows(900.0 - 24.0);
+        assert_eq!((top, foot), (65.0, 28.0));
+        assert!((body - (876.0 - 65.0 - 28.0)).abs() < 1e-6);
+        let (_, body, _) = layout::rows(50.0);
+        assert_eq!(body, 0.0, "行高不足时 body 钳 0");
     });
 }

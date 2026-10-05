@@ -87,6 +87,22 @@ pub fn frame_ready(w: f32, h: f32) -> bool {
     w >= FIRST_FRAME_MIN_W && h >= FIRST_FRAME_MIN_H
 }
 
+/// 根三列切分（desktop-root-layout）：sidebar 固定宽 + 间隙 + main 剩余。
+/// 返回 (sidebar_w, main_w)；各段非负、和 + APP_GAP ≤ outer_w。
+/// 侧栏宽按档位取 212/178（原型 .app grid-template-columns）。
+pub fn columns(outer_w: f32, plan: LayoutPlan) -> (f32, f32) {
+    let sidebar = sidebar_w(plan);
+    let main = (outer_w - sidebar - APP_GAP).max(0.0);
+    (sidebar, main)
+}
+
+/// 主卡三段切分（原型 .main grid-template-rows: 65px 1fr 28px）。
+/// 返回 (topbar, body, footer)；各段非负、和 ≤ outer_h。
+pub fn rows(outer_h: f32) -> (f32, f32, f32) {
+    let body = (outer_h - TOPBAR_H - FOOTER_H).max(0.0);
+    (TOPBAR_H, body, FOOTER_H)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
