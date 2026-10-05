@@ -10,26 +10,27 @@ pub struct Session {
     pub route: Route,
     /// 每路由滚动位置（切换返回时保留，按需重绘不依赖滚动状态）。
     scroll: [f32; 11],
-    /// 字体提示（系统 CJK 字体缺失时状态行提示）。
+    /// 字体提示（已废弃：字体经内嵌 Noto Sans SC 兜底，恒有中文可用；
+    /// 字段保留以兼容 Session 构造签名，不再驱动任何 UI）。
+    #[deprecated(note = "内嵌字体兜底后恒为 false，不再驱动 UI")]
     pub font_missing: bool,
 }
 
 impl Session {
-    /// 新会话：默认路由 + 空滚动 + 字体正常。
+    /// 新会话：默认路由 + 空滚动。
     pub fn new() -> Self {
         Self {
             route: default_route(),
             scroll: [0.0; 11],
+            #[allow(deprecated)]
             font_missing: false,
         }
     }
 
-    /// 新会话并注入字体缺失提示（App 层入口）。
-    pub fn with_font_missing(font_missing: bool) -> Self {
-        Self {
-            font_missing,
-            ..Self::new()
-        }
+    /// 新会话（兼容旧签名；参数不再生效）。
+    #[allow(deprecated)]
+    pub fn with_font_missing(_font_missing: bool) -> Self {
+        Self::new()
     }
 
     /// 切路由：保留来源路由滚动位置（会话状态纯逻辑，UT 承载）。

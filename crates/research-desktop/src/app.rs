@@ -153,10 +153,11 @@ pub struct ResearchApp {
 }
 
 impl ResearchApp {
-    /// 新应用（注入字体加载结果提示；协调器桥由 `attach_bridge` 建立）。
-    pub fn new(font_missing: bool) -> Self {
+    /// 新应用（参数 `font_missing` 已废弃：字体经内嵌 Noto Sans SC 兜底；
+    /// 协调器桥由 `attach_bridge` 建立）。
+    pub fn new(_font_missing: bool) -> Self {
         Self {
-            session: Session::with_font_missing(font_missing),
+            session: Session::new(),
             bridge: None,
             bridge_error: None,
             import_form: ImportForm::default(),
@@ -393,80 +394,129 @@ impl ResearchApp {
         );
         let ui = &mut cui;
         {
-            let w = layout::sidebar_w(plan) - 28.0;
-            // 品牌：研 + 研序 / 策略研究工作区
-            ui.horizontal(|ui| {
-                let mark = Frame::NONE
-                    .fill(theme::ACCENT)
-                    .corner_radius(CornerRadius::same(9))
-                    .inner_margin(Margin::symmetric(6, 3));
-                mark.show(ui, |ui| {
-                    ui.set_min_size(egui::vec2(17.0, 23.0));
-                    ui.centered_and_justified(|ui| {
-                        ui.label(lbl("研", 19.0, theme::BASE));
+            let slim = plan == LayoutPlan::Slim;
+            let w = if slim {
+                layout::SIDEBAR_W_SLIM - 16.0
+            } else {
+                layout::sidebar_w(plan) - 28.0
+            };
+            // 品牌：研 + 研序 / 策略研究工作区（原型 .brand-mark：145° 渐变 + 辉光；
+            // Slim 档隐藏品牌名，只留渐变 mark 居中）
+            if slim {
+                let (mark_rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(29.0), Sense::hover());
+                ui.painter().circle_filled(
+                    mark_rect.center(),
+                    21.0,
+                    Color32::from_rgba_premultiplied(34, 197, 94, 89),
+                );
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(mark_rect.left_top(), theme::ACCENT_TEXT);
+                mesh.colored_vertex(mark_rect.right_top(), theme::ACCENT);
+                mesh.colored_vertex(mark_rect.right_bottom(), theme::ACCENT_STRONG);
+                mesh.colored_vertex(mark_rect.left_bottom(), theme::ACCENT);
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(0, 2, 3);
+                ui.painter().add(egui::Shape::mesh(mesh));
+                ui.painter().text(
+                    mark_rect.center(),
+                    ALIGN2_CENTER,
+                    "研",
+                    FontId::proportional(19.0),
+                    theme::BASE,
+                );
+            } else {
+                ui.horizontal(|ui| {
+                    let (mark_rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(29.0), Sense::hover());
+                    // 辉光：box-shadow 0 0 14px rgba(34,197,94,.35) 近似——外圈半透明绿晕
+                    ui.painter().circle_filled(
+                        mark_rect.center(),
+                        21.0,
+                        Color32::from_rgba_premultiplied(34, 197, 94, 89),
+                    );
+                    // 145° 线性渐变（#4ade80 → #16a34a）：四顶点插值 Mesh
+                    let mut mesh = egui::Mesh::default();
+                    let (tl, tr, br, bl) = (
+                        mark_rect.left_top(),
+                        mark_rect.right_top(),
+                        mark_rect.right_bottom(),
+                        mark_rect.left_bottom(),
+                    );
+                    mesh.colored_vertex(tl, theme::ACCENT_TEXT);
+                    mesh.colored_vertex(tr, theme::ACCENT);
+                    mesh.colored_vertex(br, theme::ACCENT_STRONG);
+                    mesh.colored_vertex(bl, theme::ACCENT);
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    ui.painter().add(egui::Shape::mesh(mesh));
+                    ui.painter().text(
+                        mark_rect.center(),
+                        ALIGN2_CENTER,
+                        "研",
+                        FontId::proportional(19.0),
+                        theme::BASE,
+                    );
+                    ui.add_space(6.0);
+                    ui.vertical(|ui| {
+                        ui.label(lbl("研序", 20.0, theme::TEXT));
+                        ui.label(lbl("策略研究工作区", 9.0, theme::MUTED));
                     });
                 });
-                ui.add_space(6.0);
-                ui.vertical(|ui| {
-                    ui.label(lbl("研序", 20.0, theme::TEXT));
-                    ui.label(lbl("策略研究工作区", 9.0, theme::MUTED));
-                });
-            });
-            ui.add_space(18.0);
-
-            // 项目选择 + 新建（项目隔离：切回时版本与消息保留）
-            theme::section_label(ui, "当前项目");
-            let names: Vec<(usize, String)> = self
-                .workspace
-                .projects
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (i, p.name.clone()))
-                .collect();
-            let active = self.workspace.active;
-            egui::ComboBox::from_id_salt("project-select")
-                .selected_text(names[active].1.clone())
-                .width(w)
-                .show_ui(ui, |ui| {
-                    for (i, name) in &names {
-                        if ui.selectable_label(*i == active, name.clone()).clicked() {
-                            self.workspace.switch_to(*i);
-                        }
-                    }
-                });
-            ui.add_space(6.0);
-            if ui
-                .add_sized([w, 26.0], theme::ghost_button("＋ 新建研究项目"))
-                .clicked()
-            {
-                self.new_project_open = true;
             }
             ui.add_space(18.0);
 
+            // 项目选择 + 新建（Slim 档隐藏文字控件）
+            if !slim {
+                theme::section_label(ui, "当前项目");
+                let names: Vec<(usize, String)> = self
+                    .workspace
+                    .projects
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (i, p.name.clone()))
+                    .collect();
+                let active = self.workspace.active;
+                egui::ComboBox::from_id_salt("project-select")
+                    .selected_text(names[active].1.clone())
+                    .width(w)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in &names {
+                            if ui.selectable_label(*i == active, name.clone()).clicked() {
+                                self.workspace.switch_to(*i);
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
+                if ui
+                    .add_sized([w, 26.0], theme::ghost_button("＋ 新建研究项目"))
+                    .clicked()
+                {
+                    self.new_project_open = true;
+                }
+                ui.add_space(18.0);
+            }
+
             // 研究工作区 8 路由
-            theme::section_label(ui, WORKSPACE_GROUP);
+            if !slim {
+                theme::section_label(ui, WORKSPACE_GROUP);
+            }
             for r in WORKSPACE_ROUTES {
-                self.nav_item(ui, r, w);
+                self.nav_item(ui, r, w, slim);
             }
             ui.add_space(14.0);
             // 研究资源 3 路由
-            theme::section_label(ui, RESOURCE_GROUP);
+            if !slim {
+                theme::section_label(ui, RESOURCE_GROUP);
+            }
             for r in RESOURCE_ROUTES {
-                self.nav_item(ui, r, w);
+                self.nav_item(ui, r, w, slim);
             }
 
-            // 底部：本地声明（含字体缺失诚实提示）
+            // 底部：本地声明（Slim 档只留头像）
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 ui.separator();
                 ui.add_space(10.0);
-                if self.session.font_missing {
-                    ui.label(lbl(
-                        "未找到系统中文字体，中文可能显示为方块",
-                        9.0,
-                        theme::RED,
-                    ));
-                    ui.add_space(4.0);
-                }
                 ui.horizontal(|ui| {
                     let avatar = Frame::NONE
                         .fill(theme::GLASS_STRONG)
@@ -479,20 +529,23 @@ impl ResearchApp {
                             ui.label(lbl("本地", 10.0, theme::TEXT2));
                         });
                     });
-                    ui.add_space(6.0);
-                    ui.vertical(|ui| {
-                        ui.label(lbl("个人研究空间", 11.0, theme::TEXT2));
-                        ui.label(lbl("离线 · 无自动下单", 9.0, theme::MUTED));
-                    });
+                    if !slim {
+                        ui.add_space(6.0);
+                        ui.vertical(|ui| {
+                            ui.label(lbl("个人研究空间", 11.0, theme::TEXT2));
+                            ui.label(lbl("离线 · 无自动下单", 9.0, theme::MUTED));
+                        });
+                    }
                 });
             });
         }
     }
 
     /// 导航项：激活 = 绿柔底 + 主色描边 + 左缘 2px 指示条；回测实验附实验计数。
-    fn nav_item(&mut self, ui: &mut egui::Ui, route: Route, w: f32) {
+    /// Slim 档（≤900）只显居中图标、隐藏文字与计数（原型 @900 图标栏）。
+    fn nav_item(&mut self, ui: &mut egui::Ui, route: Route, w: f32, slim: bool) {
         let active = self.session.route == route;
-        let count = (route == Route::Experiments)
+        let count = (route == Route::Experiments && !slim)
             .then(|| self.workspace.current().experiments.len())
             .filter(|n| *n > 0);
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 30.0), Sense::click());
@@ -518,8 +571,13 @@ impl ResearchApp {
             );
         }
         // 16px 图标（原型 .nav button svg：激活态取 --accent-text，非激活随文字 muted）
+        let icon_cx = if slim {
+            rect.center().x
+        } else {
+            rect.left() + 11.0 + 8.0
+        };
         let icon_rect = egui::Rect::from_center_size(
-            Pos2::new(rect.left() + 11.0 + 8.0, rect.center().y),
+            Pos2::new(icon_cx, rect.center().y),
             egui::Vec2::splat(16.0),
         );
         icons::paint_icon(
@@ -532,26 +590,38 @@ impl ResearchApp {
                 theme::MUTED
             },
         );
-        let tx = rect.left() + 11.0 + 24.0;
         let cy = rect.center().y;
-        ui.painter().text(
-            Pos2::new(tx, cy),
-            egui::Align2::LEFT_CENTER,
-            route.title(),
-            FontId::proportional(12.0),
-            if active { theme::TEXT } else { theme::MUTED },
-        );
-        if let Some(n) = count {
+        if !slim {
+            let tx = rect.left() + 11.0 + 24.0;
             ui.painter().text(
-                Pos2::new(rect.right() - 10.0, cy),
-                egui::Align2::RIGHT_CENTER,
-                n.to_string(),
-                FontId::monospace(10.0),
-                theme::FAINT,
+                Pos2::new(tx, cy),
+                egui::Align2::LEFT_CENTER,
+                route.title(),
+                FontId::proportional(12.0),
+                if active { theme::TEXT } else { theme::MUTED },
             );
+            if let Some(n) = count {
+                ui.painter().text(
+                    Pos2::new(rect.right() - 10.0, cy),
+                    egui::Align2::RIGHT_CENTER,
+                    n.to_string(),
+                    FontId::monospace(10.0),
+                    theme::FAINT,
+                );
+            }
         }
         if active {
-            // 左缘 2px 绿指示条（原型 .nav button.active:before）
+            // 左缘 2px 绿指示条 + 辉光（原型 .active:before + box-shadow 0 0 10px accent-glow）：
+            // 三层透明度递减的同心条近似高斯辉光
+            for (half, alpha) in [(9.0_f32, 115u8), (13.0, 61), (17.0, 26)] {
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(rect.left(), cy - half),
+                        Pos2::new(rect.left(), cy + half),
+                    ],
+                    Stroke::new(4.0, Color32::from_rgba_premultiplied(34, 197, 94, alpha)),
+                );
+            }
             ui.painter().line_segment(
                 [
                     Pos2::new(rect.left(), cy - 9.0),
@@ -621,17 +691,14 @@ impl ResearchApp {
         );
     }
 
-    /// footer：本地原型声明 + 溯源声明。
+    /// footer：本地研究桌面声明 + 溯源声明（RD-006：移除「原型/刷新重置」HTML 语义，
+    /// 原生桌面工作区 SQLite 持久化、无浏览器刷新概念）。
     fn render_footer(&mut self, ui: &mut egui::Ui, w: f32) {
         let resp = ui
             .allocate_ui(sz(w, layout::FOOTER_H), |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(20.0);
-                    ui.label(lbl(
-                        "● 本地原型 · 合成样本 SYN-202601 · 刷新重置，可导出产物",
-                        9.0,
-                        theme::FAINT,
-                    ));
+                    ui.label(lbl(theme::FOOTER_LEFT, 9.0, theme::FAINT));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(20.0);
                         ui.label(lbl("所有结果可追溯至输入与版本", 9.0, theme::FAINT));

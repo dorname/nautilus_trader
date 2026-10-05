@@ -17,8 +17,8 @@ fn main() {
         "研序 · 策略研究工作区",
         native,
         Box::new(|cc| {
-            let missing = theme::setup_fonts(&cc.egui_ctx) == 0;
-            let mut app = ResearchApp::new(missing);
+            theme::setup_fonts(&cc.egui_ctx);
+            let mut app = ResearchApp::new(false);
             // 工作区：环境变量 RESEARCH_WORKSPACE 优先，缺省 ./research-workspace
             let ws = std::env::var_os("RESEARCH_WORKSPACE")
                 .map(std::path::PathBuf::from)

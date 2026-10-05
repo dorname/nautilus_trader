@@ -239,9 +239,20 @@ fn glow(ui: &mut egui::Ui, rect: egui::Rect, corner: Pos2, color: Color32) {
     ui.painter().add(mesh);
 }
 
-/// 注册系统 CJK 字体（core-02「中文字体随包提供」：本批从系统常见路径加载，
-/// 缺失时保留 egui 默认字体并在状态行提示；数字等宽由等宽族承载）。
-/// 返回成功加载的字体数（0 = 未找到，调用方置字体缺失提示）。
+/// 内嵌 CJK 字体（core-02「中文字体随包提供」兜底）：Noto Sans SC Regular，
+/// SIL Open Font License 可再分发；系统探测全部失败时兜底，消除字体缺失告警。
+const EMBEDDED_CJK: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
+
+/// footer 左侧声明（RD-006：原生桌面语义，移除「原型/刷新重置」）。
+pub const FOOTER_LEFT: &str = "● 本地研究桌面 · 合成/导入样本可追溯 · 结果绑定版本与快照";
+
+/// 内嵌字体字节数（UT-S15-08 断言非空）。
+pub fn embedded_cjk_len() -> usize {
+    EMBEDDED_CJK.len()
+}
+
+/// 注册 CJK 字体（优先系统常见路径，失败回退内嵌字体）。
+/// 返回成功加载的字体数（≥1 = 中文可用；0 = 连内嵌都失败，仅理论上可能）。
 pub fn setup_fonts(ctx: &egui::Context) -> usize {
     let candidates: &[&str] = &[
         // Linux（WSL2 常见发行版）
@@ -256,19 +267,23 @@ pub fn setup_fonts(ctx: &egui::Context) -> usize {
     ];
     for path in candidates {
         if let Ok(bytes) = std::fs::read(path) {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts
-                .font_data
-                .insert("cjk".into(), egui::FontData::from_owned(bytes).into());
-            // 中文回退链：默认族与等宽族都追加 CJK（egui 逐字符回退）
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(family).or_default().push("cjk".into());
-            }
-            ctx.set_fonts(fonts);
+            install_cjk(ctx, egui::FontData::from_owned(bytes));
             return 1;
         }
     }
-    0
+    // 系统路径全部缺失：内嵌字体兜底（随包提供承诺）
+    install_cjk(ctx, egui::FontData::from_static(EMBEDDED_CJK));
+    1
+}
+
+/// 把一份 CJK 字体数据注册为默认/等宽两族的回退（egui 逐字符回退）。
+fn install_cjk(ctx: &egui::Context, data: egui::FontData) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("cjk".into(), data.into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("cjk".into());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// 默认窗口尺寸（core-02：默认 1440×900）。

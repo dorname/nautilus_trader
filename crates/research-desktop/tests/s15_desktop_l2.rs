@@ -200,5 +200,32 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
         assert!((body - (876.0 - 65.0 - 28.0)).abs() < 1e-6);
         let (_, body, _) = layout::rows(50.0);
         assert_eq!(body, 0.0, "行高不足时 body 钳 0");
+        // Slim 图标栏断点（RD-003.3）：≤900 侧栏 65、对话栏 280；>900 回到 Compact。
+        assert_eq!(layout::plan_for_width(900.0), LayoutPlan::Slim);
+        assert_eq!(layout::plan_for_width(901.0), LayoutPlan::Compact);
+        assert_eq!(layout::sidebar_w(LayoutPlan::Slim), 65.0);
+        assert_eq!(layout::chat_w(LayoutPlan::Slim), 280.0);
+        assert_eq!(layout::SLIM_MAX_W, 900.0);
+        assert_eq!(layout::SIDEBAR_W_SLIM, 65.0);
+        assert_eq!(layout::CHAT_W_SLIM, 280.0);
+        // Slim 档工作区仍有可用宽度（900 - 24 - 12 - 65 - 280 = 519）
+        assert!(
+            (layout::workspace_width(900.0, LayoutPlan::Slim, false) - 519.0).abs() < 1e-6,
+            "900 Slim 档工作区应为 519"
+        );
+        // 品牌 mark 渐变端色（RD-003.1：原型 145° #4ade80 → #16a34a）
+        assert_eq!(theme::ACCENT_TEXT, Color32::from_rgb(0x4A, 0xDE, 0x80));
+        assert_eq!(theme::ACCENT_STRONG, Color32::from_rgb(0x16, 0xA3, 0x4A));
+        // 内嵌 CJK 字体兜底（RD-003.5：随包提供承诺）
+        assert!(
+            theme::embedded_cjk_len() > 1_000_000,
+            "内嵌字体应非空（Noto Sans SC）"
+        );
+        // footer 原生文案（RD-006：移除「原型/刷新重置」HTML 语义）
+        assert!(
+            !theme::FOOTER_LEFT.contains("原型") && !theme::FOOTER_LEFT.contains("刷新"),
+            "footer 不得含 HTML 原型语义"
+        );
+        assert!(theme::FOOTER_LEFT.contains("本地研究桌面"));
     });
 }

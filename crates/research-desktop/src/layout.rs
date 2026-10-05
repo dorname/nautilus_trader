@@ -24,6 +24,8 @@ pub const APP_GAP: f32 = 12.0;
 pub const CARD_RADIUS: f32 = 16.0;
 /// 窄窗断点（原型 @media max-width:1200px；最小窗口 1100 落在窄档）。
 pub const NARROW_MAX_W: f32 = 1200.0;
+/// 图标栏断点（原型 @media max-width:900px：侧栏收成 65px 纯图标栏）。
+pub const SLIM_MAX_W: f32 = 900.0;
 
 /// 首帧守卫宽度阈值：WSLg 等环境 winit 首帧可能返回远小于请求值的窗口尺寸
 /// （实测约 260×267，`with_inner_size`/`with_min_inner_size` 均未生效），
@@ -31,22 +33,30 @@ pub const NARROW_MAX_W: f32 = 1200.0;
 pub const FIRST_FRAME_MIN_W: f32 = 400.0;
 /// 首帧守卫高度阈值（与 FIRST_FRAME_MIN_W 同源）。
 pub const FIRST_FRAME_MIN_H: f32 = 200.0;
+/// 侧栏宽度（图标档 ≤900，原型 @900 .app grid-template-columns:65px）。
+pub const SIDEBAR_W_SLIM: f32 = 65.0;
+/// 对话栏宽度（图标档 ≤900，原型 @900 .body 280px）。
+pub const CHAT_W_SLIM: f32 = 280.0;
 
 /// 布局档位：由窗口宽度决定侧栏/对话栏宽度（纯函数，可测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutPlan {
     /// 舒适档（>1200）：侧栏 212、对话栏 360。
     Comfortable,
-    /// 窄档（≤1200）：侧栏 178、对话栏 320。
+    /// 窄档（901~1200）：侧栏 178、对话栏 320。
     Compact,
+    /// 图标档（≤900）：侧栏 65 纯图标、对话栏 280（原型 @media max-width:900px）。
+    Slim,
 }
 
 /// 按可用宽度决定布局档位。
 pub fn plan_for_width(w: f32) -> LayoutPlan {
     if w > NARROW_MAX_W {
         LayoutPlan::Comfortable
-    } else {
+    } else if w > SLIM_MAX_W {
         LayoutPlan::Compact
+    } else {
+        LayoutPlan::Slim
     }
 }
 
@@ -55,6 +65,7 @@ pub fn sidebar_w(plan: LayoutPlan) -> f32 {
     match plan {
         LayoutPlan::Comfortable => SIDEBAR_W,
         LayoutPlan::Compact => SIDEBAR_W_NARROW,
+        LayoutPlan::Slim => SIDEBAR_W_SLIM,
     }
 }
 
@@ -63,6 +74,7 @@ pub fn chat_w(plan: LayoutPlan) -> f32 {
     match plan {
         LayoutPlan::Comfortable => CHAT_W,
         LayoutPlan::Compact => CHAT_W_NARROW,
+        LayoutPlan::Slim => CHAT_W_SLIM,
     }
 }
 
