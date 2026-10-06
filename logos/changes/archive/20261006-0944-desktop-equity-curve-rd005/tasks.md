@@ -7,5 +7,5 @@
 - [x] `bridge.rs`：`EquityPoint` + `equity_curve(run_id)` 分页拉取 + 纯函数 `equity_points()`（本批覆盖 UT-S15-10 解析断言）
 - [x] `workspace.rs`：`latest_task_experiments(n)` + `comparison_banner(a, b)` 三态文案（本批覆盖 UT-S15-10 选取/横幅断言）
 - [x] `app.rs`：`render_experiments` 新增「净值比较」面板（egui_plot 双线 + 面积填充 + 网格 + 悬停 + 横幅 + 徽章 + hint + 三态占位）
-- [ ] `tests/`：UT-S15-10 用例实现（纯函数）；ST-S15-05 用例实现（合成数据链路两次运行后 equity_curve 非空、日期升序、净值为正）；均接 OpenLogos reporter
+- [x] `tests/`：UT-S15-10 用例实现（纯函数）；ST-S15-05 用例实现（合成数据链路两次运行后 equity_curve 非空、日期升序、净值为正、未完成运行 RUN_NOT_READY）；均接 OpenLogos reporter
 - [ ] verify 归档后：`docs/research-desktop/issues/RD-005-equity-chart-deferred.md` 标记 fixed
