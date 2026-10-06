@@ -16,6 +16,7 @@
 | RD-005 | [#5](https://github.com/dorname/nautilus_trader/issues/5) | [回测实验净值曲线仍缺失（域层未就绪）](RD-005-equity-chart-deferred.md) | 功能缺口 | P2 |
 | RD-006 | [#6](https://github.com/dorname/nautilus_trader/issues/6) | [原生桌面页脚/文案仍泄漏「HTML 原型」语义](RD-006-footer-and-copy-prototype-leak.md) | 文案 | P3 |
 | RD-007 | [#7](https://github.com/dorname/nautilus_trader/issues/7) | [原型 ≤900px 布局与窄视口对照证据](RD-007-prototype-narrow-viewport.md) | 原型 / 证据 | P3 |
+| RD-008 | — | [主工作区 body 布局塌缩（画布竖排挤压 / 对话栏消失）](RD-008-body-layout-collapse.md) | bug / UI 布局 | P0 |
 
 列表页：https://github.com/dorname/nautilus_trader/issues?q=is%3Aissue+label%3Aa-stock
 
