@@ -1,8 +1,9 @@
 //! S15 桌面批次 L3（流水线五页对接）场景测试：页面状态机 + 协调器桥全链路。
 //!
-//! 规格对齐：logos/resources/test/core-S15-test-cases.md（UT-S15-09/10、ST-S15-04/05）。
+//! 规格对齐：logos/resources/test/core-S15-test-cases.md（UT-S15-09/10、ST-S15-04/05/06）。
 //! 测试不经图形后端：以 DesktopBridge + TaskWatch 状态机驱动真实协调器
-//! （进程内执行器，temp workspace），与 GUI 渲染路径共享同一套模型函数。
+//! （进程内执行器，temp workspace），与 GUI 渲染路径共享同一套模型函数；
+//! ST-S15-06 另以 egui Context::run_ui 无头驱动真实 app 渲染根 Ui 做整页几何回归。
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -526,5 +527,119 @@ fn st_s15_05_equity_curve_read() {
         // 等终态保持工作区干净（曲线随后可读，主断言已在上方覆盖）
         let mut w = TaskWatch::submitted(tid, "回测运行中…");
         assert!(watch_to_terminal(&bridge, &mut w), "运行应到终态");
+    });
+}
+
+// ---------------------------------------------------------------- ST-S15-06
+/// ST-S15-06：无头整页几何回归——RD-008「子 Ui 继承 horizontal 父布局」缺陷族。
+/// egui Context::run_ui 驱动真实 app 渲染根 Ui（不经图形后端、不加载系统字体），
+/// 1750×900 与 1100×720 两档各连续三帧，检查 FullOutput.shapes 中 Text 图元的
+/// 坐标与 galley 尺寸（RD-008 修复前：workspace-head 垂直居中、页面标题一字一行、
+/// 对话内容溢出窗口右缘——本用例五项断言逐一对锁）。
+#[test]
+fn st_s15_06_headless_page_geometry() {
+    case("ST-S15-06", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::layout;
+
+        for (win_w, win_h) in [(1750.0_f32, 900.0_f32), (1100.0, 720.0)] {
+            let plan = layout::plan_for_width(win_w);
+            let canvas_right = win_w - layout::APP_GAP - layout::chat_w(plan);
+            let body_top = layout::APP_GAP + layout::TOPBAR_H;
+
+            let ctx = egui::Context::default();
+            let mut app = ResearchApp::new(false);
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(win_w, win_h),
+                    )),
+                    ..Default::default()
+                };
+                let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+                shapes = std::mem::take(&mut full.shapes);
+                // 无头环境不应用纹理增量（字体图集），每帧显式清理避免 drop 断言
+                full.drop_without_applying_deltas();
+            }
+            // (文本, 绘制包围盒)——注意 TextShape.pos 依 galley halign 而定
+            // （right_to_left 布局的标签 pos 是文本右上角），统一用 galley.rect 平移求跨度
+            let texts: Vec<(String, egui::Rect)> = shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(ts) => Some((
+                        ts.galley.text().to_string(),
+                        ts.galley.rect.translate(ts.pos.to_vec2()),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            assert!(!texts.is_empty(), "{win_w}×{win_h}：应绘制出文本图元");
+            let find = |needle: &str| {
+                texts
+                    .iter()
+                    .find(|(t, _)| t.contains(needle))
+                    .unwrap_or_else(|| panic!("{win_w}×{win_h}：未找到文本「{needle}」"))
+            };
+
+            // 1) workspace-head 在 body 顶带（修复前被垂直居中到 body 中央）
+            let (_, head_rect) = find("项目产物");
+            assert!(
+                head_rect.top() < body_top + 44.0 + 10.0,
+                "{win_w}×{win_h}：workspace-head 应在 body 顶带（y={}，阈值 {}）",
+                head_rect.top(),
+                body_top + 54.0
+            );
+
+            // 2) 页面标题在画布区内且单行展开（修复前在画布右缘外一字一行）
+            let (_, title_rect) = find("让每一步研究，都有依据");
+            assert!(
+                title_rect.max.x + 5.0 < canvas_right,
+                "{win_w}×{win_h}：标题应在画布区内（右端 {}，画布右缘 {canvas_right}）",
+                title_rect.max.x
+            );
+            assert!(
+                title_rect.width() >= 100.0,
+                "{win_w}×{win_h}：标题应单行展开（宽 {}，一字一行时仅约一字宽）",
+                title_rect.width()
+            );
+
+            // 3) 对话栏标题在右栏区内（所有实例：header 与消息气泡署名均在对话栏）
+            for (t, rect) in texts.iter().filter(|(t, _)| t.contains("研究助手")) {
+                assert!(
+                    rect.min.x > canvas_right,
+                    "{win_w}×{win_h}：「{t}」应在对话栏区（x={}，画布右缘 {canvas_right}）",
+                    rect.min.x
+                );
+            }
+
+            // 4) 指标卡三段文字纵向堆叠（修复前在 horizontal 父级下横排同行）
+            let (_, top_rect) = find("研究阶段");
+            let (_, bottom_rect) = find("逐步构建研究证据");
+            assert!(
+                bottom_rect.top() > top_rect.top() + 5.0,
+                "{win_w}×{win_h}：指标卡应纵向堆叠（顶 {} 底 {}）",
+                top_rect.top(),
+                bottom_rect.top()
+            );
+            assert!(
+                (bottom_rect.min.x - top_rect.min.x).abs() < 20.0,
+                "{win_w}×{win_h}：指标卡应同列（顶 x={} 底 x={}）",
+                top_rect.min.x,
+                bottom_rect.min.x
+            );
+
+            // 5) 无文本绘制越出窗口右缘（修复前对话内容溢出窗外，30px 字宽容差）
+            for (t, rect) in &texts {
+                assert!(
+                    rect.max.x <= win_w + 30.0,
+                    "{win_w}×{win_h}：文本「{}」越出窗口右缘（右端 {} > {}）",
+                    t.chars().take(12).collect::<String>(),
+                    rect.max.x,
+                    win_w + 30.0
+                );
+            }
+        }
     });
 }

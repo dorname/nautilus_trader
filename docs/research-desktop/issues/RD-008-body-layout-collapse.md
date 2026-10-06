@@ -2,7 +2,7 @@
 
 - **类型**：bug / UI 布局
 - **优先级**：P0
-- **状态**：open（2026-10-06 用户截图报告；修复提案 `desktop-body-layout-rd008`）
+- **状态**：fixed（2026-10-06，提案 desktop-body-layout-rd008——F1 body 显式矩形切列 + top_down 子 Ui；F2 指标卡/侧栏底部/对话栏底带同类点修复；F3 ST-S15-06 无头整页几何回归双窗口档通过）
 - **权威原型**：`core-05-ai-workspace-prototype.html`
 - **实现**：`crates/research-desktop/src/app.rs`（`render_body` / `render_canvas` / `render_chat`）
 

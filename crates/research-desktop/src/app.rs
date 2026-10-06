@@ -330,8 +330,19 @@ pub fn next_step(w: &Workspace) -> (String, Route, String) {
 }
 
 impl eframe::App for ResearchApp {
-    /// 根 Ui 渲染（eframe 0.36 模型）：环境柔光 + 左侧栏卡 + 主区卡（顶栏/画布+对话/footer）。
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render_root(ui);
+    }
+}
+
+// ================================================================ 布局骨架
+
+impl ResearchApp {
+    /// 根 Ui 渲染（eframe 0.36 模型）：环境柔光 + 左侧栏卡 + 主区卡（顶栏/画布+对话/footer）。
+    /// RD-008：提取为独立方法，供 ST-S15-06 无头几何回归经 egui::Context::run_ui 驱动
+    /// （pub 仅为测试可达，GUI 入口仍是 eframe::App::ui）。
+    #[doc(hidden)]
+    pub fn render_root(&mut self, ui: &mut egui::Ui) {
         // 双环境柔光铺满根矩形：左上绿 / 右下青（面板玻璃半透明，柔光透出）
         theme::paint_ambient(ui);
         // 水平间距手动管理（卡片间隙 = APP_GAP）
@@ -383,11 +394,7 @@ impl eframe::App for ResearchApp {
             ui.ctx().request_repaint_after(POLL_INTERVAL);
         }
     }
-}
 
-// ================================================================ 布局骨架
-
-impl ResearchApp {
     /// 左侧栏（唯一导航）：品牌 + 项目选择/新建 + 两组 11 路由 + 底部离线声明。
     fn render_sidebar(&mut self, ui: &mut egui::Ui, plan: LayoutPlan) {
         // 列 Ui 已带固定 max_rect：玻璃卡直接矩形绘制，内容在带内边距的子列内排布
@@ -534,26 +541,43 @@ impl ResearchApp {
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 ui.separator();
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    let avatar = Frame::NONE
-                        .fill(theme::GLASS_STRONG)
-                        .corner_radius(CornerRadius::same(14))
-                        .stroke(Stroke::new(1.0, theme::BORDER_STRONG))
-                        .inner_margin(Margin::symmetric(5, 5));
-                    avatar.show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(17.0, 17.0));
-                        ui.centered_and_justified(|ui| {
-                            ui.label(lbl("本地", 10.0, theme::TEXT2));
-                        });
-                    });
-                    if !slim {
-                        ui.add_space(6.0);
-                        ui.vertical(|ui| {
-                            ui.label(lbl("个人研究空间", 11.0, theme::TEXT2));
-                            ui.label(lbl("离线 · 无自动下单", 9.0, theme::MUTED));
-                        });
-                    }
-                });
+                // RD-008 同类：bottom_up 内 horizontal 按初始行高取 frame，Frame 继承
+                // 布局使头像文本居中整行、后续 vertical 子列被挤出右缘——改显式占位 +
+                // 矩形定位：头像居左，双行声明放 top_down 子列
+                let (row, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 34.0),
+                    Sense::hover(),
+                );
+                let avatar_rect = egui::Rect::from_min_size(
+                    row.min + egui::vec2(0.0, 3.5),
+                    egui::vec2(27.0, 27.0),
+                );
+                ui.painter().rect(
+                    avatar_rect,
+                    CornerRadius::same(14),
+                    theme::GLASS_STRONG,
+                    Stroke::new(1.0, theme::BORDER_STRONG),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    avatar_rect.center(),
+                    ALIGN2_CENTER,
+                    "本地",
+                    FontId::proportional(10.0),
+                    theme::TEXT2,
+                );
+                if !slim {
+                    let mut text_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(egui::Rect::from_min_size(
+                                row.min + egui::vec2(33.0, 4.0),
+                                egui::vec2((row.width() - 33.0).max(0.0), 26.0),
+                            ))
+                            .layout(Layout::top_down(Align::Min)),
+                    );
+                    text_ui.label(lbl("个人研究空间", 11.0, theme::TEXT2));
+                    text_ui.label(lbl("离线 · 无自动下单", 9.0, theme::MUTED));
+                }
             });
         }
     }
@@ -731,21 +755,37 @@ impl ResearchApp {
     }
 
     /// 主体：工作区画布（含 workspace-head）+ 右对话栏（专注模式收起）。
+    /// RD-008：显式矩形切列 + new_child 建独立 top_down 列 Ui（沿用 desktop-root-layout
+    /// 根区修复模式）——此前用 ui.horizontal + allocate_ui，子 Ui 继承
+    /// left_to_right(Center) 布局：workspace-head 垂直居中、页面内容在零宽区一字一行、
+    /// 对话内容溢出窗外（egui allocate_ui 继承父布局语义）。
     fn render_body(&mut self, ui: &mut egui::Ui, w: f32, h: f32, plan: LayoutPlan) {
-        ui.allocate_ui(sz(w, h), |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let chat_w = if self.focus {
-                    0.0
-                } else {
-                    layout::chat_w(plan)
-                };
-                self.render_canvas(ui, w - chat_w, h);
-                if !self.focus {
-                    self.render_chat(ui, chat_w, h);
-                }
-            });
-        });
+        // 显式占位：new_child 不消耗父级游标，须先按 (w, h) 推进（否则 footer 上移）
+        let (body, _) = ui.allocate_exact_size(sz(w, h), egui::Sense::hover());
+        let chat_w = if self.focus {
+            0.0
+        } else {
+            layout::chat_w(plan)
+        };
+        let canvas_rect = egui::Rect::from_min_size(body.min, egui::vec2(w - chat_w, h));
+        let mut canvas_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(canvas_rect)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        self.render_canvas(&mut canvas_ui, w - chat_w, h);
+        if !self.focus {
+            let chat_rect = egui::Rect::from_min_size(
+                body.min + egui::vec2(w - chat_w, 0.0),
+                egui::vec2(chat_w, h),
+            );
+            let mut chat_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(chat_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            self.render_chat(&mut chat_ui, chat_w, h);
+        }
     }
 
     /// 工作区画布：workspace-head（◇ 项目产物 + 版本 tag + 专注开关）+ 路由页面。
@@ -901,10 +941,28 @@ impl ResearchApp {
                     })
                     .collect()
             };
+            // 底部区显式预留底带（RD-008 同类：ScrollArea auto_shrink(false) 会占满
+            // 剩余高度，把输入区推出对话栏下缘；bottom_up 内 horizontal 按初始行高取
+            // frame，内容仍向下溢出——改为显式矩形切带：底带按 chips 两行上限预留，
+            // 消息流填中间）。
+            const CHAT_INPUT_H: f32 = 178.0;
+            let task_bar_h = if self.active_task().is_some() { 40.0 } else { 0.0 };
+            let rest = ui.available_rect_before_wrap();
+            let band_top = (rest.bottom() - CHAT_INPUT_H - task_bar_h).max(rest.top());
+            let scroll_rect =
+                egui::Rect::from_min_max(rest.min, Pos2::new(rest.right(), band_top));
+            let band_rect = egui::Rect::from_min_max(Pos2::new(rest.left(), band_top), rest.max);
+
+            // 消息流填中间带
+            let mut scroll_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(scroll_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
             egui::ScrollArea::vertical()
                 .id_salt("chat-scroll")
                 .auto_shrink(false)
-                .show(ui, |ui| {
+                .show(&mut scroll_ui, |ui| {
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.add_space(22.0);
@@ -925,6 +983,13 @@ impl ResearchApp {
                 });
             self.chat_pin = false;
 
+            // 任务条 + 输入区（底带，自上而下）
+            let mut band_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(band_rect)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            let ui = &mut band_ui;
             // 任务条（活跃任务：取消入口）
             let task = self
                 .active_task()
@@ -1019,6 +1084,7 @@ impl ResearchApp {
                             theme::FAINT,
                         ));
                     });
+                    ui.add_space(6.0);
                 });
             });
         });
@@ -1258,7 +1324,9 @@ impl ResearchApp {
                     "输入与结果可追溯".to_string(),
                 ),
             ] {
-                ui.allocate_ui(sz(w, 0.0), |ui| {
+                // RD-008：horizontal 父级下 allocate_ui 继承水平布局，指标卡
+                // 三段文字需纵向堆叠——显式 top_down（Frame 同样继承父布局）
+                ui.allocate_ui_with_layout(sz(w, 0.0), Layout::top_down(Align::Min), |ui| {
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
                         .corner_radius(CornerRadius::same(10))
@@ -2094,7 +2162,9 @@ impl ResearchApp {
                     "完成实验后回填".to_string(),
                 ),
             ] {
-                ui.allocate_ui(sz(w, 0.0), |ui| {
+                // RD-008：horizontal 父级下 allocate_ui 继承水平布局，指标卡
+                // 三段文字需纵向堆叠——显式 top_down（Frame 同样继承父布局）
+                ui.allocate_ui_with_layout(sz(w, 0.0), Layout::top_down(Align::Min), |ui| {
                     Frame::NONE
                         .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
                         .corner_radius(CornerRadius::same(10))
