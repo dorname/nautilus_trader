@@ -2,7 +2,7 @@
 
 - **类型**：功能缺口
 - **优先级**：P2
-- **状态**：open（已在 `desktop-fidelity-visuals` 提案中**有意缩减**，需独立跟进）
+- **状态**：fixed（2026-10-06，提案 desktop-equity-curve-rd005——调查发现域层无需扩展：`RunOutcomeDoc.equity_curve` 与 QueryRows equity 契约早已存在，仅桌面未接线；已补齐桥读取与「净值比较」面板，UT-S15-10/ST-S15-05 验收通过）
 - **原型**：`equityChart()`（最近两次实验 polyline + 面积渐变 + 网格 + 悬停）
 - **实现**：`render_experiments` 仅展示版本数 / 实验数 / 最近收益字符串与运行参数；**未使用 egui_plot 绘制净值曲线**
 
