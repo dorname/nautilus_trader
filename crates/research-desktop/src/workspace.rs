@@ -337,6 +337,66 @@ impl Workspace {
         }
     }
 
+    /// 最近 n 次有任务的实验（新→旧；RD-005 净值曲线数据源）。
+    /// 返回（实验 ID, 版本 ID, 任务 ID）；任务 ID 即协调器运行句柄（query_rows 的 run_id）。
+    pub fn latest_task_experiments(&self, n: usize) -> Vec<(usize, usize, String)> {
+        self.current()
+            .experiments
+            .iter()
+            .rev()
+            .filter_map(|e| e.task_id.clone().map(|t| (e.id, e.version_id, t)))
+            .take(n)
+            .collect()
+    }
+
+    /// 净值比较横幅（原型 comparisonStatus 三态语义，RD-005）：
+    /// 冻结上游输入（需求/设计引用）不同 → 列差异「仅并列查看，不作代码效果归因」；
+    /// 输入一致而代码版本不同 → 代码差异可作为受控比较因素（core-05 实验可比性）；
+    /// 同版本 → 同输入同源码重复实验。
+    pub fn comparison_banner(&self, a: usize, b: usize) -> Result<String, String> {
+        let p = self.current();
+        let ea = p
+            .experiments
+            .iter()
+            .find(|e| e.id == a)
+            .ok_or("实验不存在")?;
+        let eb = p
+            .experiments
+            .iter()
+            .find(|e| e.id == b)
+            .ok_or("实验不存在")?;
+        if ea.version_id == eb.version_id {
+            return Ok(format!("E{a} 与 E{b}：同输入、同源码的重复实验。"));
+        }
+        let (va, vb) = (
+            &p.versions[ea.version_id - 1],
+            &p.versions[eb.version_id - 1],
+        );
+        let mut diffs = Vec::new();
+        if va.req_id != vb.req_id {
+            diffs.push(format!(
+                "需求版本：E{a}=R{}，E{b}=R{}",
+                va.req_id, vb.req_id
+            ));
+        }
+        if va.design_id != vb.design_id {
+            diffs.push(format!(
+                "设计版本：E{a}=D{}，E{b}=D{}",
+                va.design_id, vb.design_id
+            ));
+        }
+        if diffs.is_empty() {
+            Ok(format!(
+                "E{a} 与 E{b}：冻结输入一致，代码差异可作为受控比较因素。"
+            ))
+        } else {
+            Ok(format!(
+                "E{a} 与 E{b}：输入不同：{}。仅并列查看，不作代码效果归因。",
+                diffs.join("、")
+            ))
+        }
+    }
+
     /// 实验比较（S19：同输入分歧归因代码；跨输入列差异不归因代码）。
     /// 同输入 = 版本与修订戳完全一致；否则仅列输入差异。
     pub fn compare_experiments(&self, a: usize, b: usize) -> Result<(bool, Vec<String>), String> {

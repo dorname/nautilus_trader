@@ -10,11 +10,12 @@ use nautilus_research_domain::plan::{
 };
 use nautilus_research_domain::protocol::{
     CompareSpec, CompareView, Comparison, CostSpec, EffectiveRange, ImportSource, ImportSpec,
-    Membership, MissingPolicy, PlanSpec, PriceBasis, Rebalance, RunSpec, SaveUniverseSpec,
-    SnapshotPage, StrategySpec, StrategyTemplate, TaskRef, TaskView, UniverseMode, UniverseRef,
-    UniverseSpec,
+    Membership, MissingPolicy, PlanSpec, PriceBasis, Rebalance, RowsRow, RowsTable, RunSpec,
+    SaveUniverseSpec, SnapshotPage, StrategySpec, StrategyTemplate, TaskRef, TaskView,
+    UniverseMode, UniverseRef, UniverseSpec,
 };
 use nautilus_research_domain::universe::RuleGroup;
+use nautilus_research_domain::worker_api::EquityDoc;
 use nautilus_research_domain::{Coordinator, CoordinatorConfig, ResearchError};
 use nautilus_research_worker::adapter;
 
@@ -103,6 +104,13 @@ pub struct CompareForm {
     /// 运行 ID（逗号分割，2..5 个）。
     pub run_ids_text: String,
     pub intersection: bool,
+}
+
+/// 净值点（交易日 + 净值 CNY；RD-005：解析自 EquityDoc 十进制字符串）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquityPoint {
+    pub date: String,
+    pub value: f64,
 }
 
 /// 计划表单。
@@ -318,6 +326,31 @@ impl DesktopBridge {
         self.coordinator.compare_runs(&spec)
     }
 
+    /// 实验页：读取已完成运行的净值曲线（RD-005：QueryRows equity 桶，分页拉全量）。
+    /// run_id 即运行任务 ID（store 按 task_id 索引 research_run 行）。
+    pub fn equity_curve(&self, run_id: &str) -> CmdResult<Vec<EquityPoint>> {
+        let mut docs = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self.coordinator.query_rows(
+                run_id,
+                RowsTable::Equity,
+                Some(500),
+                cursor.as_deref(),
+            )?;
+            for row in page.rows {
+                if let RowsRow::Equity(d) = row {
+                    docs.push(d);
+                }
+            }
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        equity_points(docs)
+    }
+
     /// 计划页：生成计划（手工持仓 JSON 在此解析）。
     pub fn submit_plan(
         &self,
@@ -395,6 +428,26 @@ impl DesktopBridge {
     ) -> CmdResult<nautilus_research_domain::plan::TradePlanDoc> {
         self.coordinator.get_trade_plan(plan_id)
     }
+}
+
+/// 纯函数：EquityDoc 序列 → 绘制点列（UT-S15-10：日期原样保序；
+/// 净值十进制字符串解析失败显式报错，不静默丢点）。
+pub fn equity_points(docs: Vec<EquityDoc>) -> CmdResult<Vec<EquityPoint>> {
+    docs.into_iter()
+        .map(|d| {
+            let value = d.equity_cny.trim().parse::<f64>().map_err(|_| {
+                ResearchError::invalid(format!(
+                    "净值无法解析：{}（{}）",
+                    d.equity_cny, d.trade_date
+                ))
+                .with_field("equity_cny")
+            })?;
+            Ok(EquityPoint {
+                date: d.trade_date,
+                value,
+            })
+        })
+        .collect()
 }
 
 /// AI 工作台计划桥：持仓 JSON →（现金, 总资产, 计划行）。

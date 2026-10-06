@@ -77,6 +77,20 @@ enum PageKey {
     Run,
 }
 
+/// 净值比较面板缓存（RD-005：键 = 最近两次实验任务 ID 对，（次新, 最新）；
+/// 实验集合或任务终态变化后失效重取，避免每帧读库）。
+#[derive(Debug, Default, Clone)]
+pub struct EquityChartState {
+    /// 最近一次拉取对应的（次新任务, 最新任务）。
+    pub key: (Option<String>, Option<String>),
+    /// （系列标签, 点列），旧→新顺序（最新在最后，对齐原型着色）。
+    pub series: Vec<(String, Vec<crate::bridge::EquityPoint>)>,
+    /// 拉取错误（诚实占位，不空白冒充已实现）。
+    pub error: Option<String>,
+    /// 存在运行未完成的实验（曲线待终态，显式提示而非报错）。
+    pub pending: bool,
+}
+
 /// 研究桌面应用（统一工作台）。
 pub struct ResearchApp {
     /// 会话状态（当前路由、每路由滚动、字体提示）。
@@ -99,6 +113,8 @@ pub struct ResearchApp {
     pub compare_form: CompareForm,
     pub compare_error: Option<String>,
     pub compare_result: Option<nautilus_research_domain::protocol::Comparison>,
+    /// 净值比较面板缓存（RD-005）。
+    pub equity_chart: EquityChartState,
 
     // ---- 交易计划（协调器生产对接面板）
     pub plan_form: PlanForm,
@@ -176,6 +192,7 @@ impl ResearchApp {
             compare_form: CompareForm::default(),
             compare_error: None,
             compare_result: None,
+            equity_chart: EquityChartState::default(),
             plan_form: PlanForm::default(),
             plan_page: PageState::default(),
             plan_exported: None,
@@ -2245,6 +2262,10 @@ impl ResearchApp {
         );
 
         ui.add_space(6.0);
+        // 净值比较（RD-005：原型 equityChart——最近两次实验折线 + 归因横幅）
+        self.render_equity_chart(ui);
+
+        ui.add_space(6.0);
         // 运行比较（协调器运行 ID 比较）
         panel(ui, "运行比较", None, |ui| {
             ui.label(note(
@@ -2314,6 +2335,158 @@ impl ResearchApp {
             theme::tag_ui(ui, "回测不是策略验证", TagKind::Warn);
         });
         self.poll(PageKey::Run);
+    }
+
+    /// 净值比较面板（RD-005）：最近两次有任务实验的净值折线 + 归因横幅。
+    ///
+    /// 数据：协调器 query_rows equity 桶（任务 ID 即运行句柄），缓存键控懒加载；
+    /// 无实验 / 运行中 / 读取失败均显式占位，不空白冒充已实现（RD-005 期望 3）。
+    fn render_equity_chart(&mut self, ui: &mut egui::Ui) {
+        let latest = self.workspace.latest_task_experiments(2); // 新→旧
+        let key = (
+            latest.get(1).map(|x| x.2.clone()),
+            latest.first().map(|x| x.2.clone()),
+        );
+        if self.equity_chart.key != key {
+            let mut series: Vec<(String, Vec<crate::bridge::EquityPoint>)> = Vec::new();
+            let mut error = None;
+            let mut pending = false;
+            if let Some(bridge) = &self.bridge {
+                for (id, ver, task) in latest.iter().rev() {
+                    match bridge.equity_curve(task) {
+                        Ok(pts) => series.push((format!("E{id} / v{ver}"), pts)),
+                        Err(e) if e.code == nautilus_research_domain::ErrorCode::RunNotReady => {
+                            pending = true;
+                        }
+                        Err(e) => {
+                            error = Some(format!("E{id} 净值读取失败：{}", e.message));
+                        }
+                    }
+                }
+            }
+            self.equity_chart = EquityChartState {
+                key,
+                series,
+                error,
+                pending,
+            };
+        }
+        let banner = if latest.len() == 2 {
+            self.workspace
+                .comparison_banner(latest[1].0, latest[0].0)
+                .ok()
+        } else {
+            None
+        };
+        let empty_experiments = latest.is_empty();
+        let chart = self.equity_chart.clone();
+        panel(ui, "净值比较", None, |ui| {
+            if let Some(text) = &banner {
+                ui.label(note(text.clone()));
+                ui.add_space(8.0);
+            }
+            if let Some(err) = &chart.error {
+                ui.label(lbl(err.clone(), 11.0, theme::RED));
+            }
+            if chart.pending {
+                ui.label(note("运行尚未完成，净值曲线待任务终态后可用。"));
+            }
+            let drawable: Vec<&(String, Vec<crate::bridge::EquityPoint>)> = chart
+                .series
+                .iter()
+                .filter(|(_, pts)| !pts.is_empty())
+                .collect();
+            if drawable.is_empty() {
+                if chart.error.is_none() && !chart.pending {
+                    ui.label(note(if empty_experiments {
+                        "还没有可绘制的实验。运行当前版本后自动绘制最近两次净值曲线。"
+                    } else {
+                        "净值序列为空：运行产物未含净值行。"
+                    }));
+                }
+                return;
+            }
+            // 轴范围（原型 low/high 上下留边）
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for (_, pts) in &drawable {
+                for p in pts.iter() {
+                    lo = lo.min(p.value);
+                    hi = hi.max(p.value);
+                }
+            }
+            let pad = ((hi - lo) * 0.05).max(1.0);
+            let (lo, hi) = (lo - pad, hi + pad);
+            // 悬停标签：系列名 → 日期列（原型「E{id} · 日期 · 净值」）
+            let hover_dates: Vec<(String, Vec<String>)> = drawable
+                .iter()
+                .map(|(label, pts)| {
+                    (
+                        label.clone(),
+                        pts.iter().map(|p| p.date.clone()).collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            let axis_dates: Vec<String> = drawable
+                .last()
+                .map(|(_, pts)| pts.iter().map(|p| p.date.clone()).collect())
+                .unwrap_or_default();
+            egui_plot::Plot::new("equity-compare")
+                .height(240.0)
+                .include_y(lo)
+                .include_y(hi)
+                .legend(egui_plot::Legend::default())
+                .x_axis_formatter(move |mark, _range| {
+                    let i = mark.value.round() as usize;
+                    if (mark.value - i as f64).abs() < 1e-6 {
+                        axis_dates.get(i).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                })
+                .label_formatter(move |pos| match pos {
+                    egui_plot::HoverPosition::NearDataPoint {
+                        plot_name,
+                        position,
+                        index,
+                    } => {
+                        let date = hover_dates
+                            .iter()
+                            .find(|(name, _)| name == plot_name)
+                            .and_then(|(_, dates)| dates.get(*index))
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        Some(format!("{plot_name} · {date} · 净值 {:.2}", position.y))
+                    }
+                    _ => None,
+                })
+                .show(ui, |plot_ui| {
+                    for (i, (label, pts)) in drawable.iter().enumerate() {
+                        let latest_one = i == drawable.len() - 1;
+                        let color = if latest_one {
+                            theme::ACCENT_TEXT
+                        } else {
+                            Color32::from_rgb(0x4B, 0x55, 0x63)
+                        };
+                        let points: egui_plot::PlotPoints = pts
+                            .iter()
+                            .enumerate()
+                            .map(|(j, p)| [j as f64, p.value])
+                            .collect();
+                        let mut line = egui_plot::Line::new(label.clone(), points)
+                            .color(color)
+                            .width(if latest_one { 2.5 } else { 2.0 });
+                        if latest_one {
+                            // 原型线性渐变面积（#22c55e .16→0）的 egui 近似：单色半透明填充
+                            line = line.fill(lo as f32).fill_alpha(0.16);
+                        }
+                        plot_ui.line(line);
+                    }
+                });
+            ui.add_space(6.0);
+            ui.label(note(
+                "显示最近两次实验。每个点由现金＋持仓市值计算，悬停查看数值。",
+            ));
+        });
     }
 
     // ---- 验证报告 ------------------------------------------------------------
@@ -3085,6 +3258,10 @@ impl ResearchApp {
                 state.note_terminal_error(text);
             }
             self.set_page_state(key, state);
+            // 运行任务终态落定 → 净值曲线缓存失效重取（RD-005）
+            if matches!(key, PageKey::Run) {
+                self.equity_chart.key = (None, None);
+            }
         }
         // 实验任务终态后如需回填收益，由后续协调器指标读取承载（当前诚实留空）
     }

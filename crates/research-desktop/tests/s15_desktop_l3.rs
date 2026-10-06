@@ -1,6 +1,6 @@
 //! S15 桌面批次 L3（流水线五页对接）场景测试：页面状态机 + 协调器桥全链路。
 //!
-//! 规格对齐：logos/resources/test/core-S15-test-cases.md（UT-S15-09、ST-S15-04）。
+//! 规格对齐：logos/resources/test/core-S15-test-cases.md（UT-S15-09/10、ST-S15-04/05）。
 //! 测试不经图形后端：以 DesktopBridge + TaskWatch 状态机驱动真实协调器
 //! （进程内执行器，temp workspace），与 GUI 渲染路径共享同一套模型函数。
 
@@ -323,5 +323,208 @@ fn st_s15_04_desktop_bridge_full_pipeline() {
             is_success(v) || v.state == nautilus_research_domain::TaskState::Cancelled,
             "终态与取消竞争一致：{v:?}"
         );
+    });
+}
+
+/// UT-S15-10：净值曲线接线纯函数——EquityDoc 解析、最近两次选取、三态归因横幅（RD-005）。
+#[test]
+fn ut_s15_10_equity_points_and_banner() {
+    case("UT-S15-10", || {
+        use nautilus_research_desktop::bridge::equity_points;
+        use nautilus_research_desktop::workspace::Workspace;
+        use nautilus_research_domain::worker_api::EquityDoc;
+
+        let doc = |d: &str, e: &str| EquityDoc {
+            trade_date: d.into(),
+            cash_cny: "0".into(),
+            positions_value_cny: "0".into(),
+            receivables_cny: "0".into(),
+            equity_cny: e.into(),
+        };
+        // 解析保序（日期原样、十进制净值转 f64）
+        let pts = equity_points(vec![
+            doc("2024-01-02", "10000.50"),
+            doc("2024-01-03", "10010"),
+            doc("2024-01-04", "9999.9"),
+        ])
+        .expect("合法净值解析");
+        assert_eq!(pts.len(), 3);
+        assert_eq!(pts[0].date, "2024-01-02");
+        assert!((pts[0].value - 10000.50).abs() < 1e-9);
+        assert_eq!(pts[2].date, "2024-01-04");
+        assert!((pts[2].value - 9999.9).abs() < 1e-9);
+        // 空序列得空
+        assert!(equity_points(vec![]).expect("空序列").is_empty());
+        // 非法净值显式报错，不静默丢点
+        let err =
+            equity_points(vec![doc("2024-01-02", "一万"), doc("2024-01-03", "10010")]).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(&err.code).unwrap(),
+            serde_json::json!("INVALID_ARGUMENT"),
+            "非法净值报 INVALID_ARGUMENT：{err:?}"
+        );
+
+        // 最近两次有任务实验选取（新→旧；无任务证据的实验跳过）
+        let mut w = Workspace::new();
+        w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0)
+            .unwrap();
+        w.generate_design("EMA 双均线").unwrap();
+        w.save_version("fn v1() {}").unwrap();
+        let e1 = w.run_experiment(Some("T1".into())).unwrap();
+        let e2 = w.run_experiment(None).unwrap(); // 无任务证据
+        let e3 = w.run_experiment(Some("T3".into())).unwrap();
+        let latest = w.latest_task_experiments(2);
+        assert_eq!(latest.len(), 2, "无任务实验被跳过");
+        assert_eq!(latest[0], (e3, 1, "T3".to_string()));
+        assert_eq!(latest[1], (e1, 1, "T1".to_string()));
+        assert_eq!(w.latest_task_experiments(1)[0].0, e3);
+        let _ = e2;
+
+        // 三态归因横幅（原型 comparisonStatus 语义）
+        // 同版本 → 重复实验
+        let b = w.comparison_banner(e1, e3).expect("同版本横幅");
+        assert!(b.contains("同输入、同源码的重复实验"), "{b}");
+        // 输入一致、代码不同 → 可归因（同 R/D 下保存 v2）
+        w.save_version("fn v2() {}").unwrap();
+        let e4 = w.run_experiment(Some("T4".into())).unwrap();
+        let b = w.comparison_banner(e3, e4).expect("可归因横幅");
+        assert!(
+            b.contains("冻结输入一致，代码差异可作为受控比较因素"),
+            "{b}"
+        );
+        assert!(!b.contains("仅并列查看"), "{b}");
+        // 输入不同 → 仅并列查看（新需求 → 新设计 → v3）
+        w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
+            .unwrap();
+        w.generate_design("EMA v2").unwrap();
+        w.save_version("fn v3() {}").unwrap();
+        let e5 = w.run_experiment(Some("T5".into())).unwrap();
+        let b = w.comparison_banner(e4, e5).expect("输入不同横幅");
+        assert!(b.contains("仅并列查看，不作代码效果归因"), "{b}");
+        assert!(b.contains("需求版本"), "{b}");
+        // 实验不存在
+        assert_eq!(w.comparison_banner(e1, 999).unwrap_err(), "实验不存在");
+    });
+}
+
+/// ST-S15-05：桌面桥净值曲线读取——合成数据两次运行后经 query_rows equity 桶拉取（RD-005）。
+#[test]
+fn st_s15_05_equity_curve_read() {
+    case("ST-S15-05", || {
+        let ws = temp_workspace("st05");
+        let quotes = rising_bars("SYN-A", &ws, "a.csv");
+        let bridge = DesktopBridge::open(ws.clone()).expect("打开工作区");
+
+        // —— 导入 → 预览 → 保存（同 ST-S15-04 链路）——
+        let mut watch = {
+            let form = ImportForm {
+                source: 0,
+                paths: vec![quotes.clone()],
+                price_basis: 0,
+                auxiliary_kind: None,
+            };
+            let r = bridge.submit_import(&form).expect("导入提交");
+            TaskWatch::submitted(r.task_id, "导入中…")
+        };
+        assert!(watch_to_terminal(&bridge, &mut watch), "导入应到终态");
+        let import_view = watch.terminal().expect("终态视图").clone();
+        assert!(is_success(&import_view), "导入成功：{import_view:?}");
+        let snapshot_id = import_view.snapshot_id.clone().expect("快照 ID");
+
+        let mut watch = {
+            let form = UniverseForm {
+                rule_text: RULE_ALL_PASS.into(),
+                as_of: "2024-01-05".into(),
+                strict: true,
+                fixed_membership: true,
+                ignore_missing: false,
+            };
+            let r = bridge
+                .submit_preview(&snapshot_id, &form)
+                .expect("预览提交");
+            TaskWatch::submitted(r.task_id, "预览中…")
+        };
+        assert!(watch_to_terminal(&bridge, &mut watch), "预览应到终态");
+        assert!(is_success(watch.terminal().expect("终态视图")));
+        let preview_task = watch.task_id().expect("预览任务 ID").to_string();
+        let p = bridge.preview(&preview_task).expect("预览结果");
+        let universe = bridge
+            .save_universe(&preview_task, &p.preview_hash, &p.input_hash, "ST-S15-05")
+            .expect("保存股票池");
+
+        // —— 两次运行 ——
+        let run_form = |rate: &str| RunForm {
+            fast: 1,
+            slow: 2,
+            top_k: 1,
+            start: "2023-12-04".into(),
+            end: "2024-01-05".into(),
+            capital: "20000".into(),
+            commission_rate: rate.into(),
+            min_commission: "0".into(),
+            sell_tax: "0".into(),
+            other_fee: "0".into(),
+            slippage_bps: "0".into(),
+            participation: "1".into(),
+            eff_start: "2023-12-01".into(),
+            eff_end: "2024-02-01".into(),
+        };
+        let submit_run = |rate: &str| {
+            let r = bridge
+                .submit_run(&snapshot_id, &universe.universe_id, &run_form(rate))
+                .expect("运行提交");
+            let mut w = TaskWatch::submitted(r.task_id, "回测运行中…");
+            assert!(watch_to_terminal(&bridge, &mut w), "运行应到终态");
+            let v = w.terminal().expect("终态视图").clone();
+            assert!(is_success(&v), "运行成功：{v:?}");
+            v.task_id
+        };
+        let run_a = submit_run("0");
+        let run_b = submit_run("0.001");
+
+        // —— 净值曲线：非空、日期升序、净值有限且为正 ——
+        for run in [&run_a, &run_b] {
+            let curve = bridge.equity_curve(run).expect("净值曲线读取");
+            assert!(!curve.is_empty(), "{run} 净值曲线非空");
+            for w in curve.windows(2) {
+                assert!(
+                    w[0].date < w[1].date,
+                    "日期升序：{} 应在 {} 之前",
+                    w[0].date,
+                    w[1].date
+                );
+            }
+            assert!(
+                curve.iter().all(|p| p.value.is_finite() && p.value > 0.0),
+                "净值有限且为正：{run}"
+            );
+        }
+
+        // —— 未完成运行：submit 返回后立即读取（任务行/运行行已于入队时同步登记，
+        // 守望线程执行需毫秒级；读取为同线程直读 → 状态必为 Queued/Running）——
+        // 注意：spec 须唯一（费率 0.002 未用过），否则幂等回放已完成任务。
+        let r = bridge
+            .submit_run(&snapshot_id, &universe.universe_id, &run_form("0.002"))
+            .expect("运行提交");
+        let tid = r.task_id.clone();
+        let mut not_ready = false;
+        for _ in 0..10 {
+            match bridge.equity_curve(&tid) {
+                Ok(_) => break, // 执行器竞态完成（曲线可读，非本断言分支）
+                Err(e) => {
+                    assert_eq!(
+                        serde_json::to_value(&e.code).unwrap(),
+                        serde_json::json!("RUN_NOT_READY"),
+                        "未完成运行读取报 RUN_NOT_READY：{e:?}"
+                    );
+                    not_ready = true;
+                    break;
+                }
+            }
+        }
+        assert!(not_ready, "执行完成前读取应报 RUN_NOT_READY，不冒充空曲线");
+        // 等终态保持工作区干净（曲线随后可读，主断言已在上方覆盖）
+        let mut w = TaskWatch::submitted(tid, "回测运行中…");
+        assert!(watch_to_terminal(&bridge, &mut w), "运行应到终态");
     });
 }
