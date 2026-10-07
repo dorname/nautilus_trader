@@ -208,10 +208,10 @@ fn ut_s18_15_version_freeze_and_staleness() {
     case("UT-S18-15", || {
         let mut w = Workspace::new();
         // 无需求时生成设计拒绝；确认后设计绑定 R1
-        assert!(w.generate_design("无需求设计").is_err());
+        assert!(w.generate_design_from_req("无需求设计").is_err());
         w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
             .unwrap();
-        let d1 = w.generate_design("EMA 双均线").unwrap();
+        let d1 = w.generate_design_from_req("EMA 双均线").unwrap();
         let v1 = w.save_version("fn strategy() {}").unwrap();
         // 版本冻结 R1/D1 与保存时刻修订计数
         {
@@ -251,7 +251,7 @@ fn ut_s19_15_evidence_boundary_and_comparison() {
         let mut w = Workspace::new();
         w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
             .unwrap();
-        w.generate_design("EMA").unwrap();
+        w.generate_design_from_req("EMA").unwrap();
         w.save_version("fn v1() {}").unwrap();
         // 无实验 → 拒绝生成验证结论
         assert!(w.make_report().is_err());
@@ -276,7 +276,7 @@ fn ut_s19_15_evidence_boundary_and_comparison() {
         assert!(same && diffs.is_empty(), "同版本同戳为同输入");
         w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
             .unwrap();
-        w.generate_design("EMA v2").unwrap();
+        w.generate_design_from_req("EMA v2").unwrap();
         w.save_version("fn v2() {}").unwrap();
         let e3 = w.run_experiment(Some("T3".into())).unwrap();
         let (same, diffs) = w.compare_experiments(e1, e3).unwrap();
@@ -293,7 +293,7 @@ fn ut_s20_14_plan_check_and_gated_export() {
         let mut w = Workspace::new();
         w.confirm_requirement("量价", "夏普>0", 30.0, 100.0)
             .unwrap();
-        w.generate_design("EMA").unwrap();
+        w.generate_design_from_req("EMA").unwrap();
         w.save_version("fn v1() {}").unwrap();
         let e1 = w.run_experiment(Some("T1".into())).unwrap();
         w.make_report().unwrap();
@@ -416,7 +416,7 @@ fn st_s17_16_ai_workspace_full_journey() {
         let mut w = Workspace::new();
         w.confirm_requirement("量价选股", "期末收益>0", 30.0, 1_000_000.0)
             .expect("确认需求");
-        w.generate_design("EMA 双均线").expect("生成设计");
+        w.generate_design_from_req("EMA 双均线").expect("生成设计");
         let v1 = w.save_version("fn strategy() {}").expect("保存版本");
         assert!(w.version_fresh(v1));
 
@@ -469,7 +469,7 @@ fn st_s17_16_ai_workspace_full_journey() {
         );
 
         // —— 新版本下取消旅程：长驻协调器取消直达（完成则 ALREADY_TERMINAL 容双态）——
-        w.generate_design("EMA v2").expect("生成设计 v2");
+        w.generate_design_from_req("EMA v2").expect("生成设计 v2");
         let v2 = w.save_version("fn strategy_v2() {}").expect("保存版本 v2");
         assert!(w.version_fresh(v2));
         let e2 = w.run_experiment(None).expect("实验 v2 冻结");

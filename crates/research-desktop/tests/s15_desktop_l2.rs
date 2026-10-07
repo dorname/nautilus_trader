@@ -123,6 +123,11 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
         assert_eq!(layout::TOPBAR_H, 65.0);
         assert_eq!(layout::FOOTER_H, 28.0);
         assert_eq!(layout::APP_GAP, 12.0);
+        {
+            let mut style = egui::Style::default();
+            theme::apply(&mut style);
+            assert_eq!(style.spacing.button_padding, egui::Vec2::new(12.0, 8.0));
+        }
         // 最小窗口下工作区无水平溢出
         assert!(layout::min_workspace_usable());
         // 工作区宽度计算（对话栏只在非专注模式扣减；负值钳 0）
@@ -227,5 +232,48 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
             "footer 不得含 HTML 原型语义"
         );
         assert!(theme::FOOTER_LEFT.contains("本地研究桌面"));
+        assert_eq!(
+            theme::ACCENT_SOFT,
+            Color32::from_rgba_premultiplied(2, 15, 7, 20)
+        );
+        assert_eq!(
+            theme::ACCENT_BORDER,
+            Color32::from_rgba_premultiplied(8, 47, 22, 61)
+        );
+        assert_eq!(theme::BRAND_INK, Color32::from_rgb(0x03, 0x13, 0x0A));
+    });
+}
+
+/// UT-S15-11：欢迎正文与对话产物卡文案对齐 core-05 createProject / tell()。
+#[test]
+fn ut_s15_11_welcome_and_artifact_copy() {
+    case("UT-S15-11", || {
+        use nautilus_research_desktop::nav::{WELCOME_CARD_DESC, WELCOME_CARD_TITLE};
+        use nautilus_research_desktop::workspace::{
+            DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, DRAFT_MIN_AMOUNT_WAN, DRAFT_REQ_TEXT, Project,
+            WELCOME_TEXT,
+        };
+        assert!(WELCOME_TEXT.contains('\n'));
+        assert!(WELCOME_TEXT.contains("你可以随时修改左侧产物"));
+        assert_eq!(WELCOME_CARD_TITLE, "先写下你的研究想法");
+        assert_eq!(WELCOME_CARD_DESC, "需求草稿 · 等待确认");
+        assert!(DRAFT_REQ_TEXT.contains("日线量价信号"));
+        assert!(DRAFT_ACCEPTANCE.contains("不使用未来数据"));
+        assert!((DRAFT_ALLOC_PCT - 100.0).abs() < 1e-9);
+        assert_eq!(DRAFT_MIN_AMOUNT_WAN, "1000");
+        use nautilus_research_desktop::workspace::{
+            DRAFT_CODE_FIXED, DRAFT_CODE_ORIGINAL, code_preset_variant,
+        };
+        assert_eq!(code_preset_variant(DRAFT_CODE_ORIGINAL), Some(1));
+        assert_eq!(code_preset_variant(DRAFT_CODE_FIXED), Some(2));
+        assert_eq!(code_preset_variant("other"), None);
+        assert!(DRAFT_CODE_ORIGINAL.contains("generate_targets"));
+        let p = Project::new(1, "测");
+        assert_eq!(p.messages[0].text, WELCOME_TEXT);
+        for r in ALL_ROUTES {
+            let (title, desc) = r.artifact_copy();
+            assert_eq!(title, r.title());
+            assert_eq!(desc, "点击查看产物");
+        }
     });
 }

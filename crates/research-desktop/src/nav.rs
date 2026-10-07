@@ -104,13 +104,18 @@ impl Route {
         WORKSPACE_ROUTES.contains(&self)
     }
 
+    /// 对话产物卡默认文案（原型 `tell()`：title 缺省为路由名，desc 缺省「点击查看产物」）。
+    pub fn artifact_copy(self) -> (&'static str, &'static str) {
+        (self.title(), "点击查看产物")
+    }
+
     /// 对话意图 → 跳转路由（None = 不跳转，如未知意图）。
     pub fn from_intent(intent: Intent) -> Option<Route> {
         match intent {
-            Intent::ConfirmRequirement => Some(Route::Requirements),
+            Intent::ConfirmRequirement | Intent::DraftRequirement => Some(Route::Requirements),
             Intent::NewProject | Intent::SwitchProject => Some(Route::Overview),
             Intent::GenerateDesign => Some(Route::Design),
-            Intent::SaveVersion => Some(Route::Develop),
+            Intent::GenerateCode | Intent::SaveVersion => Some(Route::Develop),
             Intent::RunExperiment | Intent::CompareExperiments => Some(Route::Experiments),
             Intent::MakeReport | Intent::ExplainBoundary => Some(Route::Validate),
             Intent::PlanGenerate | Intent::PlanCheck | Intent::PlanExport => Some(Route::Plan),
@@ -123,6 +128,11 @@ impl Route {
 pub fn default_route() -> Route {
     Route::Overview
 }
+
+/// 欢迎产物卡标题（原型 createProject 首条 `title`）。
+pub const WELCOME_CARD_TITLE: &str = "先写下你的研究想法";
+/// 欢迎产物卡说明（原型 createProject 首条 `desc`）。
+pub const WELCOME_CARD_DESC: &str = "需求草稿 · 等待确认";
 
 #[cfg(test)]
 mod tests {

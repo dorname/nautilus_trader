@@ -369,7 +369,7 @@ fn ut_s15_10_equity_points_and_banner() {
         let mut w = Workspace::new();
         w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0)
             .unwrap();
-        w.generate_design("EMA 双均线").unwrap();
+        w.generate_design_from_req("EMA 双均线").unwrap();
         w.save_version("fn v1() {}").unwrap();
         let e1 = w.run_experiment(Some("T1".into())).unwrap();
         let e2 = w.run_experiment(None).unwrap(); // 无任务证据
@@ -397,7 +397,7 @@ fn ut_s15_10_equity_points_and_banner() {
         // 输入不同 → 仅并列查看（新需求 → 新设计 → v3）
         w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
             .unwrap();
-        w.generate_design("EMA v2").unwrap();
+        w.generate_design_from_req("EMA v2").unwrap();
         w.save_version("fn v3() {}").unwrap();
         let e5 = w.run_experiment(Some("T5".into())).unwrap();
         let b = w.comparison_banner(e4, e5).expect("输入不同横幅");
@@ -614,6 +614,14 @@ fn st_s15_06_headless_page_geometry() {
                 );
             }
 
+            // 3b) 欢迎产物卡标题落在对话栏（原型 createProject title）
+            let (_, card_rect) = find("先写下你的研究想法");
+            assert!(
+                card_rect.min.x > canvas_right,
+                "{win_w}×{win_h}：产物卡应在对话栏区（x={}，画布右缘 {canvas_right}）",
+                card_rect.min.x
+            );
+
             // 4) 指标卡三段文字纵向堆叠（修复前在 horizontal 父级下横排同行）
             let (_, top_rect) = find("研究阶段");
             let (_, bottom_rect) = find("逐步构建研究证据");
@@ -630,6 +638,26 @@ fn st_s15_06_headless_page_geometry() {
                 bottom_rect.min.x
             );
 
+            // 4b) 指标卡不得伸入对话栏（错误预乘白底时第 2/3 卡会画进右栏）
+            let (_, ver_rect) = find("策略版本");
+            assert!(
+                ver_rect.max.x + 8.0 < canvas_right,
+                "{win_w}×{win_h}：「策略版本」应留在画布内（右端 {}，画布右缘 {canvas_right}）",
+                ver_rect.max.x
+            );
+            assert!(
+                find("需求文档").1.width() >= 40.0,
+                "{win_w}×{win_h}：指标卡主值「需求文档」应可见（白底上浅色字会被吃掉）"
+            );
+
+            // 4c) 「演示环境」在顶栏行，不与对话栏标题同排
+            let (_, demo_rect) = find("演示环境");
+            assert!(
+                demo_rect.center().y < body_top + 4.0,
+                "{win_w}×{win_h}：演示环境应在顶栏（cy={}，body 顶 {body_top}）",
+                demo_rect.center().y
+            );
+
             // 5) 无文本绘制越出窗口右缘（修复前对话内容溢出窗外，30px 字宽容差）
             for (t, rect) in &texts {
                 assert!(
@@ -641,5 +669,504 @@ fn st_s15_06_headless_page_geometry() {
                 );
             }
         }
+    });
+}
+
+/// ST-S15-07：需求文档页无头渲染对齐 core-05 `#requirements`（页头徽章、默认草稿、「下载文档」、万元字段）。
+#[test]
+fn st_s15_07_requirements_page_copy() {
+    case("ST-S15-07", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.session.navigate(Route::Requirements, 0.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("研究需求"), "应有页标题");
+        assert!(has("未确认草稿"), "未确认时应有页头徽章");
+        assert!(has("下载文档"), "应有原型「下载文档」按钮");
+        assert!(has("最低成交额（万元）"), "字段单位应对齐原型万元");
+        assert!(has("日线量价信号"), "默认草稿正文应对齐原型 reqText");
+        assert!(has("确认需求"), "应有确认主按钮");
+    });
+}
+
+/// ST-S15-08：策略开发页无头渲染对齐 core-05 `#develop`。
+#[test]
+fn st_s15_08_develop_page_copy() {
+    case("ST-S15-08", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.session.navigate(Route::Develop, 0.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("策略开发"));
+        assert!(has("未保存"));
+        assert!(has("策略示例.py"));
+        assert!(has("检查草稿"));
+        assert!(has("生成初始代码"));
+        assert!(has("资金约束修复"));
+        assert!(has("generate_targets"));
+        assert!(has("草稿待检查"));
+    });
+}
+
+/// ST-S15-09：空态回测 / 验证 / 计划 / 策略资产 / 调试 页头与 empty 对齐 core-05。
+#[test]
+fn st_s15_09_empty_workspace_routes_copy() {
+    case("ST-S15-09", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+
+        fn texts_on(route: Route) -> Vec<String> {
+            let ctx = egui::Context::default();
+            let mut app = ResearchApp::new(false);
+            app.session.navigate(route, 0.0);
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+                shapes = std::mem::take(&mut full.shapes);
+                full.drop_without_applying_deltas();
+            }
+            shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        }
+        let has = |ts: &[String], n: &str| ts.iter().any(|t| t.contains(n));
+
+        let exp = texts_on(Route::Experiments);
+        assert!(has(&exp, "回测实验"));
+        assert!(has(&exp, "准备你的第一次实验"));
+        assert!(has(&exp, "运行合成实验"));
+        assert!(
+            !has(&exp, "运行参数"),
+            "空态应对齐原型 empty，不展示协调器运行参数面板"
+        );
+
+        let val = texts_on(Route::Validate);
+        assert!(has(&val, "策略验证"));
+        assert!(has(&val, "生成验证报告"));
+        assert!(has(&val, "尚未形成验证结论"));
+
+        let plan = texts_on(Route::Plan);
+        assert!(has(&plan, "交易计划"));
+        assert!(has(&plan, "人工参考 · 演示"));
+        assert!(has(&plan, "参考数据快照"));
+        assert!(has(&plan, "计划交易日"));
+        assert!(has(&plan, "可用现金（元）"));
+        assert!(has(&plan, "SYN-A · 当前持仓"));
+        assert!(has(&plan, "生成计划草稿"));
+        assert!(!has(&plan, "手工持仓 JSON"));
+
+        let lib = texts_on(Route::Library);
+        assert!(has(&lib, "策略资产"));
+        assert!(has(&lib, "打开编辑器"));
+        assert!(has(&lib, "尚无策略版本"));
+
+        let dbg = texts_on(Route::Debug);
+        assert!(has(&dbg, "事件调试"));
+        assert!(has(&dbg, "沿着一笔信号与订单"));
+        assert!(has(&dbg, "还没有运行事件"));
+
+        let design = texts_on(Route::Design);
+        assert!(has(&design, "策略设计"));
+        assert!(has(&design, "先明确需求，再设计处理逻辑"));
+        assert!(has(&design, "等待确认需求"));
+        assert!(has(&exp, "↵ 发送"));
+    });
+}
+
+/// ST-S15-10：确认需求后策略设计「时序图」对齐 core-05 `sequenceSvg`。
+#[test]
+fn st_s15_10_design_sequence_diagram() {
+    case("ST-S15-10", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+        use nautilus_research_desktop::workspace::{
+            DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, DRAFT_REQ_TEXT,
+        };
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.workspace
+            .confirm_requirement(DRAFT_REQ_TEXT, DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, 1000.0)
+            .expect("确认需求");
+        app.session.navigate(Route::Design, 0.0);
+        app.design_tab_flow = false;
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 1600.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("2026-01-05 · 收盘形成信号"));
+        assert!(has("2026-01-06 · 开盘执行"));
+        assert!(has("① 可见行情"));
+        assert!(has("② 入选样本"));
+        assert!(has("③ 目标比例"));
+        assert!(has("④ 资金约束"));
+        assert!(has("⑤ 成交回报"));
+        assert!(has("读取数据"));
+        assert!(has("计算指标"));
+        assert!(has("定位示例源码第"));
+        assert!(has("设计参数"));
+        assert!(!has("现金与持仓按当日收盘估值"), "不应再使用键值列表凑时序");
+    });
+}
+
+/// ST-S15-11：交易计划输入区对齐 core-05 `#plan`（字段表单，非 JSON）。
+#[test]
+fn st_s15_11_plan_input_form() {
+    case("ST-S15-11", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.session.navigate(Route::Plan, 0.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 1600.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("参考数据快照"));
+        assert!(has("01-08 收盘 · 合成计划快照"));
+        assert!(has("计划交易日"));
+        assert!(has("可用现金（元）"));
+        assert!(has("SYN-A · 当前持仓"));
+        assert!(has("SYN-B · 当前持仓"));
+        assert!(has("SYN-C · 当前持仓"));
+        assert!(has("可卖数量"));
+        assert!(has("生成计划草稿"));
+        assert!(has("计划核对不是回测"));
+        assert!(!has("手工持仓 JSON"));
+    });
+}
+
+/// ST-S15-12：有实验后回测页指标与记录对齐 core-05 `#experiments` 填充态。
+#[test]
+fn st_s15_12_experiments_filled_metrics() {
+    case("ST-S15-12", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+        use nautilus_research_desktop::workspace::{
+            DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, DRAFT_REQ_TEXT,
+        };
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.workspace
+            .confirm_requirement(DRAFT_REQ_TEXT, DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, 1000.0)
+            .expect("确认需求");
+        app.workspace
+            .generate_design_from_req("合成样本处理逻辑")
+            .expect("保存设计");
+        app.workspace
+            .save_version("fn strategy() {}")
+            .expect("保存版本");
+        let eid = app
+            .workspace
+            .run_experiment(Some("T-demo".into()))
+            .expect("运行实验");
+        app.workspace
+            .record_experiment(eid, Some("0.0625".into()));
+        app.session.navigate(Route::Experiments, 0.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 1600.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("E1 期末净值"));
+        assert!(has("初始 10,000.00 元"));
+        assert!(has("累计收益"));
+        assert!(has("仅合成样本 · 不年化"));
+        assert!(has("最大回撤"));
+        assert!(has("三个估值点"));
+        assert!(has("净值比较"));
+        assert!(has("实验 / 版本"));
+        assert!(has("首个事件分歧"));
+        assert!(has("合成数据 · 非真实回测"));
+        assert!(has("生成当前版本验证报告"));
+        assert!(!has("最近收益"));
+    });
+}
+
+/// ST-S15-13：有实验后事件调试页对齐 core-05 `#debug` 填充态信息架构。
+#[test]
+fn st_s15_13_debug_filled_playback() {
+    case("ST-S15-13", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+        use nautilus_research_desktop::workspace::{
+            DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, DRAFT_REQ_TEXT,
+        };
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.workspace
+            .confirm_requirement(DRAFT_REQ_TEXT, DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, 1000.0)
+            .expect("确认需求");
+        app.workspace
+            .generate_design_from_req("合成样本处理逻辑")
+            .expect("保存设计");
+        app.workspace
+            .save_version("fn strategy() {}")
+            .expect("保存版本");
+        let eid = app
+            .workspace
+            .run_experiment(Some("T-demo".into()))
+            .expect("运行实验");
+        app.workspace
+            .record_experiment(eid, Some("0.0625".into()));
+        app.session.navigate(Route::Debug, 0.0);
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 1600.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("回放冻结实验"));
+        assert!(has("事件回放"));
+        assert!(has("全部事件"));
+        assert!(has("回到起点"));
+        assert!(has("单步 →"));
+        assert!(has("节点 / 标的"));
+        assert!(has("播放已记录的事件"));
+        assert!(has("事件检查器"));
+        assert!(has("当前筛选下没有事件"));
+        assert!(has("这次运行告诉我们什么"));
+        assert!(has("查看修复差异"));
+        assert!(!has("当前版本与运行"));
+        assert!(!has("逐事件回放属于后续生产能力"));
+    });
+}
+
+/// ST-S15-14：预置示例运行后事件调试页有逐步事件与回放控件（对齐 core-05 `#debug`）。
+#[test]
+fn st_s15_14_debug_demo_events() {
+    case("ST-S15-14", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+        use nautilus_research_desktop::workspace::{
+            DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, DRAFT_CODE_ORIGINAL, DRAFT_DESIGN_NOTE,
+            DRAFT_REQ_TEXT,
+        };
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        app.workspace
+            .confirm_requirement(DRAFT_REQ_TEXT, DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, 1000.0)
+            .expect("确认需求");
+        app.workspace
+            .generate_design_from_req(DRAFT_DESIGN_NOTE)
+            .expect("保存设计");
+        app.workspace
+            .save_version(DRAFT_CODE_ORIGINAL)
+            .expect("保存原始示例");
+        app.workspace
+            .run_experiment(None)
+            .expect("运行合成实验");
+        app.session.navigate(Route::Debug, 0.0);
+        // 筛选成交节点，确保拒绝事件进入可见区与检查器
+        app.debug_filter = "fill".into();
+        app.debug_event_index = 0;
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1440.0, 1600.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+        let texts: Vec<String> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        let has = |n: &str| texts.iter().any(|t| t.contains(n));
+        assert!(has("事件回放"));
+        assert!(has("订单拒绝"));
+        assert!(has("资金不足"));
+        assert!(has("事件检查器"));
+        assert!(has("定位冻结源码"));
+        assert!(has("输入"));
+        assert!(has("输出"));
+        assert!(!has("当前筛选下没有事件"));
+    });
+}
+
+/// ST-S15-15：数据中心 / 股票池演示层文案对齐 core-05 `#data` / `#pool`。
+#[test]
+fn st_s15_15_data_pool_demo_copy() {
+    case("ST-S15-15", || {
+        use nautilus_research_desktop::app::ResearchApp;
+        use nautilus_research_desktop::nav::Route;
+
+        fn texts_on(route: Route) -> Vec<String> {
+            let ctx = egui::Context::default();
+            let mut app = ResearchApp::new(false);
+            app.session.navigate(route, 0.0);
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+                shapes = std::mem::take(&mut full.shapes);
+                full.drop_without_applying_deltas();
+            }
+            shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect()
+        }
+        let has = |ts: &[String], n: &str| ts.iter().any(|t| t.contains(n));
+
+        let data = texts_on(Route::Data);
+        assert!(has(&data, "数据中心"));
+        assert!(has(&data, "模拟更新快照"));
+        assert!(has(&data, "当前合成数据快照"));
+        assert!(has(&data, "价格与信号样本"));
+        assert!(has(&data, "快照编号"));
+        assert!(has(&data, "SYN-202601-r1"));
+        assert!(has(&data, "信号收盘"));
+
+        let pool = texts_on(Route::Pool);
+        assert!(has(&pool, "股票池"));
+        assert!(has(&pool, "保存股票池规则"));
+        assert!(has(&pool, "候选样本"));
+        assert!(has(&pool, "满足流动性"));
+        assert!(has(&pool, "搜索样本代码或名称"));
+        assert!(has(&pool, "U1"));
     });
 }

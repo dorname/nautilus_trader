@@ -11,13 +11,17 @@
 //! 引擎对象（Rc/RefCell，非 Send）不跨线程；按需重绘不打爆 CPU
 //! （静默零帧，仅活跃任务以 POLL_INTERVAL 轮询）。
 
+pub mod agent_bridge;
 pub mod ai;
 pub mod app;
 pub mod bridge;
+pub mod demo_sim;
 pub mod icons;
 pub mod layout;
 pub mod nav;
+pub mod oup;
 pub mod pipeline;
 pub mod session;
+pub mod swarm_bridge;
 pub mod theme;
 pub mod workspace;

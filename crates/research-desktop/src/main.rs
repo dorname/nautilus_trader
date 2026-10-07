@@ -18,6 +18,8 @@ fn main() {
         native,
         Box::new(|cc| {
             theme::setup_fonts(&cc.egui_ctx);
+            // 显式保留 Ctrl+/−/0 整窗缩放；滚轮缩放由 render_root 按修饰键门禁处理
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = true);
             let mut app = ResearchApp::new(false);
             // 工作区：环境变量 RESEARCH_WORKSPACE 优先，缺省 ./research-workspace
             let ws = std::env::var_os("RESEARCH_WORKSPACE")

@@ -1,0 +1,10 @@
+{
+  "title": "NautilusTrader Code Tour — 源码探索器",
+  "lang": "zh-CN",
+  "brand": "NAUTILUS",
+  "accent": "Code Tour",
+  "subtitle": "a-stock · offline",
+  "searchPlaceholder": "搜索 crate / 文件 / symbol…",
+  "detailHeading": "详情",
+  "detailEmpty": "点击图中的节点，查看职责、文件、符号与证据。"
+}

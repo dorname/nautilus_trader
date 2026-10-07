@@ -23,7 +23,9 @@ egui = { workspace = true }
 egui_plot = { workspace = true }
 nautilus-research-domain = { path = "../research-domain" }
 nautilus-research-worker = { path = "../research-worker" }
+serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 nautilus-research-testkit = { path = "../research-testkit" }

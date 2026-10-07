@@ -37,6 +37,8 @@ pub const FIRST_FRAME_MIN_H: f32 = 200.0;
 pub const SIDEBAR_W_SLIM: f32 = 65.0;
 /// 对话栏宽度（图标档 ≤900，原型 @900 .body 280px）。
 pub const CHAT_W_SLIM: f32 = 280.0;
+/// 专注模式画布最大内容宽（原型 `.focus .canvas { max-width:1120px }`）。
+pub const FOCUS_CANVAS_MAX_W: f32 = 1120.0;
 
 /// 布局档位：由窗口宽度决定侧栏/对话栏宽度（纯函数，可测）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +101,13 @@ pub fn frame_ready(w: f32, h: f32) -> bool {
     w >= FIRST_FRAME_MIN_W && h >= FIRST_FRAME_MIN_H
 }
 
+/// 按窗口尺寸计算字号倍率（1440×900 = 1.0；放大窗口略增、缩小略减）。
+pub fn type_scale(w: f32, h: f32) -> f32 {
+    let by_w = w / 1440.0;
+    let by_h = h / 900.0;
+    (0.55 * by_w + 0.45 * by_h).clamp(0.90, 1.28)
+}
+
 /// 根三列切分（desktop-root-layout）：sidebar 固定宽 + 间隙 + main 剩余。
 /// 返回 (sidebar_w, main_w)；各段非负、和 + APP_GAP ≤ outer_w。
 /// 侧栏宽按档位取 212/178（原型 .app grid-template-columns）。
@@ -127,6 +136,9 @@ mod tests {
         assert_eq!(plan_for_width(1201.0), LayoutPlan::Comfortable);
         assert_eq!(plan_for_width(1200.0), LayoutPlan::Compact);
         assert_eq!(plan_for_width(1100.0), LayoutPlan::Compact);
+        assert_eq!(plan_for_width(900.0), LayoutPlan::Slim);
+        assert_eq!(sidebar_w(LayoutPlan::Slim), 65.0);
+        assert_eq!(chat_w(LayoutPlan::Slim), 280.0);
         // 宽度常量与原型一致
         assert_eq!(SIDEBAR_W, 212.0);
         assert_eq!(SIDEBAR_W_NARROW, 178.0);
@@ -160,5 +172,8 @@ mod tests {
         assert_eq!(workspace_width(100.0, LayoutPlan::Comfortable, false), 0.0);
         // 最小窗口下工作区可用（无水平溢出）
         assert!(min_workspace_usable());
+        assert!((type_scale(1440.0, 900.0) - 1.0).abs() < 1e-4);
+        assert!(type_scale(1100.0, 720.0) < 1.0);
+        assert!(type_scale(1920.0, 1080.0) > 1.0);
     }
 }

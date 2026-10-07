@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>NautilusTrader Code Tour — 源码探索器</title>
+<style>
+
+:root{--bg:#0e1217;--panel:#151b22;--elev:#1b232d;--hover:#243040;--line:#2c3a4a;--line2:#3d5166;--text:#e7eef6;--muted:#8fa3b8;--dim:#6b7f93;--protocol:#c9a227;--runtime:#3db8a0;--storage:#6aa9d8;--extension:#c47a5a;--host:#8b9cff;--external:#9aa7b5;--mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;--sans:"Source Han Sans SC","Noto Sans SC","Segoe UI",sans-serif}
+*{box-sizing:border-box}html,body{height:100%;width:100%;max-width:100vw;margin:0;overflow:hidden}body{background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);display:grid;grid-template-rows:48px 1fr}
+button,input{font:inherit;color:inherit}code,.mono{font-family:var(--mono);font-size:.9em}
+.topbar{display:flex;align-items:center;gap:14px;width:100vw;max-width:100vw;min-width:0;padding:0 14px;border-bottom:1px solid var(--line);background:rgba(14,18,23,.96)}
+.brand{min-width:0;flex:0 1 auto}.brand h1{margin:0;font-size:15px;white-space:nowrap}.brand em{font-style:normal;color:var(--protocol)}.brand small{color:var(--dim);font-size:11px;margin-left:8px}
+.tabs{display:flex;gap:4px;flex:1 1 auto;flex-wrap:nowrap;min-width:0;overflow-x:auto;scrollbar-width:none}.tabs::-webkit-scrollbar{display:none}.tab{background:0;border:1px solid transparent;color:var(--muted);padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.tab:hover{color:var(--text);background:var(--elev)}.tab.active{color:var(--text);border-color:var(--line2);background:var(--elev)}
+.search-wrap{position:relative;width:min(300px,28vw)}.search-wrap input{width:100%;background:var(--elev);border:1px solid var(--line);border-radius:6px;padding:7px 10px;outline:0}
+.search-wrap input:focus{border-color:var(--runtime)}.search-results{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;max-height:300px;overflow:auto;z-index:40}
+.search-results.open{display:block}.search-results button{display:block;width:100%;text-align:left;background:0;border:0;border-bottom:1px solid var(--line);padding:8px 10px;cursor:pointer}
+.search-results button:hover{background:var(--hover)}.search-results .k{color:var(--dim);font-size:11px}
+.shell{display:grid;grid-template-columns:1fr 340px;width:100vw;max-width:100vw;min-width:0;min-height:0}
+.main{min-width:0;overflow:auto;padding:16px 18px 40px;background:radial-gradient(1000px 420px at 8% -8%,rgba(61,184,160,.06),transparent 50%),var(--bg)}
+.side{border-left:1px solid var(--line);background:var(--panel);overflow:auto;min-height:0}
+.side-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--line)}
+.side-head h2{margin:0;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.side-body{padding:14px}.view-title{margin:0 0 4px;font-size:22px}.view-lede{margin:0 0 14px;color:var(--muted);max-width:72ch}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 12px}.legend span{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:12px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.dot.protocol{background:var(--protocol)}.dot.runtime{background:var(--runtime)}.dot.storage{background:var(--storage)}.dot.extension{background:var(--extension)}.dot.host{background:var(--host)}
+.canvas{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;min-height:420px}
+.canvas svg{display:block;width:100%;max-width:none;height:auto}
+.graph-toolbar{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin:-2px 0 8px}
+.graph-modes,.graph-controls{display:flex;gap:4px;padding:3px;background:var(--panel);border:1px solid var(--line);border-radius:7px}
+.graph-control{border:0;background:transparent;color:var(--muted);padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px}
+.graph-control:hover{background:var(--hover);color:var(--text)}.graph-control.active{background:rgba(61,184,160,.14);color:var(--runtime)}
+.graph-control.zoom-value{min-width:48px;color:var(--dim);font-family:var(--mono);font-size:10px}
+.graph-viewport{min-height:0}.graph-stage{min-width:100%;transform-origin:top left;transition:width .16s ease}.graph-svg{min-width:720px}
+.arch-lane rect{fill:rgba(255,255,255,.018);stroke:var(--line);stroke-width:1}
+.arch-lane-protocol rect{fill:rgba(201,162,39,.035)}.arch-lane-runtime rect{fill:rgba(61,184,160,.035)}
+.arch-lane-storage rect{fill:rgba(106,169,216,.03)}.arch-lane-extension rect{fill:rgba(196,122,90,.03)}
+.arch-lane-host rect{fill:rgba(139,156,255,.03)}
+.lane-label{fill:var(--dim);font:600 9px var(--mono);letter-spacing:.12em}
+.node-hit{cursor:pointer}.node-hit:hover .node-box{filter:brightness(1.18) url(#nodeShadow)}.node-hit.selected .node-box{stroke:#e8f0f8;stroke-width:2.2}.node-hit.dim{opacity:.16}
+.node-hit.planned .node-box{stroke-dasharray:5 4;opacity:.72}
+.edge{stroke:var(--line2);stroke-width:1.35;fill:none;marker-end:url(#arrow);transition:opacity .15s,stroke .15s,stroke-width .15s}
+.edge-main{stroke:var(--protocol);stroke-width:2.3}.edge-support{stroke:var(--storage);stroke-width:1.25;opacity:.72}
+.edge-orchestration{stroke:var(--extension);stroke-width:1.7}.edge-planned{stroke:var(--dim);stroke-dasharray:5 5;opacity:.6}
+.dep-edge{stroke:var(--line2);opacity:.48}.dep-edge.edge-dependency{stroke:var(--runtime);stroke-width:2.4;opacity:1}
+.dep-edge.edge-dependent{stroke:var(--protocol);stroke-width:2.4;opacity:1}
+.edge.hl{stroke:var(--runtime);stroke-width:2.4;opacity:1}.edge.dim{opacity:.08}
+.edge-legend{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 8px;color:var(--dim);font-size:11px}
+.edge-legend span{display:inline-flex;align-items:center;gap:6px}.line-sample{display:inline-block;width:24px;height:0;border-top:2px solid var(--line2)}
+.line-sample.line-main{border-color:var(--protocol)}.line-sample.line-support{border-color:var(--storage)}.line-sample.line-orchestration{border-color:var(--extension)}
+.line-sample.line-planned{border-color:var(--dim);border-top-style:dashed}.line-sample.line-dependency{border-color:var(--runtime)}
+.line-sample.line-dependent{border-color:var(--protocol)}.line-sample.line-neutral{border-color:var(--line2)}
+.graph-hint{margin-top:9px;font-size:12px}
+.flow-bar{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.flow-chip{background:var(--elev);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;color:var(--muted)}.flow-chip:hover{color:var(--text)}.flow-chip.active{color:var(--text);border-color:var(--runtime);background:rgba(61,184,160,.1)}
+.explorer{display:grid;grid-template-columns:260px 1fr;gap:12px}.tree,.mod-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;max-height:70vh}
+.tree-item{display:block;width:100%;text-align:left;background:0;border:0;border-radius:5px;padding:6px 8px;cursor:pointer;color:var(--muted)}.tree-item:hover,.tree-item.active{background:rgba(61,184,160,.12);color:var(--text)}.tree-item.crate{font-weight:600;color:var(--text);margin-top:6px}.tree-item.mod{padding-left:18px;font-family:var(--mono);font-size:12px}
+.kv{margin:12px 0}.kv .label{color:var(--dim);font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.chip-row{display:flex;flex-wrap:wrap;gap:5px}.chip,.file-link{background:var(--elev);border:1px solid var(--line);border-radius:5px;padding:3px 7px;font-family:var(--mono);font-size:11px;cursor:pointer}.chip:hover,.file-link:hover{border-color:var(--runtime);color:var(--runtime)}.file-link{color:var(--storage);display:inline-block;margin:2px 4px 2px 0}
+.path-steps{max-width:840px}.path-step{display:grid;grid-template-columns:56px 1fr;gap:12px;cursor:pointer;padding:8px 0}
+.path-rail{display:flex;flex-direction:column;align-items:center}.path-num{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line2);background:var(--elev);font-family:var(--mono);font-size:12px}
+.path-step.active .path-num{border-color:var(--runtime);color:var(--runtime)}.path-line{width:1px;flex:1;background:var(--line);min-height:20px}
+.path-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}.path-step.active .path-card{border-color:rgba(61,184,160,.45)}.path-card h3{margin:0 0 4px;font-size:15px}.path-card .why{color:var(--muted);margin:0 0 8px}
+.path-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.path-box{background:var(--elev);border-radius:8px;padding:8px 10px}.path-box h4{margin:0 0 4px;font-size:11px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}.path-box ul{margin:0;padding-left:16px;color:var(--muted);font-size:12.5px}
+.badge{display:inline-block;font-size:11px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}.badge.verified{color:var(--runtime);border-color:rgba(61,184,160,.4)}.badge.partial{color:var(--protocol);border-color:rgba(201,162,39,.4)}.badge.unverified{color:var(--extension);border-color:rgba(196,122,90,.4)}
+.detail h3{margin:0 0 6px;font-size:16px}.detail .role{color:var(--muted);margin:0 0 12px}.detail section{margin:14px 0}.detail section h4{margin:0 0 6px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+.evidence{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:11px;color:var(--muted);white-space:pre-wrap}
+.btn{background:var(--elev);border:1px solid var(--line2);border-radius:6px;padding:6px 10px;cursor:pointer}.btn.ghost{border-color:var(--line);color:var(--muted)}.btn:hover{border-color:var(--runtime)}.detail-empty{color:var(--dim);padding:12px 4px}
+.actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.shell{grid-template-columns:minmax(0,1fr) minmax(280px,32vw)}
+.side{min-width:260px}
+@media(max-width:860px){
+  .shell{grid-template-columns:1fr;grid-template-rows:1fr auto}
+  .side{border-left:0;border-top:1px solid var(--line);max-height:32vh}
+  .main{min-height:0}
+  .explorer{grid-template-columns:1fr}
+  .path-grid{grid-template-columns:1fr}
+  .tabs{gap:2px}
+  .tab{padding:5px 7px;font-size:12px}
+  .brand small{display:none}
+  .search-wrap{width:160px;min-width:120px}
+  .graph-toolbar{align-items:flex-end;flex-direction:column}
+  .graph-svg{min-width:820px}
+}
+.canvas{min-height:360px}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><h1>NAUTILUS <em>Code Tour</em><small>a-stock · offline</small></h1></div>
+  <nav class="tabs" id="tabs"></nav>
+  <div class="search-wrap">
+    <input id="search" type="search" placeholder="搜索 crate / 文件 / symbol…" autocomplete="off"/>
+    <div class="search-results" id="searchResults"></div>
+  </div>
+</header>
+<div class="shell">
+  <main class="main" id="main"></main>
+  <aside class="side">
+    <div class="side-head"><h2>详情</h2><button class="btn ghost" id="btnBack" type="button">返回上一级</button></div>
+    <div class="side-body" id="detail"><div class="detail-empty">点击图中的节点，查看职责、文件、符号与证据。</div></div>
+  </aside>
+</div>
+<script>
+
+const TOUR = {"meta":{"project":"nautilus_trader","branch":"a-stock","commit":"f10872f281","analysisSession":null,"sources":["Cargo.toml workspace + crate manifests","logos/resources/prd/3-technical-plan/1-architecture/*","README.md","source symbols (kernel/backtest/risk/trading/research)"],"note":"GRASP MCP/全库报告在本环境未稳定返回 session；关系以 Cargo 直接依赖与源码符号为准。无法确认的调用跳转标记 partial/unverified。"},"overviewNodes":[{"id":"venue","label":"Venue / 行情源","layer":"external","responsibility":"交易所与数据供应商：REST/WS 行情与订单回报。","crates":[],"keyFiles":["crates/adapters/binance/README.md"],"keySymbols":[],"dependsOn":[],"usedBy":["adapters","network"],"readingPriority":0,"verification":"verified","evidence":"README Integrations 表 + crates/adapters/*"},{"id":"catalog","label":"历史 Catalog","layer":"external","responsibility":"本地/对象存储上的历史行情（Parquet catalog），供回测注入。","crates":["nautilus-persistence"],"keyFiles":["crates/persistence/src/lib.rs"],"keySymbols":[],"dependsOn":[],"usedBy":["data-engine","backtest"],"readingPriority":3,"verification":"partial","evidence":"architecture overview FR-014; persistence crate; backtest optional persistence feature"},{"id":"host-python","label":"Python 控制面","layer":"host","responsibility":"策略编排与配置入口；经 PyO3 调用 Rust 内核。","crates":["nautilus-pyo3"],"keyFiles":["crates/pyo3/src/lib.rs","python/README.md"],"keySymbols":[],"dependsOn":["kernel","backtest","live"],"usedBy":[],"readingPriority":2,"verification":"verified","evidence":"README: Python control plane; crates/pyo3 depends on backtest/live/system"},{"id":"host-research","label":"研序 Desktop/CLI","layer":"host","responsibility":"A股研究桌面与 CLI：协调器 + worker，不直连交易执行通道。","crates":["nautilus-research-desktop","nautilus-research-cli","nautilus-research-domain"],"keyFiles":["crates/research-desktop/src/main.rs","crates/research-domain/src/coordinator.rs"],"keySymbols":["ResearchApp","Coordinator"],"dependsOn":["research-worker","backtest"],"usedBy":[],"readingPriority":2,"verification":"verified","evidence":"core-05-research-architecture.md; ResearchApp + Coordinator symbols"},{"id":"research-worker","label":"Research Worker","layer":"host","responsibility":"隔离进程跑研究任务：读快照 → 调 BacktestEngine → 写产物。","crates":["nautilus-research-worker"],"keyFiles":["crates/research-worker/src/adapter.rs"],"keySymbols":["run_task","execute"],"dependsOn":["backtest","trader"],"usedBy":["host-research"],"readingPriority":4,"verification":"verified","evidence":"adapter.rs execute() 注释：读配置→装配→引擎→写产物"},{"id":"kernel","label":"NautilusKernel","layer":"runtime","responsibility":"单节点运行时边界：装配六组件引擎与 Cache。","crates":["nautilus-system"],"keyFiles":["crates/system/src/kernel.rs","crates/system/src/builder.rs"],"keySymbols":["NautilusKernel","NautilusKernelBuilder::build"],"dependsOn":["data-engine","risk-engine","exec-engine","portfolio","trader","msgbus","cache"],"usedBy":["backtest","live","host-python"],"readingPriority":1,"verification":"verified","evidence":"kernel.rs NautilusKernel fields; logos/01-architecture-overview.md 六组件图"},{"id":"msgbus","label":"MessageBus","layer":"protocol","responsibility":"进程内发布/订阅、请求/响应与点对点命令路由。","crates":["nautilus-common"],"keyFiles":["crates/common/src/msgbus/core.rs","crates/common/src/msgbus/api.rs"],"keySymbols":["MessageBus","publish_order_event","send_trading_command"],"dependsOn":[],"usedBy":["data-engine","risk-engine","exec-engine","portfolio","trader","kernel"],"readingPriority":1,"verification":"verified","evidence":"MessageBus struct + typed publish/send APIs"},{"id":"cache","label":"Cache","layer":"storage","responsibility":"订单/仓位/账户/工具等运行时状态存储，可外接 backing。","crates":["nautilus-common"],"keyFiles":["crates/common/src/cache/mod.rs"],"keySymbols":["Cache"],"dependsOn":[],"usedBy":["kernel","risk-engine","exec-engine","portfolio","data-engine"],"readingPriority":1,"verification":"verified","evidence":"Cache struct; NautilusKernel.cache field"},{"id":"data-engine","label":"DataEngine","layer":"runtime","responsibility":"行情订阅、历史请求与数据发布到 MessageBus。","crates":["nautilus-data"],"keyFiles":["crates/data/src/engine/mod.rs"],"keySymbols":["DataEngine","process_data","execute"],"dependsOn":["msgbus","cache","adapters"],"usedBy":["kernel","trader","backtest"],"readingPriority":2,"verification":"verified","evidence":"DataEngine::process_data / execute in engine/mod.rs"},{"id":"trader","label":"Trader / Strategy","layer":"runtime","responsibility":"Actor/Strategy 容器：响应行情并发出 TradingCommand。","crates":["nautilus-trading","nautilus-system"],"keyFiles":["crates/system/src/trader.rs","crates/trading/src/strategy/mod.rs"],"keySymbols":["Trader","submit_order_native"],"dependsOn":["msgbus","cache","data-engine","risk-engine"],"usedBy":["kernel","backtest","live"],"readingPriority":2,"verification":"verified","evidence":"Trader in system; submit_order_native → send_risk_command"},{"id":"risk-engine","label":"RiskEngine","layer":"runtime","responsibility":"交易命令预检（额度/价格/频率），通过后转发执行引擎。","crates":["nautilus-risk"],"keyFiles":["crates/risk/src/engine/mod.rs"],"keySymbols":["RiskEngine::execute","register_msgbus_handlers"],"dependsOn":["cache","portfolio","msgbus","exec-engine"],"usedBy":["trader","kernel"],"readingPriority":2,"verification":"verified","evidence":"RiskEngine::execute; register to risk_engine_queue_execute then exec_engine_queue_execute"},{"id":"exec-engine","label":"ExecutionEngine","layer":"runtime","responsibility":"命令下发 venue/仿真客户端；执行事件写 Cache 并上总线。","crates":["nautilus-execution"],"keyFiles":["crates/execution/src/engine/mod.rs"],"keySymbols":["ExecutionEngine","register_msgbus_handlers"],"dependsOn":["msgbus","cache","adapters"],"usedBy":["risk-engine","kernel","backtest","live"],"readingPriority":2,"verification":"verified","evidence":"ExecutionEngine clients/routing_map; msgbus handlers"},{"id":"portfolio","label":"Portfolio","layer":"runtime","responsibility":"增量核算敞口与盈亏，供风控与策略读取。","crates":["nautilus-portfolio"],"keyFiles":["crates/portfolio/src/portfolio.rs"],"keySymbols":["Portfolio"],"dependsOn":["msgbus","cache"],"usedBy":["risk-engine","kernel","trader"],"readingPriority":3,"verification":"verified","evidence":"Portfolio struct; kernel.portfolio; architecture overview"},{"id":"backtest","label":"BacktestEngine","layer":"runtime","responsibility":"确定性仿真环境：时钟推进 + SimulatedExchange。","crates":["nautilus-backtest"],"keyFiles":["crates/backtest/src/engine.rs","crates/backtest/src/exchange.rs"],"keySymbols":["BacktestEngine::run","SimulatedExchange"],"dependsOn":["kernel","data-engine","exec-engine","catalog"],"usedBy":["host-python","research-worker"],"readingPriority":2,"verification":"verified","evidence":"BacktestEngine::run; SimulatedExchange; logos/03-runtime-dataflow.md"},{"id":"live","label":"LiveNode","layer":"runtime","responsibility":"实盘节点：真实时钟、适配器连接与 run 循环。","crates":["nautilus-live"],"keyFiles":["crates/live/src/node/mod.rs"],"keySymbols":["LiveNode::run","LiveNodeBuilder::build"],"dependsOn":["kernel","network","adapters","exec-engine"],"usedBy":["host-python"],"readingPriority":3,"verification":"verified","evidence":"LiveNode::run async; depends on network/execution"},{"id":"adapters","label":"Venue Adapters","layer":"extension","responsibility":"把各 venue API 翻译为统一 DataClient/ExecutionClient 端口。","crates":[],"keyFiles":["crates/adapters/binance/src/lib.rs","crates/adapters/sandbox/src/lib.rs"],"keySymbols":[],"dependsOn":["network","msgbus"],"usedBy":["data-engine","exec-engine","live"],"readingPriority":5,"verification":"partial","evidence":"18 adapters in Cargo workspace members; architecture D-03 端口适配器"},{"id":"network","label":"Network","layer":"extension","responsibility":"异步 HTTP/WebSocket 传输层。","crates":["nautilus-network"],"keyFiles":["crates/network/src/lib.rs"],"keySymbols":[],"dependsOn":["venue"],"usedBy":["live","adapters"],"readingPriority":6,"verification":"verified","evidence":"nautilus-live Cargo.toml depends on nautilus-network"},{"id":"event-store","label":"Event Store","layer":"storage","responsibility":"领域事件持久化与崩溃恢复重放。","crates":["nautilus-event-store"],"keyFiles":["crates/event_store/src/lib.rs","crates/system/src/event_store.rs"],"keySymbols":["KernelEventStore"],"dependsOn":[],"usedBy":["kernel"],"readingPriority":7,"verification":"partial","evidence":"NautilusKernel.event_store Option; event_store crate; crash-only docs"}],"overviewEdges":[["venue","adapters"],["venue","network"],["catalog","data-engine"],["catalog","backtest"],["host-python","kernel"],["host-python","backtest"],["host-python","live"],["host-research","research-worker"],["research-worker","backtest"],["kernel","data-engine"],["kernel","risk-engine"],["kernel","exec-engine"],["kernel","portfolio"],["kernel","trader"],["kernel","msgbus"],["kernel","cache"],["data-engine","msgbus"],["trader","msgbus"],["trader","risk-engine"],["risk-engine","exec-engine"],["exec-engine","adapters"],["exec-engine","msgbus"],["portfolio","msgbus"],["backtest","kernel"],["live","kernel"],["live","network"],["adapters","network"],["event-store","kernel"]],"modules":[{"id":"nautilus-core","role":"protocol","responsibility":"基础原语：时间、UUID、数值与跨 crate 共享工具类型。","deps":[],"keyFiles":["crates/core/src/lib.rs"],"keySymbols":[],"entryPoints":["crates/core/src/lib.rs"],"modules":["time","uuid","math"],"evidence":"Cargo.toml workspace member crates/core; name=nautilus-core","dependents":["nautilus-analysis","nautilus-backtest","nautilus-common","nautilus-data","nautilus-event-store","nautilus-execution","nautilus-live","nautilus-model","nautilus-network","nautilus-persistence","nautilus-portfolio","nautilus-pyo3","nautilus-risk","nautilus-serialization","nautilus-system","nautilus-trading"]},{"id":"nautilus-model","role":"protocol","responsibility":"领域模型：订单、仓位、工具、行情与领域事件类型。","deps":["nautilus-core"],"keyFiles":["crates/model/src/lib.rs","crates/model/src/orders/mod.rs","crates/model/src/events/mod.rs"],"keySymbols":["OrderAny","OrderEventAny","PositionEvent"],"entryPoints":["crates/model/src/lib.rs"],"modules":["orders","events","data","instruments","position"],"evidence":"crates/model/Cargo.toml depends on nautilus-core","dependents":["nautilus-analysis","nautilus-backtest","nautilus-common","nautilus-data","nautilus-event-store","nautilus-execution","nautilus-live","nautilus-persistence","nautilus-portfolio","nautilus-pyo3","nautilus-research-worker","nautilus-risk","nautilus-serialization","nautilus-system","nautilus-trading"]},{"id":"nautilus-serialization","role":"storage","responsibility":"领域对象序列化（msgpack/arrow 等），支撑持久化与跨语言边界。","deps":["nautilus-core","nautilus-model"],"keyFiles":["crates/serialization/src/lib.rs"],"keySymbols":[],"entryPoints":["crates/serialization/src/lib.rs"],"modules":["msgpack","arrow"],"evidence":"crates/serialization/Cargo.toml depends on nautilus-core, nautilus-model","dependents":["nautilus-persistence"]},{"id":"nautilus-common","role":"runtime","responsibility":"进程内 MessageBus、Cache、时钟与组件生命周期。","deps":["nautilus-core","nautilus-model"],"keyFiles":["crates/common/src/msgbus/core.rs","crates/common/src/msgbus/api.rs","crates/common/src/cache/mod.rs"],"keySymbols":["MessageBus","Cache","publish_order_event","send_trading_command"],"entryPoints":["crates/common/src/lib.rs"],"modules":["msgbus","cache","clock","actor"],"evidence":"crates/common/Cargo.toml depends on nautilus-core, nautilus-model; MessageBus/Cache symbols in source","dependents":["nautilus-backtest","nautilus-data","nautilus-event-store","nautilus-execution","nautilus-live","nautilus-persistence","nautilus-portfolio","nautilus-pyo3","nautilus-research-worker","nautilus-risk","nautilus-system","nautilus-trading"]},{"id":"nautilus-data","role":"runtime","responsibility":"DataEngine：订阅/请求/发布行情与自定义数据。","deps":["nautilus-common","nautilus-core","nautilus-model"],"keyFiles":["crates/data/src/engine/mod.rs"],"keySymbols":["DataEngine","DataEngine::process_data","DataEngine::execute"],"entryPoints":["crates/data/src/lib.rs"],"modules":["engine","client","aggregation"],"evidence":"crates/data/Cargo.toml + DataEngine in crates/data/src/engine/mod.rs","dependents":["nautilus-backtest","nautilus-pyo3","nautilus-system"]},{"id":"nautilus-execution","role":"runtime","responsibility":"ExecutionEngine：路由交易命令到 ExecutionClient，回写执行事件。","deps":["nautilus-common","nautilus-core","nautilus-model"],"keyFiles":["crates/execution/src/engine/mod.rs"],"keySymbols":["ExecutionEngine","ExecutionEngine::register_msgbus_handlers"],"entryPoints":["crates/execution/src/lib.rs"],"modules":["engine","client","emulator"],"evidence":"crates/execution/Cargo.toml + ExecutionEngine struct","dependents":["nautilus-backtest","nautilus-event-store","nautilus-live","nautilus-pyo3","nautilus-research-worker","nautilus-risk","nautilus-system","nautilus-trading"]},{"id":"nautilus-portfolio","role":"runtime","responsibility":"Portfolio：消费账户/订单/仓位/价格事件并增量核算。","deps":["nautilus-analysis","nautilus-common","nautilus-core","nautilus-model"],"keyFiles":["crates/portfolio/src/portfolio.rs"],"keySymbols":["Portfolio"],"entryPoints":["crates/portfolio/src/lib.rs"],"modules":["portfolio","account"],"evidence":"crates/portfolio/Cargo.toml + Portfolio struct","dependents":["nautilus-backtest","nautilus-pyo3","nautilus-risk","nautilus-system","nautilus-trading"]},{"id":"nautilus-analysis","role":"extension","responsibility":"绩效统计与组合分析器，供 Portfolio/回测报告使用。","deps":["nautilus-core","nautilus-model"],"keyFiles":["crates/analysis/src/analyzer.rs"],"keySymbols":["PortfolioAnalyzer"],"entryPoints":["crates/analysis/src/lib.rs"],"modules":["analyzer","statistics"],"evidence":"crates/analysis; PortfolioAnalyzer; portfolio/backtest Cargo deps","dependents":["nautilus-backtest","nautilus-portfolio","nautilus-trading"]},{"id":"nautilus-risk","role":"runtime","responsibility":"RiskEngine：TradingCommand 预检后转发 ExecutionEngine。","deps":["nautilus-common","nautilus-core","nautilus-execution","nautilus-model","nautilus-portfolio"],"keyFiles":["crates/risk/src/engine/mod.rs"],"keySymbols":["RiskEngine","RiskEngine::execute","RiskEngine::register_msgbus_handlers"],"entryPoints":["crates/risk/src/lib.rs"],"modules":["engine"],"evidence":"crates/risk/Cargo.toml; RiskEngine::execute forwards to exec_engine_queue_execute","dependents":["nautilus-backtest","nautilus-pyo3","nautilus-system"]},{"id":"nautilus-trading","role":"runtime","responsibility":"Strategy/Actor API：下单路径经 Risk（或 emulator/algo）进入内核。","deps":["nautilus-analysis","nautilus-common","nautilus-core","nautilus-execution","nautilus-model","nautilus-portfolio"],"keyFiles":["crates/trading/src/strategy/mod.rs","crates/system/src/trader.rs"],"keySymbols":["submit_order_native","send_risk_command","Trader"],"entryPoints":["crates/trading/src/lib.rs"],"modules":["strategy","actor","algorithm"],"evidence":"submit_order_native → send_risk_command → MessagingSwitchboard::risk_engine_queue_execute","dependents":["nautilus-backtest","nautilus-pyo3","nautilus-research-worker","nautilus-system"]},{"id":"nautilus-system","role":"runtime","responsibility":"NautilusKernel 组装 Data/Risk/Exec/Portfolio/Trader 与 Cache。","deps":["nautilus-common","nautilus-core","nautilus-data","nautilus-execution","nautilus-model","nautilus-portfolio","nautilus-risk","nautilus-trading"],"keyFiles":["crates/system/src/kernel.rs","crates/system/src/builder.rs","crates/system/src/trader.rs"],"keySymbols":["NautilusKernel","NautilusKernelBuilder::build","Trader"],"entryPoints":["crates/system/src/lib.rs"],"modules":["kernel","builder","trader","controller"],"evidence":"NautilusKernel fields: data_engine/risk_engine/exec_engine/portfolio/trader/cache","dependents":["nautilus-backtest","nautilus-event-store","nautilus-pyo3"]},{"id":"nautilus-persistence","role":"storage","responsibility":"历史数据 catalog / Parquet 读写，支撑回测数据注入。","deps":["nautilus-common","nautilus-core","nautilus-model","nautilus-serialization"],"keyFiles":["crates/persistence/src/lib.rs"],"keySymbols":[],"entryPoints":["crates/persistence/src/lib.rs"],"modules":["catalog","backend"],"evidence":"crates/persistence/Cargo.toml; used optionally by data/backtest","dependents":[]},{"id":"nautilus-backtest","role":"runtime","responsibility":"BacktestEngine + SimulatedExchange：确定性时钟推进与仿真撮合。","deps":["nautilus-analysis","nautilus-common","nautilus-core","nautilus-data","nautilus-execution","nautilus-model","nautilus-portfolio","nautilus-risk","nautilus-system","nautilus-trading"],"keyFiles":["crates/backtest/src/engine.rs","crates/backtest/src/exchange.rs","crates/backtest/src/node.rs"],"keySymbols":["BacktestEngine","BacktestEngine::run","SimulatedExchange"],"entryPoints":["crates/backtest/src/lib.rs"],"modules":["engine","exchange","node","modules"],"evidence":"BacktestEngine::run → run_impl; SimulatedExchange in exchange.rs; Cargo deps include system/risk/trading","dependents":["nautilus-pyo3","nautilus-research-worker"]},{"id":"nautilus-network","role":"extension","responsibility":"WebSocket/HTTP 网络基座，供 live 与 venue 适配器复用。","deps":["nautilus-core"],"keyFiles":["crates/network/src/lib.rs"],"keySymbols":[],"entryPoints":["crates/network/src/lib.rs"],"modules":["websocket","http"],"evidence":"crates/network/Cargo.toml depends on nautilus-core; live depends on network","dependents":["nautilus-live"]},{"id":"nautilus-live","role":"runtime","responsibility":"LiveNode：真实时钟、venue 客户端、重连与运行循环。","deps":["nautilus-common","nautilus-core","nautilus-execution","nautilus-model","nautilus-network"],"keyFiles":["crates/live/src/node/mod.rs","crates/live/src/node/builder.rs"],"keySymbols":["LiveNode","LiveNodeBuilder::build","LiveNode::run"],"entryPoints":["crates/live/src/lib.rs"],"modules":["node","client"],"evidence":"LiveNode::run / run_with_mode; Cargo.toml core deps + optional system/data/risk/trading features","dependents":["nautilus-pyo3"]},{"id":"nautilus-event-store","role":"storage","responsibility":"事件存储与重放，支撑 crash-only 恢复路径。","deps":["nautilus-common","nautilus-core","nautilus-execution","nautilus-model","nautilus-system"],"keyFiles":["crates/event_store/src/lib.rs","crates/system/src/event_store.rs"],"keySymbols":["KernelEventStore"],"entryPoints":["crates/event_store/src/lib.rs"],"modules":["store","replay"],"evidence":"crates/event_store/Cargo.toml; NautilusKernel event_store field; logos architecture FR-004","dependents":[]},{"id":"nautilus-pyo3","role":"host","responsibility":"Python 控制面绑定：把内核与适配器暴露给 Python 编排。","deps":["nautilus-backtest","nautilus-common","nautilus-core","nautilus-data","nautilus-execution","nautilus-live","nautilus-model","nautilus-portfolio","nautilus-risk","nautilus-system","nautilus-trading"],"keyFiles":["crates/pyo3/src/lib.rs"],"keySymbols":[],"entryPoints":["crates/pyo3/src/lib.rs"],"modules":["python"],"evidence":"crates/pyo3/Cargo.toml features python for core engine crates; README PyO3 control plane","dependents":[]},{"id":"nautilus-research-domain","role":"host","responsibility":"A股研究协调器：SQLite 元数据、快照、任务状态与研究命令契约。","deps":[],"keyFiles":["crates/research-domain/src/coordinator.rs","crates/research-domain/src/task.rs","crates/research-domain/src/store.rs"],"keySymbols":["Coordinator","Coordinator::submit_run","TaskState"],"entryPoints":["crates/research-domain/src/lib.rs"],"modules":["coordinator","store","universe","plan","quotes"],"evidence":"crates/research-domain/Cargo.toml: 无 nautilus-* 库依赖；research-worker 仅在 [dev-dependencies]","dependents":["nautilus-research-cli","nautilus-research-desktop","nautilus-research-worker"]},{"id":"nautilus-research-worker","role":"host","responsibility":"研究工作进程：装配快照行情并调用回测引擎产出结果。","deps":["nautilus-research-domain","nautilus-backtest","nautilus-model","nautilus-trading","nautilus-execution","nautilus-common"],"keyFiles":["crates/research-worker/src/adapter.rs","crates/research-worker/src/runner.rs"],"keySymbols":["run_task","execute","run_ema_daily"],"entryPoints":["crates/research-worker/src/lib.rs"],"modules":["adapter","runner","fees"],"evidence":"adapter.rs run_task→execute; Cargo.toml depends on backtest/model/trading","dependents":["nautilus-research-cli","nautilus-research-desktop"]},{"id":"nautilus-research-desktop","role":"host","responsibility":"egui/eframe 桌面宿主：GUI 发类型化消息，协调器在后台线程。","deps":["nautilus-research-domain","nautilus-research-worker"],"keyFiles":["crates/research-desktop/src/main.rs","crates/research-desktop/src/app.rs","crates/research-desktop/src/theme.rs"],"keySymbols":["main","ResearchApp","eframe::App"],"entryPoints":["crates/research-desktop/src/main.rs"],"modules":["app","theme","bridge"],"evidence":"main.rs eframe::run_native; ResearchApp; Cargo.toml path deps domain/worker","dependents":[]},{"id":"nautilus-research-cli","role":"host","responsibility":"研究 CLI 薄壳：参数 → 类型化命令 → 复用 Coordinator。","deps":["nautilus-research-domain","nautilus-research-worker"],"keyFiles":["crates/research-cli/src/main.rs"],"keySymbols":[],"entryPoints":["crates/research-cli/src/main.rs"],"modules":["cli"],"evidence":"crates/research-cli/Cargo.toml path deps; core-05-research-architecture CLI 薄壳说明","dependents":[]}],"flows":{"backtest-tick":{"id":"backtest-tick","title":"回测主循环","priority":"P0","summary":"历史数据注入后，BacktestEngine 推进时钟：行情→策略→风控→仿真撮合→组合核算。","nodes":[{"id":"bt1","label":"装配 Kernel + 数据","crate":"nautilus-backtest","file":"crates/backtest/src/engine.rs","symbol":"BacktestEngine","responsibility":"持有 venues/kernel/数据索引，准备确定性回放。","verification":"verified","evidence":"pub struct BacktestEngine in engine.rs"},{"id":"bt2","label":"run() 入口","crate":"nautilus-backtest","file":"crates/backtest/src/engine.rs","symbol":"BacktestEngine::run","responsibility":"校验错误态后进入 run_impl，结束后 finalize。","verification":"verified","evidence":"engine.rs:699 BacktestEngine::run → run_impl"},{"id":"bt3","label":"DataEngine 发布行情","crate":"nautilus-data","file":"crates/data/src/engine/mod.rs","symbol":"DataEngine::process_data","responsibility":"处理回放数据点并发布到 MessageBus。","verification":"verified","evidence":"DataEngine::process_data / process_pipeline"},{"id":"bt4","label":"Strategy 响应并下单","crate":"nautilus-trading","file":"crates/trading/src/strategy/mod.rs","symbol":"submit_order_native","responsibility":"写 Cache、发布 OrderInitialized，发送 TradingCommand。","verification":"verified","evidence":"submit_order_native → publish_order_initialized + send_risk_command"},{"id":"bt5","label":"RiskEngine 预检","crate":"nautilus-risk","file":"crates/risk/src/engine/mod.rs","symbol":"RiskEngine::execute","responsibility":"额度/节流等检查，通过后转发执行队列。","verification":"verified","evidence":"RiskEngine::execute; handler → exec_engine_queue_execute"},{"id":"bt6","label":"SimulatedExchange 撮合","crate":"nautilus-backtest","file":"crates/backtest/src/exchange.rs","symbol":"SimulatedExchange","responsibility":"仿真撮合与流动性模型，生成执行事件。","verification":"verified","evidence":"pub struct SimulatedExchange; runtime-dataflow 回测链路"},{"id":"bt7","label":"ExecutionEngine 回写","crate":"nautilus-execution","file":"crates/execution/src/engine/mod.rs","symbol":"ExecutionEngine","responsibility":"更新 Cache 并经 MessageBus 发布订单/成交事件。","verification":"partial","evidence":"ExecutionEngine owns clients/cache; architecture overview 执行事件回写"},{"id":"bt8","label":"Portfolio 核算","crate":"nautilus-portfolio","file":"crates/portfolio/src/portfolio.rs","symbol":"Portfolio","responsibility":"消费事件增量更新敞口与盈亏。","verification":"verified","evidence":"Portfolio struct; 03-runtime-dataflow.md"}],"edges":[["bt1","bt2"],["bt2","bt3"],["bt3","bt4"],["bt4","bt5"],["bt5","bt6"],["bt6","bt7"],["bt7","bt8"],["bt8","bt3"]]},"order-lifecycle":{"id":"order-lifecycle","title":"订单命令链路","priority":"P0","summary":"Strategy.submit_order → RiskEngine → ExecutionEngine → venue/仿真，事件回写 Cache/Bus。","nodes":[{"id":"ol1","label":"submit_order_native","crate":"nautilus-trading","file":"crates/trading/src/strategy/mod.rs","symbol":"submit_order_native","responsibility":"校验 INITIALIZED，加入 Cache，构造 SubmitOrder。","verification":"verified","evidence":"strategy/mod.rs:2335 submit_order_native"},{"id":"ol2","label":"publish OrderInitialized","crate":"nautilus-trading","file":"crates/trading/src/strategy/mod.rs","symbol":"publish_order_initialized","responsibility":"向 events.order.{strategy_id} 发布初始化事件。","verification":"verified","evidence":"publish_order_event(topic, OrderEventAny::Initialized)"},{"id":"ol3","label":"send_risk_command","crate":"nautilus-trading","file":"crates/trading/src/strategy/mod.rs","symbol":"send_risk_command","responsibility":"点对点发送到 risk_engine_queue_execute。","verification":"verified","evidence":"MessagingSwitchboard::risk_engine_queue_execute"},{"id":"ol4","label":"RiskEngine::execute","crate":"nautilus-risk","file":"crates/risk/src/engine/mod.rs","symbol":"RiskEngine::execute","responsibility":"预检；拒单则发 OrderRejected，通过则转发。","verification":"verified","evidence":"RiskEngine::execute + register_msgbus_handlers"},{"id":"ol5","label":"ExecutionEngine 路由","crate":"nautilus-execution","file":"crates/execution/src/engine/mod.rs","symbol":"ExecutionEngine::register_msgbus_handlers","responsibility":"按 venue/client 路由 TradingCommand。","verification":"verified","evidence":"exec_engine_execute handler; clients/routing_map fields"},{"id":"ol6","label":"Client / SimulatedExchange","crate":"nautilus-backtest","file":"crates/backtest/src/exchange.rs","symbol":"SimulatedExchange","responsibility":"仿真或真实客户端执行并回报。","verification":"partial","evidence":"回测用 SimulatedExchange；实盘经 adapters ExecutionClient"},{"id":"ol7","label":"订单事件发布","crate":"nautilus-common","file":"crates/common/src/msgbus/api.rs","symbol":"publish_order_event","responsibility":"Submitted/Accepted/Filled 等事件广播。","verification":"verified","evidence":"msgbus/api.rs publish_order_event"}],"edges":[["ol1","ol2"],["ol2","ol3"],["ol3","ol4"],["ol4","ol5"],["ol5","ol6"],["ol6","ol7"]]},"live-message":{"id":"live-message","title":"实盘消息流","priority":"P1","summary":"Venue WS → Adapter → DataEngine → Strategy → Risk/Exec → Venue，回报回写内核。","nodes":[{"id":"lm1","label":"LiveNode::run","crate":"nautilus-live","file":"crates/live/src/node/mod.rs","symbol":"LiveNode::run","responsibility":"启动实盘节点运行循环。","verification":"verified","evidence":"pub async fn run in node/mod.rs:1070"},{"id":"lm2","label":"Network I/O","crate":"nautilus-network","file":"crates/network/src/lib.rs","symbol":"","responsibility":"tokio 异步承载 REST/WS。","verification":"partial","evidence":"live Cargo.toml depends on nautilus-network; README tokio networking"},{"id":"lm3","label":"Adapter DataClient","crate":"nautilus-live","file":"crates/adapters/binance/src/lib.rs","symbol":"","responsibility":"解析 venue 行情为规范化 Data。","verification":"partial","evidence":"workspace adapters; architecture D-03/D-05"},{"id":"lm4","label":"DataEngine 处理","crate":"nautilus-data","file":"crates/data/src/engine/mod.rs","symbol":"DataEngine::process_data","responsibility":"发布行情事件到 MessageBus。","verification":"verified","evidence":"DataEngine::process_data"},{"id":"lm5","label":"Strategy 决策","crate":"nautilus-trading","file":"crates/trading/src/strategy/mod.rs","symbol":"submit_order_native","responsibility":"同回测命令路径进入风控。","verification":"verified","evidence":"同一 submit_order_native；03-runtime-dataflow 实盘链路同构"},{"id":"lm6","label":"ExecutionClient 下单","crate":"nautilus-execution","file":"crates/execution/src/engine/mod.rs","symbol":"ExecutionEngine","responsibility":"路由到真实 ExecutionClient。","verification":"partial","evidence":"ExecutionEngine clients IndexMap; live adapters"},{"id":"lm7","label":"回报 → Cache/Bus","crate":"nautilus-common","file":"crates/common/src/cache/mod.rs","symbol":"Cache","responsibility":"状态更新并通知 Portfolio/Risk/Strategy。","verification":"partial","evidence":"architecture overview + runtime-dataflow live path"}],"edges":[["lm1","lm2"],["lm2","lm3"],["lm3","lm4"],["lm4","lm5"],["lm5","lm6"],["lm6","lm7"]]},"crash-recovery":{"id":"crash-recovery","title":"崩溃恢复重放","priority":"P1","summary":"crash-only：重启后从 event store/backing 重放事件重建 Cache/Portfolio。","nodes":[{"id":"cr1","label":"节点重启","crate":"nautilus-system","file":"crates/system/src/kernel.rs","symbol":"NautilusKernel","responsibility":"重新创建内核实例，可选加载 event store。","verification":"partial","evidence":"kernel event_store / event_store_replay fields"},{"id":"cr2","label":"加载历史事件","crate":"nautilus-event-store","file":"crates/event_store/src/lib.rs","symbol":"KernelEventStore","responsibility":"从持久化存储读取事件流。","verification":"partial","evidence":"event_store crate + system/event_store.rs trait"},{"id":"cr3","label":"重放至 Cache","crate":"nautilus-common","file":"crates/common/src/cache/mod.rs","symbol":"Cache","responsibility":"按事件顺序重建订单/仓位等状态。","verification":"partial","evidence":"03-runtime-dataflow §3.3 恢复路径"},{"id":"cr4","label":"Portfolio 重建","crate":"nautilus-portfolio","file":"crates/portfolio/src/portfolio.rs","symbol":"Portfolio","responsibility":"消费重放事件恢复核算视图。","verification":"partial","evidence":"runtime-dataflow recovery; Portfolio consumer"},{"id":"cr5","label":"继续处理新事件","crate":"nautilus-live","file":"crates/live/src/node/mod.rs","symbol":"LiveNode::run","responsibility":"恢复完成后进入正常实时处理。","verification":"unverified","evidence":"架构文档描述；具体衔接点未在本次逐行核验"}],"edges":[["cr1","cr2"],["cr2","cr3"],["cr3","cr4"],["cr4","cr5"]]},"research-run":{"id":"research-run","title":"研序研究运行","priority":"P0","summary":"Desktop/CLI → Coordinator 入队 → Worker 子进程读快照并调用回测引擎 → 产物提交。","nodes":[{"id":"rr1","label":"Desktop 启动","crate":"nautilus-research-desktop","file":"crates/research-desktop/src/main.rs","symbol":"main","responsibility":"eframe 窗口 + attach_bridge(workspace)。","verification":"verified","evidence":"main.rs eframe::run_native + ResearchApp::attach_bridge"},{"id":"rr2","label":"Coordinator::submit_run","crate":"nautilus-research-domain","file":"crates/research-domain/src/coordinator.rs","symbol":"Coordinator::submit_run","responsibility":"持久化任务元数据并启动 worker。","verification":"verified","evidence":"pub fn submit_run in coordinator.rs"},{"id":"rr3","label":"Worker run_task","crate":"nautilus-research-worker","file":"crates/research-worker/src/adapter.rs","symbol":"run_task","responsibility":"工作进程入口，调用共享 execute。","verification":"verified","evidence":"pub fn run_task → execute"},{"id":"rr4","label":"装配行情快照","crate":"nautilus-research-worker","file":"crates/research-worker/src/adapter.rs","symbol":"execute","responsibility":"读 SQLite/对象存储分区 Parquet 与辅助数据。","verification":"verified","evidence":"execute() 读 manifest.partitions + parquet_io::read_quotes_partition"},{"id":"rr5","label":"调用回测引擎","crate":"nautilus-research-worker","file":"crates/research-worker/src/runner.rs","symbol":"run_ema_daily","responsibility":"在 worker 线程内驱动 BacktestEngine（引擎非 Send）。","verification":"verified","evidence":"runner.rs run_ema_daily; Cargo depends on nautilus-backtest; architecture note Rc/RefCell"},{"id":"rr6","label":"写产物并回填哈希","crate":"nautilus-research-domain","file":"crates/research-domain/src/coordinator.rs","symbol":"Coordinator","responsibility":"校验清单、原子提交元数据终态。","verification":"partial","evidence":"adapter execute 注释写产物→回填哈希; core-05 两阶段提交"}],"edges":[["rr1","rr2"],["rr2","rr3"],["rr3","rr4"],["rr4","rr5"],["rr5","rr6"]]}},"readingPath":[{"id":"step-1","module":"nautilus-model","why":"所有事件与订单语义都建立在领域类型上。","whatToRead":["crates/model/src/lib.rs","crates/model/src/orders/mod.rs"],"whatToUnderstand":["Order/Event 边界","行情数据类型"],"skip":["各 venue 专用扩展"]},{"id":"step-2","module":"nautilus-common","why":"MessageBus 与 Cache 是组件协作的中枢。","whatToRead":["crates/common/src/msgbus/core.rs","crates/common/src/cache/mod.rs"],"whatToUnderstand":["发布/点对点发送","Cache 存什么"],"skip":["external backing 细节"]},{"id":"step-3","module":"nautilus-system","why":"先看 Kernel 如何把六组件装在一起。","whatToRead":["crates/system/src/kernel.rs","crates/system/src/builder.rs"],"whatToUnderstand":["NautilusKernel 字段","Builder 装配顺序"],"skip":["streaming feature 分支"]},{"id":"step-4","module":"nautilus-data","why":"理解行情如何进入策略回调。","whatToRead":["crates/data/src/engine/mod.rs"],"whatToUnderstand":["process_data","subscribe/request 命令"],"skip":["复杂聚合器实现"]},{"id":"step-5","module":"nautilus-trading","why":"掌握下单入口与命令分流。","whatToRead":["crates/trading/src/strategy/mod.rs"],"whatToUnderstand":["submit_order_native","risk/emulator/algo 分支"],"skip":["示例策略全集"]},{"id":"step-6","module":"nautilus-risk","why":"看清预检如何拦截或放行命令。","whatToRead":["crates/risk/src/engine/mod.rs"],"whatToUnderstand":["execute","msgbus handlers"],"skip":["节流器内部算法细节"]},{"id":"step-7","module":"nautilus-execution","why":"命令如何路由到客户端并回写事件。","whatToRead":["crates/execution/src/engine/mod.rs"],"whatToUnderstand":["clients/routing_map","事件回写路径"],"skip":["各 OMS 特例"]},{"id":"step-8","module":"nautilus-backtest","why":"把整条链放到确定性时钟里跑通。","whatToRead":["crates/backtest/src/engine.rs","crates/backtest/src/exchange.rs"],"whatToUnderstand":["run/run_impl","SimulatedExchange 角色"],"skip":["DeFi 扩展路径"]},{"id":"step-9","module":"nautilus-live","why":"对照实盘节点与回测的同构/差异。","whatToRead":["crates/live/src/node/mod.rs"],"whatToUnderstand":["LiveNode::run","与 network/adapters 关系"],"skip":["具体 venue 协议细节"]},{"id":"step-10","module":"nautilus-research-domain","why":"本仓库 A股研究宿主如何复用回测引擎。","whatToRead":["crates/research-domain/src/coordinator.rs","crates/research-worker/src/adapter.rs","crates/research-desktop/src/main.rs"],"whatToUnderstand":["Coordinator 任务状态机","worker 隔离与引擎非 Send"],"skip":["AI 工作台离线原型页面"]}]};
+const VIEWS = [
+  {id:"overview",label:"Overview"},
+  {id:"architecture",label:"Architecture"},
+  {id:"flow",label:"Execution Flow"},
+  {id:"modules",label:"Module Explorer"},
+  {id:"reading",label:"Reading Path"},
+  {id:"library",label:"Flow Library"}
+];
+const state = {
+  view:"overview", selected:null, selectedKind:null,
+  flowId:"backtest-tick", moduleId:"nautilus-system", readingStep:0,
+  history:[], archFocus:null, graphMode:"spine",
+  graphZoom:{overview:1,architecture:1,flow:1}
+};
+const $ = id => document.getElementById(id);
+const esc = s => String(s??"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const layerOf = r => ({protocol:"protocol",runtime:"runtime",storage:"storage",extension:"extension",host:"host",external:"external"}[r]||"external");
+const findOverview = id => TOUR.overviewNodes.find(n => n.id===id);
+const findModule = id => TOUR.modules.find(m => m.id===id);
+const currentFlow = () => TOUR.flows[state.flowId];
+
+function pushHistory(){
+  state.history.push({view:state.view,selected:state.selected,selectedKind:state.selectedKind,flowId:state.flowId,moduleId:state.moduleId,readingStep:state.readingStep,archFocus:state.archFocus});
+  if(state.history.length>50) state.history.shift();
+}
+function goBack(){
+  const p = state.history.pop();
+  if(!p) return;
+  Object.assign(state,p);
+  render();
+}
+function select(kind,id,{push=true}={}){
+  if(push) pushHistory();
+  state.selectedKind = kind;
+  state.selected = id;
+  if(kind==="module") state.moduleId = id;
+  renderDetail();
+  highlight();
+}
+
+function renderTabs(){
+  $("tabs").innerHTML = VIEWS.map(v=>`<button class="tab ${state.view===v.id?"active":""}" data-view="${v.id}">${v.label}</button>`).join("");
+}
+function render(){
+  renderTabs();
+  const main = $("main");
+  if(state.view==="overview") main.innerHTML = viewOverview();
+  else if(state.view==="architecture") main.innerHTML = viewArch();
+  else if(state.view==="flow"||state.view==="library") main.innerHTML = viewFlow(state.view==="library");
+  else if(state.view==="modules") main.innerHTML = viewModules();
+  else if(state.view==="reading") main.innerHTML = viewReading();
+  bind();
+  renderDetail();
+  highlight();
+}
+
+function legend(){
+  return `<div class="legend"><span><i class="dot protocol"></i>Protocol</span><span><i class="dot runtime"></i>Runtime</span><span><i class="dot storage"></i>Storage</span><span><i class="dot extension"></i>Extension</span><span><i class="dot host"></i>Host</span></div>`;
+}
+function arrowDef(){
+  return `<defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="context-stroke"/></marker>
+    <filter id="nodeShadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#000" flood-opacity=".28"/></filter>
+  </defs>`;
+}
+function graphToolbar(graph, {modes=false}={}){
+  const modeButtons = modes ? `<div class="graph-modes" aria-label="依赖图显示范围">
+    <button class="graph-control ${state.graphMode==="spine"?"active":""}" data-graph-mode="spine">核心主链</button>
+    <button class="graph-control ${state.graphMode==="full"?"active":""}" data-graph-mode="full">完整依赖</button>
+  </div>` : "";
+  return `<div class="graph-toolbar">
+    ${modeButtons}
+    <div class="graph-controls" aria-label="图缩放">
+      <button class="graph-control" data-graph="${graph}" data-zoom="out" title="缩小">−</button>
+      <button class="graph-control zoom-value" data-graph="${graph}" data-zoom="reset" title="重置缩放">${Math.round((state.graphZoom[graph]||1)*100)}%</button>
+      <button class="graph-control" data-graph="${graph}" data-zoom="in" title="放大">＋</button>
+    </div>
+  </div>`;
+}
+function graphFrame(graph, svg, options={}){
+  const zoom = state.graphZoom[graph] || 1;
+  return `${graphToolbar(graph, options)}
+    <div class="canvas graph-viewport" data-graph-canvas="${graph}">
+      <div class="graph-stage" style="width:${zoom*100}%">${svg}</div>
+    </div>`;
+}
+function lane(y,h,label,kind){
+  return `<g class="arch-lane arch-lane-${kind}">
+    <rect x="10" y="${y}" width="1040" height="${h}" rx="12"/>
+    <text x="28" y="${y+25}" class="lane-label">${label}</text>
+  </g>`;
+}
+function nodeSvg(n,x,y,{width=164,subtitle="",planned=false}={}){
+  const role = layerOf(n.layer || n.role);
+  const isModule = String(n.id||"").startsWith("nautilus-");
+  return `<g class="node-hit ${planned?"planned":""}" data-kind="${isModule?"module":"overview"}" data-id="${n.id}" transform="translate(${x},${y})">
+    <rect class="node-box" x="${-width/2}" y="-25" width="${width}" height="50" rx="9" fill="var(--elev)" stroke="var(--line2)" filter="url(#nodeShadow)"/>
+    <rect x="${-width/2}" y="-25" width="4" height="50" rx="2" fill="var(--${role})"/>
+    <text x="${-width/2+15}" y="${subtitle?-4:4}" fill="var(--text)" font-size="11.5" font-family="${isModule?"var(--mono)":"var(--sans)"}">${esc(n.label||n.id)}</text>
+    ${subtitle?`<text x="${-width/2+15}" y="13" fill="var(--dim)" font-size="9.5">${esc(subtitle)}</text>`:""}
+  </g>`;
+}
+
+function viewOverview(){
+  const layout = {
+    venue:[220,52], catalog:[520,52],
+    "host-python":[220,145], "host-research":[520,145], "research-worker":[820,145],
+    kernel:[530,245],
+    "data-engine":[160,360], trader:[360,360], "risk-engine":[560,360], "exec-engine":[760,360], portfolio:[960,360],
+    msgbus:[300,470], cache:[530,470], "event-store":[760,470],
+    backtest:[280,580], live:[530,580], adapters:[780,580], network:[960,580]
+  };
+  const subtitles = {
+    venue:"REST / WebSocket venues",
+    catalog:"Parquet history",
+    "host-python":"PyO3 control plane",
+    "host-research":"研序 Desktop / CLI",
+    "research-worker":"isolated backtest job",
+    kernel:"NautilusKernel 六组件",
+    "data-engine":"subscribe · publish",
+    trader:"Strategy / Actor",
+    "risk-engine":"pre-trade checks",
+    "exec-engine":"route · fill events",
+    portfolio:"PnL · exposure",
+    msgbus:"pub/sub · command",
+    cache:"orders · positions",
+    "event-store":"crash-only replay",
+    backtest:"deterministic clock",
+    live:"real-time node",
+    adapters:"Data/Exec clients",
+    network:"HTTP / WS base"
+  };
+  const nodes = TOUR.overviewNodes.filter(n=>layout[n.id]).map(n=>{
+    const [x,y]=layout[n.id];
+    const wide = ["kernel","host-research","research-worker"].includes(n.id);
+    return nodeSvg(n,x,y,{width:wide?190:168,subtitle:subtitles[n.id]||""});
+  }).join("");
+  const main = new Set([
+    "catalog>data-engine","data-engine>msgbus","msgbus>trader","trader>risk-engine",
+    "risk-engine>exec-engine","exec-engine>adapters","kernel>data-engine","kernel>trader",
+    "backtest>kernel","host-research>research-worker","research-worker>backtest"
+  ]);
+  const orchestrates = new Set([
+    "host-python>kernel","host-python>backtest","host-python>live","live>kernel"
+  ]);
+  const edges = TOUR.overviewEdges.map(([a,b])=>{
+    if(!layout[a]||!layout[b]) return "";
+    const [x1,y1]=layout[a],[x2,y2]=layout[b];
+    const key=`${a}>${b}`;
+    const cls = main.has(key)?"edge edge-main":orchestrates.has(key)?"edge edge-orchestration":"edge edge-support";
+    const fromY = y2>y1 ? y1+25 : (y2<y1 ? y1-25 : y1);
+    const toY = y2>y1 ? y2-25 : (y2<y1 ? y2+25 : y2);
+    const fromX = y1===y2 ? (x2>x1?x1+84:x1-84) : x1;
+    const toX = y1===y2 ? (x2>x1?x2-84:x2+84) : x2;
+    return `<path class="${cls}" data-from="${a}" data-to="${b}" d="M${fromX},${fromY} C${fromX},${(y1+y2)/2} ${toX},${(y1+y2)/2} ${toX},${toY}"/>`;
+  }).join("");
+  const lanes = [
+    lane(14,70,"01 · EXTERNAL","external"),
+    lane(100,80,"02 · HOSTS","host"),
+    lane(200,80,"03 · KERNEL","runtime"),
+    lane(300,100,"04 · ENGINES","runtime"),
+    lane(420,90,"05 · BUS / STATE","storage"),
+    lane(530,100,"06 · ENVIRONMENTS / ADAPTERS","extension")
+  ].join("");
+  const svg = `<svg class="graph-svg" viewBox="0 0 1100 660" width="100%" role="img" aria-label="NautilusTrader 分层系统架构图">${arrowDef()}${lanes}${edges}${nodes}</svg>`;
+  return `<section><h2 class="view-title">NautilusTrader 整体架构</h2>
+    <p class="view-lede">先沿金色主链理解「行情 → 策略 → 风控 → 执行」，再看蓝色支撑与橙色宿主编排。泳道是逻辑边界，不是微服务拆分。</p>
+    ${legend()}
+    <div class="edge-legend">
+      <span><i class="line-sample line-main"></i>主调用链</span>
+      <span><i class="line-sample line-support"></i>运行时支撑</span>
+      <span><i class="line-sample line-orchestration"></i>宿主编排入口</span>
+      <span><i class="line-sample line-planned"></i>计划中 / scaffold</span>
+    </div>
+    ${graphFrame("overview",svg)}
+    <p class="view-lede" style="margin-top:12px">同一 <code>NautilusKernel</code> 支撑回测与实盘；本仓库另有 A股「研序」Desktop/CLI，经 worker 子进程复用 <code>BacktestEngine</code>，GUI 不直连交易执行通道。</p></section>`;
+}
+
+function viewArch(){
+  const order = [
+    "nautilus-core","nautilus-model","nautilus-serialization","nautilus-common",
+    "nautilus-data","nautilus-execution","nautilus-portfolio","nautilus-analysis",
+    "nautilus-risk","nautilus-trading","nautilus-system","nautilus-persistence",
+    "nautilus-backtest","nautilus-network","nautilus-live","nautilus-event-store",
+    "nautilus-pyo3","nautilus-research-domain","nautilus-research-worker",
+    "nautilus-research-desktop","nautilus-research-cli"
+  ];
+  const list = order.map(findModule).filter(Boolean);
+  const rows = [
+    {label:"FOUNDATION",kind:"protocol",ids:["nautilus-core","nautilus-model","nautilus-serialization"]},
+    {label:"RUNTIME CORE",kind:"runtime",ids:["nautilus-common","nautilus-data","nautilus-execution","nautilus-portfolio"]},
+    {label:"ENGINES / APP",kind:"runtime",ids:["nautilus-risk","nautilus-trading","nautilus-system","nautilus-analysis"]},
+    {label:"ENVIRONMENTS",kind:"extension",ids:["nautilus-backtest","nautilus-live","nautilus-network","nautilus-persistence","nautilus-event-store"]},
+    {label:"HOSTS",kind:"host",ids:["nautilus-pyo3","nautilus-research-domain","nautilus-research-worker","nautilus-research-desktop","nautilus-research-cli"]}
+  ];
+  const pos = {};
+  rows.forEach((row,ri)=>{
+    const y = 57 + ri*106;
+    row.ids.forEach((id,ci)=>{ pos[id] = [120 + (ci+0.5)*(900/Math.max(row.ids.length,1)), y]; });
+  });
+  const allEdges = [];
+  list.forEach(m => (m.deps||[]).forEach(d => { if(pos[d]&&pos[m.id]) allEdges.push([d,m.id]); }));
+  const spineKeys = new Set([
+    "nautilus-core>nautilus-model","nautilus-model>nautilus-common","nautilus-common>nautilus-data",
+    "nautilus-common>nautilus-execution","nautilus-common>nautilus-portfolio",
+    "nautilus-execution>nautilus-risk","nautilus-portfolio>nautilus-risk",
+    "nautilus-risk>nautilus-system","nautilus-trading>nautilus-system","nautilus-data>nautilus-system",
+    "nautilus-system>nautilus-backtest","nautilus-network>nautilus-live",
+    "nautilus-backtest>nautilus-research-worker","nautilus-research-domain>nautilus-research-desktop",
+    "nautilus-research-worker>nautilus-research-desktop","nautilus-system>nautilus-pyo3",
+    "nautilus-backtest>nautilus-pyo3"
+  ]);
+  const selectedModule = state.selectedKind==="module" ? state.selected : null;
+  const visibleEdges = state.graphMode==="full"
+    ? allEdges
+    : allEdges.filter(([a,b])=>spineKeys.has(`${a}>${b}`) || a===selectedModule || b===selectedModule);
+  const edgeSvg = visibleEdges.map(([a,b],i)=>{
+    const [x1,y1]=pos[a],[x2,y2]=pos[b];
+    const selected = state.selectedKind==="module" ? state.selected : null;
+    const relation = b===selected?"dependency":a===selected?"dependent":"neutral";
+    const bend = (i%5-2)*8;
+    return `<path class="edge dep-edge edge-${relation}" data-from="${a}" data-to="${b}" data-relation="${relation}" d="M${x1},${y1+25} C${x1+bend},${(y1+y2)/2} ${x2+bend},${(y1+y2)/2} ${x2},${y2-25}"/>`;
+  }).join("");
+  const nodesSvg = list.map(m=>{
+    const [x,y]=pos[m.id];
+    const short = m.id.replace(/^nautilus-/,"");
+    const subtitle = `${(m.deps||[]).length} deps · ${(m.dependents||[]).length} used by`;
+    return nodeSvg({...m,label:short},x,y,{width:168,subtitle});
+  }).join("");
+  const laneSvg = rows.map((row,ri)=>lane(14+ri*106,86,row.label,row.kind)).join("");
+  const svg = `<svg class="graph-svg" viewBox="0 0 1140 560" width="100%" role="img" aria-label="NautilusTrader 核心 crate Cargo 依赖图">${arrowDef()}${laneSvg}${edgeSvg}${nodesSvg}</svg>`;
+  return `<section><h2 class="view-title">核心 Crate 依赖</h2>
+    <p class="view-lede">箭头从依赖指向使用者：A → B 表示 B 的 Cargo.toml 直接依赖 A。默认仅显示理解内核所需的核心主链；完整依赖保留图中模块的全部直接边。</p>
+    ${legend()}
+    <div class="edge-legend">
+      <span><i class="line-sample line-dependency"></i>选中节点的 dependencies</span>
+      <span><i class="line-sample line-dependent"></i>选中节点的 dependents</span>
+      <span><i class="line-sample line-neutral"></i>Cargo 直接依赖</span>
+    </div>
+    ${graphFrame("architecture",svg,{modes:true})}
+    <p class="view-lede graph-hint">选择 crate 后：绿色边流入选中节点（它依赖谁），金色边流出选中节点（谁依赖它）。</p>
+  </section>`;
+}
+
+function viewFlow(showLib){
+  const flow = currentFlow();
+  const chips = Object.values(TOUR.flows).map(f=>`<button class="flow-chip ${f.id===state.flowId?"active":""}" data-flow="${f.id}">${esc(f.title)} <span style="color:var(--dim)">${f.priority}</span></button>`).join("");
+  const gap=56, x=240, startY=36;
+  const pos={}; flow.nodes.forEach((n,i)=>pos[n.id]=[x, startY+i*gap]);
+  const edgeSvg = flow.edges.map(([a,b])=>{
+    const [x1,y1]=pos[a],[x2,y2]=pos[b];
+    const ia=flow.nodes.findIndex(n=>n.id===a), ib=flow.nodes.findIndex(n=>n.id===b);
+    if(ib<ia) return `<path class="edge" data-from="${a}" data-to="${b}" d="M${x1+78},${y1} C${x1+170},${y1} ${x2+170},${y2} ${x2+78},${y2}"/>`;
+    return `<path class="edge" data-from="${a}" data-to="${b}" d="M${x1},${y1+16} L${x2},${y2-16}"/>`;
+  }).join("");
+  const nodeSvg = flow.nodes.map(n=>{
+    const [px,py]=pos[n.id];
+    return `<g class="node-hit" data-kind="flow-node" data-id="${n.id}" transform="translate(${px},${py})">
+      <rect class="node-box" x="-170" y="-20" width="340" height="40" rx="8" fill="var(--elev)" stroke="var(--line2)"/>
+      <text x="-158" y="-1" fill="var(--text)" font-size="12">${esc(n.label)}</text>
+      <text x="-158" y="13" fill="var(--dim)" font-size="10" font-family="var(--mono)">${esc(n.crate)} · ${esc((n.symbol||"").slice(0,40))}</text></g>`;
+  }).join("");
+  const h = startY + flow.nodes.length*gap + 30;
+  return `<section><h2 class="view-title">${showLib?"Flow Library":"Execution Flow"} — ${esc(flow.title)}</h2>
+    <p class="view-lede">${esc(flow.summary)}</p>
+    <div class="flow-bar">${chips}</div>
+    ${graphFrame("flow",`<svg class="graph-svg" viewBox="0 0 560 ${h}" width="100%">${arrowDef()}${edgeSvg}${nodeSvg}</svg>`)}</section>`;
+}
+
+function relatedFlows(mid){
+  const short = mid.replace(/^nautilus-/,"").replace(/-/g,"_");
+  return Object.values(TOUR.flows).filter(f => f.nodes.some(n =>
+    n.crate===mid ||
+    (n.file||"").includes(mid.replace(/^nautilus-/,"")) ||
+    (n.file||"").includes(short) ||
+    (n.file||"").includes(mid)
+  ));
+}
+function modulePanel(m){
+  return `<h3>${esc(m.id)} <span class="badge">${esc(m.role)}</span></h3>
+    <p class="role">${esc(m.responsibility)}</p>
+    <div class="kv"><div class="label">Key symbols</div><div class="chip-row">${(m.keySymbols||[]).map(s=>`<span class="chip">${esc(s)}</span>`).join("")||"—"}</div></div>
+    <div class="kv"><div class="label">Important files</div><div>${(m.keyFiles||[]).map(f=>`<button class="file-link" data-file="${esc(f)}">${esc(f)}</button>`).join("")}</div></div>
+    <div class="kv"><div class="label">Depends on</div><div class="chip-row">${(m.deps||[]).map(d=>`<button class="chip" data-kind="module" data-id="${d}">${esc(d)}</button>`).join("")||"—"}</div></div>
+    <div class="kv"><div class="label">Used by</div><div class="chip-row">${(m.dependents||[]).map(d=>`<button class="chip" data-kind="module" data-id="${d}">${esc(d)}</button>`).join("")||"—"}</div></div>
+    <div class="kv"><div class="label">Related flows</div><div class="chip-row">${relatedFlows(m.id).map(f=>`<button class="chip" data-go-flow="${f.id}">${esc(f.title)}</button>`).join("")||"—"}</div></div>
+    <div class="kv"><div class="label">Evidence</div><div class="evidence">${esc(m.evidence)}</div></div>`;
+}
+function viewModules(){
+  const m = findModule(state.moduleId)||TOUR.modules[0];
+  const tree = TOUR.modules.map(mod=>{
+    const subs=(mod.modules||[]).map(s=>`<button class="tree-item mod" data-kind="module" data-id="${mod.id}">${esc(s)}</button>`).join("");
+    return `<button class="tree-item crate ${mod.id===m.id?"active":""}" data-kind="module" data-id="${mod.id}">${esc(mod.id)}</button>${subs}`;
+  }).join("");
+  return `<section><h2 class="view-title">Module Explorer</h2>
+    <p class="view-lede">左侧为 crate / 子模块（来自源码目录与 lib 导出）。</p>
+    <div class="explorer"><div class="tree">${tree}</div><div class="mod-panel" id="modPanel">${modulePanel(m)}</div></div></section>`;
+}
+function viewReading(){
+  const html = TOUR.readingPath.map((s,i)=>{
+    const active = i===state.readingStep?"active":"";
+    const line = i<TOUR.readingPath.length-1?`<div class="path-line"></div>`:"";
+    return `<div class="path-step ${active}" data-rp="${i}">
+      <div class="path-rail"><div class="path-num">${String(i+1).padStart(2,"0")}</div>${line}</div>
+      <div class="path-card"><h3>${esc(s.crate)}</h3><p class="why">${esc(s.why)}</p>
+        <div class="path-grid">
+          <div class="path-box"><h4>What to read</h4><ul>${s.whatToRead.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+          <div class="path-box"><h4>What to understand</h4><ul>${s.whatToUnderstand.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+          <div class="path-box"><h4>Why now</h4><p style="margin:0;color:var(--muted);font-size:12.5px">${esc(s.why)}</p></div>
+          <div class="path-box"><h4>Skip for now</h4><ul>${s.skip.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>
+        </div>
+      </div></div>`;
+  }).join("");
+  return `<section><h2 class="view-title">Reading Path</h2>
+    <p class="view-lede">按依赖与执行主链排序的学习路线。控制阅读范围，而不是堆文件列表。</p>
+    <div class="path-steps">${html}</div></section>`;
+}
+
+function renderDetail(){
+  const el = $("detail");
+  if(!state.selected){
+    el.innerHTML = `<div class="detail-empty">点击图中的节点，查看职责、文件、符号与证据。<br/><br/>建议路径：Overview → Execution Flow（回测主循环）→ Module Explorer → Reading Path。</div>`;
+    return;
+  }
+  if(state.selectedKind==="overview"){
+    const n = findOverview(state.selected); if(!n) return;
+    el.innerHTML = detailOverview(n);
+  } else if(state.selectedKind==="module"){
+    const m = findModule(state.selected); if(!m) return;
+    el.innerHTML = detailModule(m);
+  } else if(state.selectedKind==="flow-node"){
+    const n = currentFlow().nodes.find(x=>x.id===state.selected); if(!n) return;
+    el.innerHTML = detailFlowNode(n);
+  } else if(state.selectedKind==="file"){
+    el.innerHTML = `<div class="detail"><h3 class="mono">${esc(state.selected)}</h3><p class="role">源码文件路径（相对仓库根）。在 IDE 中打开以继续阅读。</p>
+      <div class="actions"><button class="btn" data-go-flow="backtest-tick">查看回测主循环</button></div></div>`;
+  }
+}
+function detailOverview(n){
+  return `<div class="detail"><h3>${esc(n.label)}</h3><p class="role">${esc(n.responsibility)}</p>
+    <section><h4>Crates</h4><div class="chip-row">${(n.crates||[]).map(c=>`<button class="chip" data-kind="module" data-id="${c}">${esc(c)}</button>`).join("")||"—"}</div></section>
+    <section><h4>Key files</h4><div>${(n.keyFiles||[]).map(f=>`<button class="file-link" data-file="${esc(f)}">${esc(f)}</button>`).join("")||"—"}</div></section>
+    <section><h4>Key symbols</h4><div class="chip-row">${(n.keySymbols||[]).map(s=>`<span class="chip">${esc(s)}</span>`).join("")||"—"}</div></section>
+    <section><h4>Depends on / Used by</h4><div class="chip-row">${[...(n.dependsOn||[]).map(id=>`<button class="chip" data-kind="overview" data-id="${id}">↓ ${esc(id)}</button>`),...(n.usedBy||[]).map(id=>`<button class="chip" data-kind="overview" data-id="${id}">↑ ${esc(id)}</button>`)].join("")||"—"}</div></section>
+    <section><h4>Reading priority</h4><div>${n.readingPriority??"—"}</div></section>
+    <section><h4>Evidence</h4><div class="evidence">${esc(n.evidence)}</div></section>
+    <div class="actions"><button class="btn" data-go-flow="backtest-tick">打开回测主循环</button>
+      ${(n.crates||[])[0]?`<button class="btn" data-kind="module" data-id="${n.crates[0]}">进入 Module</button>`:""}</div></div>`;
+}
+function detailModule(m){
+  return `<div class="detail"><h3>${esc(m.id)}</h3><p class="role">${esc(m.responsibility)}</p>
+    <section><h4>Entry points</h4><div class="chip-row">${(m.entryPoints||[]).map(s=>`<span class="chip">${esc(s)}</span>`).join("")||"—"}</div></section>
+    <section><h4>Key symbols</h4><div class="chip-row">${(m.keySymbols||[]).map(s=>`<span class="chip">${esc(s)}</span>`).join("")||"—"}</div></section>
+    <section><h4>Files</h4><div>${(m.keyFiles||[]).map(f=>`<button class="file-link" data-file="${esc(f)}">${esc(f)}</button>`).join("")}</div></section>
+    <section><h4>Dependencies</h4><div class="chip-row">${(m.deps||[]).map(d=>`<button class="chip" data-kind="module" data-id="${d}">${esc(d)}</button>`).join("")||"—"}</div></section>
+    <section><h4>Dependents</h4><div class="chip-row">${(m.dependents||[]).map(d=>`<button class="chip" data-kind="module" data-id="${d}">${esc(d)}</button>`).join("")||"—"}</div></section>
+    <section><h4>Evidence</h4><div class="evidence">${esc(m.evidence)}</div></section>
+    <div class="actions"><button class="btn" data-view="architecture">在依赖图中查看</button>
+      ${relatedFlows(m.id)[0]?`<button class="btn" data-go-flow="${relatedFlows(m.id)[0].id}">相关 Flow</button>`:""}</div></div>`;
+}
+function detailFlowNode(n){
+  const flow = currentFlow();
+  const ups = flow.edges.filter(e=>e[1]===n.id).map(e=>e[0]);
+  const downs = flow.edges.filter(e=>e[0]===n.id).map(e=>e[1]);
+  const label = id => (flow.nodes.find(x=>x.id===id)||{}).label||id;
+  return `<div class="detail"><h3>${esc(n.label)} <span class="badge ${esc(n.verification)}">${esc(n.verification)}</span></h3>
+    <p class="role">${esc(n.responsibility)}</p>
+    <section><h4>Crate / File / Symbol</h4>
+      <div class="chip-row"><button class="chip" data-kind="module" data-id="${esc(n.crate)}">${esc(n.crate)}</button></div>
+      <div style="margin-top:6px"><button class="file-link" data-file="${esc(n.file)}">${esc(n.file)}</button></div>
+      <div class="evidence" style="margin-top:6px">${esc(n.symbol)}</div></section>
+    <section><h4>Upstream</h4><div class="chip-row">${ups.map(u=>`<button class="chip" data-kind="flow-node" data-id="${u}">${esc(label(u))}</button>`).join("")||"—"}</div></section>
+    <section><h4>Downstream</h4><div class="chip-row">${downs.map(d=>`<button class="chip" data-kind="flow-node" data-id="${d}">${esc(label(d))}</button>`).join("")||"—"}</div></section>
+    <section><h4>Why this step matters</h4><p class="role">${esc(n.responsibility)}</p></section>
+    <section><h4>Evidence</h4><div class="evidence">${esc(n.evidence)}</div></section></div>`;
+}
+
+function highlight(){
+  document.querySelectorAll(".node-hit").forEach(g=>g.classList.remove("selected","dim","hl"));
+  document.querySelectorAll(".edge").forEach(e=>e.classList.remove("dim","hl","edge-dependency","edge-dependent"));
+  if(state.view==="architecture" && state.selectedKind==="module" && state.selected){
+    const m = findModule(state.selected); if(!m) return;
+    const keep = new Set([m.id, ...(m.deps||[]), ...(m.dependents||[])]);
+    document.querySelectorAll(".node-hit").forEach(g=>{
+      const id=g.dataset.id;
+      if(id===m.id) g.classList.add("selected","hl");
+      else if(keep.has(id)) g.classList.add("hl");
+      else g.classList.add("dim");
+    });
+    document.querySelectorAll(".edge").forEach(e=>{
+      const f=e.dataset.from, t=e.dataset.to;
+      if(t===m.id && keep.has(f)){
+        e.classList.add("hl","edge-dependency");
+      }else if(f===m.id && keep.has(t)){
+        e.classList.add("hl","edge-dependent");
+      }else{
+        e.classList.add("dim");
+      }
+    });
+  } else if(state.selected){
+    document.querySelectorAll(`.node-hit[data-id="${CSS.escape(state.selected)}"]`).forEach(g=>g.classList.add("selected"));
+  }
+}
+
+function bind(){
+  $("tabs").onclick = e=>{
+    const b=e.target.closest("[data-view]"); if(!b) return;
+    pushHistory(); state.view=b.dataset.view; render();
+  };
+  $("main").onclick = e=>{
+    const modeBtn=e.target.closest("[data-graph-mode]");
+    if(modeBtn){ state.graphMode=modeBtn.dataset.graphMode; render(); return; }
+    const zoomBtn=e.target.closest("[data-zoom]");
+    if(zoomBtn){
+      const graph=zoomBtn.dataset.graph;
+      const action=zoomBtn.dataset.zoom;
+      const current=state.graphZoom[graph]||1;
+      state.graphZoom[graph]=action==="reset"?1:Math.min(1.8,Math.max(.7,current+(action==="in"?.15:-.15)));
+      render();
+      return;
+    }
+    const flowBtn=e.target.closest("[data-flow]");
+    if(flowBtn){ pushHistory(); state.flowId=flowBtn.dataset.flow; state.view = state.view==="library"?"library":"flow"; state.selected=null; render(); return; }
+    const goFlow=e.target.closest("[data-go-flow]");
+    if(goFlow){ pushHistory(); state.flowId=goFlow.dataset.goFlow; state.view="flow"; state.selected=null; render(); return; }
+    const rp=e.target.closest("[data-rp]");
+    if(rp){ pushHistory(); state.readingStep=+rp.dataset.rp; render(); return; }
+    const file=e.target.closest("[data-file]");
+    if(file){ select("file", file.dataset.file); return; }
+    const hit=e.target.closest("[data-kind]");
+    if(hit && hit.dataset.kind){
+      if(hit.dataset.kind==="module"){ state.moduleId=hit.dataset.id; }
+      select(hit.dataset.kind, hit.dataset.id);
+      if(state.view==="modules" || state.view==="architecture") render();
+      return;
+    }
+    const v=e.target.closest("[data-view]");
+    if(v){ pushHistory(); state.view=v.dataset.view; render(); }
+  };
+  $("detail").onclick = e=>{
+    const goFlow=e.target.closest("[data-go-flow]");
+    if(goFlow){ pushHistory(); state.flowId=goFlow.dataset.goFlow; state.view="flow"; state.selected=null; render(); return; }
+    const file=e.target.closest("[data-file]");
+    if(file){ select("file", file.dataset.file); return; }
+    const hit=e.target.closest("[data-kind]");
+    if(hit){
+      if(hit.dataset.kind==="module"){ pushHistory(); state.view="modules"; state.moduleId=hit.dataset.id; select("module", hit.dataset.id, {push:false}); render(); return; }
+      select(hit.dataset.kind, hit.dataset.id);
+      return;
+    }
+    const v=e.target.closest("[data-view]");
+    if(v){ pushHistory(); state.view=v.dataset.view; render(); }
+  };
+}
+
+function buildSearchIndex(){
+  const items=[];
+  TOUR.modules.forEach(m=>{
+    items.push({k:m.id, kind:"crate", type:"module", id:m.id});
+    (m.keyFiles||[]).forEach(f=>items.push({k:f, kind:"file", type:"file", id:f}));
+    (m.keySymbols||[]).forEach(s=>items.push({k:s, kind:"symbol", type:"module", id:m.id, extra:m.id}));
+  });
+  Object.values(TOUR.flows).forEach(f=>f.nodes.forEach(n=>{
+    items.push({k:`${n.label} ${n.symbol}`, kind:"flow", type:"flow-node", id:n.id, flow:f.id, extra:f.title});
+  }));
+  return items;
+}
+const INDEX = buildSearchIndex();
+function setupSearch(){
+  const input=$("search"), box=$("searchResults");
+  input.addEventListener("input", ()=>{
+    const q=input.value.trim().toLowerCase();
+    if(!q){ box.classList.remove("open"); box.innerHTML=""; return; }
+    const hits=INDEX.filter(i=>i.k.toLowerCase().includes(q)).slice(0,20);
+    box.innerHTML = hits.map(h=>`<button data-si="${esc(h.type)}" data-id="${esc(h.id)}" data-flow="${esc(h.flow||"")}"><div>${esc(h.k)}</div><div class="k">${esc(h.kind)}${h.extra?" · "+esc(h.extra):""}</div></button>`).join("") || `<button disabled>无结果</button>`;
+    box.classList.add("open");
+  });
+  box.addEventListener("click", e=>{
+    const b=e.target.closest("button[data-si]"); if(!b) return;
+    box.classList.remove("open");
+    const t=b.dataset.si, id=b.dataset.id;
+    if(t==="module"){ pushHistory(); state.view="modules"; state.moduleId=id; select("module", id, {push:false}); render(); }
+    else if(t==="file"){ select("file", id); }
+    else if(t==="flow-node"){ pushHistory(); state.view="flow"; state.flowId=b.dataset.flow||state.flowId; select("flow-node", id, {push:false}); render(); }
+  });
+  document.addEventListener("click", e=>{ if(!e.target.closest(".search-wrap")) box.classList.remove("open"); });
+}
+
+$("btnBack").onclick = goBack;
+setupSearch();
+render();
+</script>
+</body>
+</html>

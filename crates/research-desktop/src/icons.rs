@@ -343,3 +343,73 @@ pub fn paint_hero_orbit(painter: &Painter, rect: Rect, narrow: bool) {
     }
     painter.circle_filled(rect.center(), 6.0 * size / 120.0, HERO_ORBIT_CORE);
 }
+
+/// 助手徽标四角星（替代内嵌字体缺失的 ✧）。
+pub fn paint_sparkle(painter: &Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.42;
+    let stroke = Stroke::new(1.2, color);
+    painter.line_segment([c - Vec2::new(0.0, r), c + Vec2::new(0.0, r)], stroke);
+    painter.line_segment([c - Vec2::new(r, 0.0), c + Vec2::new(r, 0.0)], stroke);
+    let d = r * 0.62;
+    painter.line_segment([c - Vec2::new(d, d), c + Vec2::new(d, d)], stroke);
+    painter.line_segment([c - Vec2::new(d, -d), c + Vec2::new(d, -d)], stroke);
+}
+
+/// 工作区头菱形（替代内嵌字体缺失的 ◇）。
+pub fn paint_diamond(painter: &Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.42;
+    let pts = [
+        c + Vec2::new(0.0, -r),
+        c + Vec2::new(r, 0.0),
+        c + Vec2::new(0.0, r),
+        c + Vec2::new(-r, 0.0),
+        c + Vec2::new(0.0, -r),
+    ];
+    painter.add(egui::Shape::line(pts.to_vec(), Stroke::new(1.2, color)));
+}
+
+/// 展开工作区图标（替代内嵌字体缺失的 ⤢：对角双向箭头）。
+pub fn paint_expand(painter: &Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.38;
+    let stroke = Stroke::new(1.35, color);
+    // 主对角线
+    painter.line_segment([c + Vec2::new(-r, -r), c + Vec2::new(r, r)], stroke);
+    // 左上箭头
+    let nw = c + Vec2::new(-r, -r);
+    painter.line_segment([nw, nw + Vec2::new(r * 0.55, 0.0)], stroke);
+    painter.line_segment([nw, nw + Vec2::new(0.0, r * 0.55)], stroke);
+    // 右下箭头
+    let se = c + Vec2::new(r, r);
+    painter.line_segment([se, se + Vec2::new(-r * 0.55, 0.0)], stroke);
+    painter.line_segment([se, se + Vec2::new(0.0, -r * 0.55)], stroke);
+}
+
+/// 任务条旋转环（原型 `.task-spin`：10px 圆环、accent-text 顶弧）。
+pub fn paint_task_spin(painter: &Painter, rect: Rect, phase: f32, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.42;
+    let dim = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 70);
+    painter.circle_stroke(c, r, Stroke::new(1.5, dim));
+    let segs = 10;
+    let span = std::f32::consts::TAU * 0.28;
+    let mut pts = Vec::with_capacity(segs + 1);
+    for i in 0..=segs {
+        let a = phase + span * (i as f32 / segs as f32) - std::f32::consts::FRAC_PI_2;
+        pts.push(c + Vec2::new(r * a.cos(), r * a.sin()));
+    }
+    painter.add(egui::Shape::line(pts, Stroke::new(1.6, color)));
+}
+
+/// 发送箭头（对话 compose 圆形主按钮内）。
+pub fn paint_send_up(painter: &Painter, rect: Rect, color: Color32) {
+    let c = rect.center();
+    let r = rect.width().min(rect.height()) * 0.28;
+    let stroke = Stroke::new(1.6, color);
+    let tip = c + Vec2::new(0.0, -r);
+    painter.line_segment([c + Vec2::new(0.0, r), tip], stroke);
+    painter.line_segment([tip, tip + Vec2::new(-r * 0.7, r * 0.7)], stroke);
+    painter.line_segment([tip, tip + Vec2::new(r * 0.7, r * 0.7)], stroke);
+}

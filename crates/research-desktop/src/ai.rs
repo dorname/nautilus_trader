@@ -8,12 +8,16 @@
 pub enum Intent {
     /// 确认需求（生成需求版本 R）。
     ConfirmRequirement,
+    /// 整理需求草稿（不确认版本）。
+    DraftRequirement,
     /// 新建项目。
     NewProject,
     /// 切换项目（数字参数由调用方解析）。
     SwitchProject,
-    /// 生成设计说明（D 版本，绑定当前需求）。
+    /// 生成设计说明草稿（不保存 D）。
     GenerateDesign,
+    /// 生成可编辑策略代码草稿。
+    GenerateCode,
     /// 保存代码版本（不可变 v）。
     SaveVersion,
     /// 运行实验。
@@ -40,24 +44,31 @@ pub fn route(text: &str) -> Intent {
     if t.is_empty() {
         return Intent::Unknown;
     }
-    // 概念辨析优先于「验证」关键词（「解释验证区别」「回测和验证是一码事吗」不是生成报告）
+    // 概念辨析优先于「验证」关键词（「解释验证区别」「了解验证流程」不是生成报告）
     if t.contains("区别")
         || t.contains("什么意思")
         || t.contains("一码事")
         || t.contains("一回事")
+        || t.contains("验证流程")
+        || t.contains("验证边界")
         || t.starts_with("解释")
+        || t.starts_with("了解验证")
     {
         return Intent::ExplainBoundary;
     }
-    if t.contains("确认需求") || t.contains("确认版本") || t.contains("需求草稿") {
+    if t.contains("确认需求") || t.contains("确认版本") {
         Intent::ConfirmRequirement
+    } else if t.contains("需求草稿") || t.contains("研究目标") {
+        Intent::DraftRequirement
     } else if (t.contains("新建") || t.contains("新项目")) && t.contains("项目") {
         Intent::NewProject
     } else if t.contains("切换项目") || t.contains("切换到项目") {
         Intent::SwitchProject
     } else if t.contains("设计") {
         Intent::GenerateDesign
-    } else if t.contains("保存版本") || t.contains("冻结版本") || t.contains("代码") {
+    } else if t.contains("生成") && t.contains("代码") {
+        Intent::GenerateCode
+    } else if t.contains("保存版本") || t.contains("冻结版本") {
         Intent::SaveVersion
     } else if t.contains("运行实验")
         || t.contains("跑实验")
@@ -86,10 +97,16 @@ pub fn reply(text: &str) -> String {
         Intent::ConfirmRequirement => {
             "请在需求文档页填写研究目标与验收标准后确认；投入比例须为 0～100%，成交额须为非负数。确认后生成需求版本 R，旧实验保留。".into()
         }
+        Intent::DraftRequirement => {
+            "需求草稿已整理到工作区。请补充研究范围、参数和验收标准，然后确认需求版本。".into()
+        }
         Intent::NewProject => "已在左侧栏新建独立项目：会话、需求与版本互不串扰。".into(),
         Intent::SwitchProject => "请在左侧栏顶部项目选择器切换；切回时版本与消息保留。".into(),
         Intent::GenerateDesign => {
-            "请先确认需求版本 R，再在策略设计页保存设计；设计绑定当前需求版本。".into()
+            "设计草稿已生成。两张图共用六个处理节点，请检查参数和说明后保存设计版本。".into()
+        }
+        Intent::GenerateCode => {
+            "已生成可编辑的策略示例。先检查并保存 v1，再运行实验观察资金约束。此示例不在桌面中执行 Python。".into()
         }
         Intent::SaveVersion => {
             "请在策略开发页编辑并保存版本 v；版本冻结引用 R/D，不可变。运行引用已保存版本，草稿尚未生效。".into()
@@ -104,7 +121,7 @@ pub fn reply(text: &str) -> String {
             "验证报告按当前版本与实验证据生成：演示检查可能通过，正式策略验证始终为「证据不足」——真实数据、样本外与参数稳健性未运行。".into()
         }
         Intent::ExplainBoundary => {
-            "它们不是同一件事。\n\n调试：解释代码为什么这样运行。\n回测：在历史假设下模拟策略表现。\n策略验证：综合证据判断是否满足研究标准。\n计划核对：检查这一次调整是否满足当前账户与数据约束。\n\n回测是策略验证的一种手段；计划核对通过不保证盈利。".into()
+            "它们不是同一件事。\n\n调试：解释信号、订单与代码为什么这样运行。\n回测：在历史数据与指定假设下模拟策略表现。\n策略验证：按研究标准综合正确性、样本外和稳健性证据。\n计划核对：检查这一次调整的现金、可卖数量和数据时效。\n\n回测是策略验证的一种手段。计划核对通过不保证盈利。".into()
         }
         Intent::PlanGenerate => {
             "请在交易计划页生成计划：计划使用独立参考快照，绑定策略版本并冻结账户输入。".into()
@@ -129,18 +146,19 @@ mod tests {
     #[test]
     fn routes_and_unknown_honesty() {
         assert_eq!(route("请帮我确认需求"), Intent::ConfirmRequirement);
-        assert_eq!(route("生成需求草稿"), Intent::ConfirmRequirement);
+        assert_eq!(route("生成需求草稿"), Intent::DraftRequirement);
         assert_eq!(route("新建一个项目"), Intent::NewProject);
         assert_eq!(route("切换项目"), Intent::SwitchProject);
         assert_eq!(route("生成设计说明"), Intent::GenerateDesign);
         assert_eq!(route("保存版本 v2"), Intent::SaveVersion);
-        assert_eq!(route("生成策略代码"), Intent::SaveVersion);
+        assert_eq!(route("生成策略代码"), Intent::GenerateCode);
         assert_eq!(route("运行实验"), Intent::RunExperiment);
         assert_eq!(route("跑实验"), Intent::RunExperiment);
         assert_eq!(route("运行回测实验"), Intent::RunExperiment);
         assert_eq!(route("比较两次实验"), Intent::CompareExperiments);
         assert_eq!(route("生成验证报告"), Intent::MakeReport);
         assert_eq!(route("解释验证区别"), Intent::ExplainBoundary);
+        assert_eq!(route("了解验证流程"), Intent::ExplainBoundary);
         assert_eq!(route("回测和验证是一码事吗"), Intent::ExplainBoundary);
         assert_eq!(route("生成计划"), Intent::PlanGenerate);
         assert_eq!(route("核对计划"), Intent::PlanCheck);
@@ -152,9 +170,11 @@ mod tests {
         // 每个意图都有预设回复
         for t in [
             "确认需求",
+            "生成需求草稿",
             "新建项目",
             "切换项目",
             "生成设计",
+            "生成策略代码",
             "保存版本",
             "运行实验",
             "比较",

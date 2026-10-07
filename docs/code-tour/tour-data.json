@@ -1,0 +1,1954 @@
+{
+  "meta": {
+    "project": "nautilus_trader",
+    "branch": "a-stock",
+    "commit": "f10872f281",
+    "analysisSession": null,
+    "sources": [
+      "Cargo.toml workspace + crate manifests",
+      "logos/resources/prd/3-technical-plan/1-architecture/*",
+      "README.md",
+      "source symbols (kernel/backtest/risk/trading/research)"
+    ],
+    "note": "GRASP MCP/全库报告在本环境未稳定返回 session；关系以 Cargo 直接依赖与源码符号为准。无法确认的调用跳转标记 partial/unverified。"
+  },
+  "overviewNodes": [
+    {
+      "id": "venue",
+      "label": "Venue / 行情源",
+      "layer": "external",
+      "responsibility": "交易所与数据供应商：REST/WS 行情与订单回报。",
+      "crates": [],
+      "keyFiles": [
+        "crates/adapters/binance/README.md"
+      ],
+      "keySymbols": [],
+      "dependsOn": [],
+      "usedBy": [
+        "adapters",
+        "network"
+      ],
+      "readingPriority": 0,
+      "verification": "verified",
+      "evidence": "README Integrations 表 + crates/adapters/*"
+    },
+    {
+      "id": "catalog",
+      "label": "历史 Catalog",
+      "layer": "external",
+      "responsibility": "本地/对象存储上的历史行情（Parquet catalog），供回测注入。",
+      "crates": [
+        "nautilus-persistence"
+      ],
+      "keyFiles": [
+        "crates/persistence/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "dependsOn": [],
+      "usedBy": [
+        "data-engine",
+        "backtest"
+      ],
+      "readingPriority": 3,
+      "verification": "partial",
+      "evidence": "architecture overview FR-014; persistence crate; backtest optional persistence feature"
+    },
+    {
+      "id": "host-python",
+      "label": "Python 控制面",
+      "layer": "host",
+      "responsibility": "策略编排与配置入口；经 PyO3 调用 Rust 内核。",
+      "crates": [
+        "nautilus-pyo3"
+      ],
+      "keyFiles": [
+        "crates/pyo3/src/lib.rs",
+        "python/README.md"
+      ],
+      "keySymbols": [],
+      "dependsOn": [
+        "kernel",
+        "backtest",
+        "live"
+      ],
+      "usedBy": [],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "README: Python control plane; crates/pyo3 depends on backtest/live/system"
+    },
+    {
+      "id": "host-research",
+      "label": "研序 Desktop/CLI",
+      "layer": "host",
+      "responsibility": "A股研究桌面与 CLI：协调器 + worker，不直连交易执行通道。",
+      "crates": [
+        "nautilus-research-desktop",
+        "nautilus-research-cli",
+        "nautilus-research-domain"
+      ],
+      "keyFiles": [
+        "crates/research-desktop/src/main.rs",
+        "crates/research-domain/src/coordinator.rs"
+      ],
+      "keySymbols": [
+        "ResearchApp",
+        "Coordinator"
+      ],
+      "dependsOn": [
+        "research-worker",
+        "backtest"
+      ],
+      "usedBy": [],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "core-05-research-architecture.md; ResearchApp + Coordinator symbols"
+    },
+    {
+      "id": "research-worker",
+      "label": "Research Worker",
+      "layer": "host",
+      "responsibility": "隔离进程跑研究任务：读快照 → 调 BacktestEngine → 写产物。",
+      "crates": [
+        "nautilus-research-worker"
+      ],
+      "keyFiles": [
+        "crates/research-worker/src/adapter.rs"
+      ],
+      "keySymbols": [
+        "run_task",
+        "execute"
+      ],
+      "dependsOn": [
+        "backtest",
+        "trader"
+      ],
+      "usedBy": [
+        "host-research"
+      ],
+      "readingPriority": 4,
+      "verification": "verified",
+      "evidence": "adapter.rs execute() 注释：读配置→装配→引擎→写产物"
+    },
+    {
+      "id": "kernel",
+      "label": "NautilusKernel",
+      "layer": "runtime",
+      "responsibility": "单节点运行时边界：装配六组件引擎与 Cache。",
+      "crates": [
+        "nautilus-system"
+      ],
+      "keyFiles": [
+        "crates/system/src/kernel.rs",
+        "crates/system/src/builder.rs"
+      ],
+      "keySymbols": [
+        "NautilusKernel",
+        "NautilusKernelBuilder::build"
+      ],
+      "dependsOn": [
+        "data-engine",
+        "risk-engine",
+        "exec-engine",
+        "portfolio",
+        "trader",
+        "msgbus",
+        "cache"
+      ],
+      "usedBy": [
+        "backtest",
+        "live",
+        "host-python"
+      ],
+      "readingPriority": 1,
+      "verification": "verified",
+      "evidence": "kernel.rs NautilusKernel fields; logos/01-architecture-overview.md 六组件图"
+    },
+    {
+      "id": "msgbus",
+      "label": "MessageBus",
+      "layer": "protocol",
+      "responsibility": "进程内发布/订阅、请求/响应与点对点命令路由。",
+      "crates": [
+        "nautilus-common"
+      ],
+      "keyFiles": [
+        "crates/common/src/msgbus/core.rs",
+        "crates/common/src/msgbus/api.rs"
+      ],
+      "keySymbols": [
+        "MessageBus",
+        "publish_order_event",
+        "send_trading_command"
+      ],
+      "dependsOn": [],
+      "usedBy": [
+        "data-engine",
+        "risk-engine",
+        "exec-engine",
+        "portfolio",
+        "trader",
+        "kernel"
+      ],
+      "readingPriority": 1,
+      "verification": "verified",
+      "evidence": "MessageBus struct + typed publish/send APIs"
+    },
+    {
+      "id": "cache",
+      "label": "Cache",
+      "layer": "storage",
+      "responsibility": "订单/仓位/账户/工具等运行时状态存储，可外接 backing。",
+      "crates": [
+        "nautilus-common"
+      ],
+      "keyFiles": [
+        "crates/common/src/cache/mod.rs"
+      ],
+      "keySymbols": [
+        "Cache"
+      ],
+      "dependsOn": [],
+      "usedBy": [
+        "kernel",
+        "risk-engine",
+        "exec-engine",
+        "portfolio",
+        "data-engine"
+      ],
+      "readingPriority": 1,
+      "verification": "verified",
+      "evidence": "Cache struct; NautilusKernel.cache field"
+    },
+    {
+      "id": "data-engine",
+      "label": "DataEngine",
+      "layer": "runtime",
+      "responsibility": "行情订阅、历史请求与数据发布到 MessageBus。",
+      "crates": [
+        "nautilus-data"
+      ],
+      "keyFiles": [
+        "crates/data/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "DataEngine",
+        "process_data",
+        "execute"
+      ],
+      "dependsOn": [
+        "msgbus",
+        "cache",
+        "adapters"
+      ],
+      "usedBy": [
+        "kernel",
+        "trader",
+        "backtest"
+      ],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "DataEngine::process_data / execute in engine/mod.rs"
+    },
+    {
+      "id": "trader",
+      "label": "Trader / Strategy",
+      "layer": "runtime",
+      "responsibility": "Actor/Strategy 容器：响应行情并发出 TradingCommand。",
+      "crates": [
+        "nautilus-trading",
+        "nautilus-system"
+      ],
+      "keyFiles": [
+        "crates/system/src/trader.rs",
+        "crates/trading/src/strategy/mod.rs"
+      ],
+      "keySymbols": [
+        "Trader",
+        "submit_order_native"
+      ],
+      "dependsOn": [
+        "msgbus",
+        "cache",
+        "data-engine",
+        "risk-engine"
+      ],
+      "usedBy": [
+        "kernel",
+        "backtest",
+        "live"
+      ],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "Trader in system; submit_order_native → send_risk_command"
+    },
+    {
+      "id": "risk-engine",
+      "label": "RiskEngine",
+      "layer": "runtime",
+      "responsibility": "交易命令预检（额度/价格/频率），通过后转发执行引擎。",
+      "crates": [
+        "nautilus-risk"
+      ],
+      "keyFiles": [
+        "crates/risk/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "RiskEngine::execute",
+        "register_msgbus_handlers"
+      ],
+      "dependsOn": [
+        "cache",
+        "portfolio",
+        "msgbus",
+        "exec-engine"
+      ],
+      "usedBy": [
+        "trader",
+        "kernel"
+      ],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "RiskEngine::execute; register to risk_engine_queue_execute then exec_engine_queue_execute"
+    },
+    {
+      "id": "exec-engine",
+      "label": "ExecutionEngine",
+      "layer": "runtime",
+      "responsibility": "命令下发 venue/仿真客户端；执行事件写 Cache 并上总线。",
+      "crates": [
+        "nautilus-execution"
+      ],
+      "keyFiles": [
+        "crates/execution/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "ExecutionEngine",
+        "register_msgbus_handlers"
+      ],
+      "dependsOn": [
+        "msgbus",
+        "cache",
+        "adapters"
+      ],
+      "usedBy": [
+        "risk-engine",
+        "kernel",
+        "backtest",
+        "live"
+      ],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "ExecutionEngine clients/routing_map; msgbus handlers"
+    },
+    {
+      "id": "portfolio",
+      "label": "Portfolio",
+      "layer": "runtime",
+      "responsibility": "增量核算敞口与盈亏，供风控与策略读取。",
+      "crates": [
+        "nautilus-portfolio"
+      ],
+      "keyFiles": [
+        "crates/portfolio/src/portfolio.rs"
+      ],
+      "keySymbols": [
+        "Portfolio"
+      ],
+      "dependsOn": [
+        "msgbus",
+        "cache"
+      ],
+      "usedBy": [
+        "risk-engine",
+        "kernel",
+        "trader"
+      ],
+      "readingPriority": 3,
+      "verification": "verified",
+      "evidence": "Portfolio struct; kernel.portfolio; architecture overview"
+    },
+    {
+      "id": "backtest",
+      "label": "BacktestEngine",
+      "layer": "runtime",
+      "responsibility": "确定性仿真环境：时钟推进 + SimulatedExchange。",
+      "crates": [
+        "nautilus-backtest"
+      ],
+      "keyFiles": [
+        "crates/backtest/src/engine.rs",
+        "crates/backtest/src/exchange.rs"
+      ],
+      "keySymbols": [
+        "BacktestEngine::run",
+        "SimulatedExchange"
+      ],
+      "dependsOn": [
+        "kernel",
+        "data-engine",
+        "exec-engine",
+        "catalog"
+      ],
+      "usedBy": [
+        "host-python",
+        "research-worker"
+      ],
+      "readingPriority": 2,
+      "verification": "verified",
+      "evidence": "BacktestEngine::run; SimulatedExchange; logos/03-runtime-dataflow.md"
+    },
+    {
+      "id": "live",
+      "label": "LiveNode",
+      "layer": "runtime",
+      "responsibility": "实盘节点：真实时钟、适配器连接与 run 循环。",
+      "crates": [
+        "nautilus-live"
+      ],
+      "keyFiles": [
+        "crates/live/src/node/mod.rs"
+      ],
+      "keySymbols": [
+        "LiveNode::run",
+        "LiveNodeBuilder::build"
+      ],
+      "dependsOn": [
+        "kernel",
+        "network",
+        "adapters",
+        "exec-engine"
+      ],
+      "usedBy": [
+        "host-python"
+      ],
+      "readingPriority": 3,
+      "verification": "verified",
+      "evidence": "LiveNode::run async; depends on network/execution"
+    },
+    {
+      "id": "adapters",
+      "label": "Venue Adapters",
+      "layer": "extension",
+      "responsibility": "把各 venue API 翻译为统一 DataClient/ExecutionClient 端口。",
+      "crates": [],
+      "keyFiles": [
+        "crates/adapters/binance/src/lib.rs",
+        "crates/adapters/sandbox/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "dependsOn": [
+        "network",
+        "msgbus"
+      ],
+      "usedBy": [
+        "data-engine",
+        "exec-engine",
+        "live"
+      ],
+      "readingPriority": 5,
+      "verification": "partial",
+      "evidence": "18 adapters in Cargo workspace members; architecture D-03 端口适配器"
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "layer": "extension",
+      "responsibility": "异步 HTTP/WebSocket 传输层。",
+      "crates": [
+        "nautilus-network"
+      ],
+      "keyFiles": [
+        "crates/network/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "dependsOn": [
+        "venue"
+      ],
+      "usedBy": [
+        "live",
+        "adapters"
+      ],
+      "readingPriority": 6,
+      "verification": "verified",
+      "evidence": "nautilus-live Cargo.toml depends on nautilus-network"
+    },
+    {
+      "id": "event-store",
+      "label": "Event Store",
+      "layer": "storage",
+      "responsibility": "领域事件持久化与崩溃恢复重放。",
+      "crates": [
+        "nautilus-event-store"
+      ],
+      "keyFiles": [
+        "crates/event_store/src/lib.rs",
+        "crates/system/src/event_store.rs"
+      ],
+      "keySymbols": [
+        "KernelEventStore"
+      ],
+      "dependsOn": [],
+      "usedBy": [
+        "kernel"
+      ],
+      "readingPriority": 7,
+      "verification": "partial",
+      "evidence": "NautilusKernel.event_store Option; event_store crate; crash-only docs"
+    }
+  ],
+  "overviewEdges": [
+    [
+      "venue",
+      "adapters"
+    ],
+    [
+      "venue",
+      "network"
+    ],
+    [
+      "catalog",
+      "data-engine"
+    ],
+    [
+      "catalog",
+      "backtest"
+    ],
+    [
+      "host-python",
+      "kernel"
+    ],
+    [
+      "host-python",
+      "backtest"
+    ],
+    [
+      "host-python",
+      "live"
+    ],
+    [
+      "host-research",
+      "research-worker"
+    ],
+    [
+      "research-worker",
+      "backtest"
+    ],
+    [
+      "kernel",
+      "data-engine"
+    ],
+    [
+      "kernel",
+      "risk-engine"
+    ],
+    [
+      "kernel",
+      "exec-engine"
+    ],
+    [
+      "kernel",
+      "portfolio"
+    ],
+    [
+      "kernel",
+      "trader"
+    ],
+    [
+      "kernel",
+      "msgbus"
+    ],
+    [
+      "kernel",
+      "cache"
+    ],
+    [
+      "data-engine",
+      "msgbus"
+    ],
+    [
+      "trader",
+      "msgbus"
+    ],
+    [
+      "trader",
+      "risk-engine"
+    ],
+    [
+      "risk-engine",
+      "exec-engine"
+    ],
+    [
+      "exec-engine",
+      "adapters"
+    ],
+    [
+      "exec-engine",
+      "msgbus"
+    ],
+    [
+      "portfolio",
+      "msgbus"
+    ],
+    [
+      "backtest",
+      "kernel"
+    ],
+    [
+      "live",
+      "kernel"
+    ],
+    [
+      "live",
+      "network"
+    ],
+    [
+      "adapters",
+      "network"
+    ],
+    [
+      "event-store",
+      "kernel"
+    ]
+  ],
+  "modules": [
+    {
+      "id": "nautilus-core",
+      "role": "protocol",
+      "responsibility": "基础原语：时间、UUID、数值与跨 crate 共享工具类型。",
+      "deps": [],
+      "keyFiles": [
+        "crates/core/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/core/src/lib.rs"
+      ],
+      "modules": [
+        "time",
+        "uuid",
+        "math"
+      ],
+      "evidence": "Cargo.toml workspace member crates/core; name=nautilus-core",
+      "dependents": [
+        "nautilus-analysis",
+        "nautilus-backtest",
+        "nautilus-common",
+        "nautilus-data",
+        "nautilus-event-store",
+        "nautilus-execution",
+        "nautilus-live",
+        "nautilus-model",
+        "nautilus-network",
+        "nautilus-persistence",
+        "nautilus-portfolio",
+        "nautilus-pyo3",
+        "nautilus-risk",
+        "nautilus-serialization",
+        "nautilus-system",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-model",
+      "role": "protocol",
+      "responsibility": "领域模型：订单、仓位、工具、行情与领域事件类型。",
+      "deps": [
+        "nautilus-core"
+      ],
+      "keyFiles": [
+        "crates/model/src/lib.rs",
+        "crates/model/src/orders/mod.rs",
+        "crates/model/src/events/mod.rs"
+      ],
+      "keySymbols": [
+        "OrderAny",
+        "OrderEventAny",
+        "PositionEvent"
+      ],
+      "entryPoints": [
+        "crates/model/src/lib.rs"
+      ],
+      "modules": [
+        "orders",
+        "events",
+        "data",
+        "instruments",
+        "position"
+      ],
+      "evidence": "crates/model/Cargo.toml depends on nautilus-core",
+      "dependents": [
+        "nautilus-analysis",
+        "nautilus-backtest",
+        "nautilus-common",
+        "nautilus-data",
+        "nautilus-event-store",
+        "nautilus-execution",
+        "nautilus-live",
+        "nautilus-persistence",
+        "nautilus-portfolio",
+        "nautilus-pyo3",
+        "nautilus-research-worker",
+        "nautilus-risk",
+        "nautilus-serialization",
+        "nautilus-system",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-serialization",
+      "role": "storage",
+      "responsibility": "领域对象序列化（msgpack/arrow 等），支撑持久化与跨语言边界。",
+      "deps": [
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/serialization/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/serialization/src/lib.rs"
+      ],
+      "modules": [
+        "msgpack",
+        "arrow"
+      ],
+      "evidence": "crates/serialization/Cargo.toml depends on nautilus-core, nautilus-model",
+      "dependents": [
+        "nautilus-persistence"
+      ]
+    },
+    {
+      "id": "nautilus-common",
+      "role": "runtime",
+      "responsibility": "进程内 MessageBus、Cache、时钟与组件生命周期。",
+      "deps": [
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/common/src/msgbus/core.rs",
+        "crates/common/src/msgbus/api.rs",
+        "crates/common/src/cache/mod.rs"
+      ],
+      "keySymbols": [
+        "MessageBus",
+        "Cache",
+        "publish_order_event",
+        "send_trading_command"
+      ],
+      "entryPoints": [
+        "crates/common/src/lib.rs"
+      ],
+      "modules": [
+        "msgbus",
+        "cache",
+        "clock",
+        "actor"
+      ],
+      "evidence": "crates/common/Cargo.toml depends on nautilus-core, nautilus-model; MessageBus/Cache symbols in source",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-data",
+        "nautilus-event-store",
+        "nautilus-execution",
+        "nautilus-live",
+        "nautilus-persistence",
+        "nautilus-portfolio",
+        "nautilus-pyo3",
+        "nautilus-research-worker",
+        "nautilus-risk",
+        "nautilus-system",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-data",
+      "role": "runtime",
+      "responsibility": "DataEngine：订阅/请求/发布行情与自定义数据。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/data/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "DataEngine",
+        "DataEngine::process_data",
+        "DataEngine::execute"
+      ],
+      "entryPoints": [
+        "crates/data/src/lib.rs"
+      ],
+      "modules": [
+        "engine",
+        "client",
+        "aggregation"
+      ],
+      "evidence": "crates/data/Cargo.toml + DataEngine in crates/data/src/engine/mod.rs",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-pyo3",
+        "nautilus-system"
+      ]
+    },
+    {
+      "id": "nautilus-execution",
+      "role": "runtime",
+      "responsibility": "ExecutionEngine：路由交易命令到 ExecutionClient，回写执行事件。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/execution/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "ExecutionEngine",
+        "ExecutionEngine::register_msgbus_handlers"
+      ],
+      "entryPoints": [
+        "crates/execution/src/lib.rs"
+      ],
+      "modules": [
+        "engine",
+        "client",
+        "emulator"
+      ],
+      "evidence": "crates/execution/Cargo.toml + ExecutionEngine struct",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-event-store",
+        "nautilus-live",
+        "nautilus-pyo3",
+        "nautilus-research-worker",
+        "nautilus-risk",
+        "nautilus-system",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-portfolio",
+      "role": "runtime",
+      "responsibility": "Portfolio：消费账户/订单/仓位/价格事件并增量核算。",
+      "deps": [
+        "nautilus-analysis",
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/portfolio/src/portfolio.rs"
+      ],
+      "keySymbols": [
+        "Portfolio"
+      ],
+      "entryPoints": [
+        "crates/portfolio/src/lib.rs"
+      ],
+      "modules": [
+        "portfolio",
+        "account"
+      ],
+      "evidence": "crates/portfolio/Cargo.toml + Portfolio struct",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-pyo3",
+        "nautilus-risk",
+        "nautilus-system",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-analysis",
+      "role": "extension",
+      "responsibility": "绩效统计与组合分析器，供 Portfolio/回测报告使用。",
+      "deps": [
+        "nautilus-core",
+        "nautilus-model"
+      ],
+      "keyFiles": [
+        "crates/analysis/src/analyzer.rs"
+      ],
+      "keySymbols": [
+        "PortfolioAnalyzer"
+      ],
+      "entryPoints": [
+        "crates/analysis/src/lib.rs"
+      ],
+      "modules": [
+        "analyzer",
+        "statistics"
+      ],
+      "evidence": "crates/analysis; PortfolioAnalyzer; portfolio/backtest Cargo deps",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-portfolio",
+        "nautilus-trading"
+      ]
+    },
+    {
+      "id": "nautilus-risk",
+      "role": "runtime",
+      "responsibility": "RiskEngine：TradingCommand 预检后转发 ExecutionEngine。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-portfolio"
+      ],
+      "keyFiles": [
+        "crates/risk/src/engine/mod.rs"
+      ],
+      "keySymbols": [
+        "RiskEngine",
+        "RiskEngine::execute",
+        "RiskEngine::register_msgbus_handlers"
+      ],
+      "entryPoints": [
+        "crates/risk/src/lib.rs"
+      ],
+      "modules": [
+        "engine"
+      ],
+      "evidence": "crates/risk/Cargo.toml; RiskEngine::execute forwards to exec_engine_queue_execute",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-pyo3",
+        "nautilus-system"
+      ]
+    },
+    {
+      "id": "nautilus-trading",
+      "role": "runtime",
+      "responsibility": "Strategy/Actor API：下单路径经 Risk（或 emulator/algo）进入内核。",
+      "deps": [
+        "nautilus-analysis",
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-portfolio"
+      ],
+      "keyFiles": [
+        "crates/trading/src/strategy/mod.rs",
+        "crates/system/src/trader.rs"
+      ],
+      "keySymbols": [
+        "submit_order_native",
+        "send_risk_command",
+        "Trader"
+      ],
+      "entryPoints": [
+        "crates/trading/src/lib.rs"
+      ],
+      "modules": [
+        "strategy",
+        "actor",
+        "algorithm"
+      ],
+      "evidence": "submit_order_native → send_risk_command → MessagingSwitchboard::risk_engine_queue_execute",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-pyo3",
+        "nautilus-research-worker",
+        "nautilus-system"
+      ]
+    },
+    {
+      "id": "nautilus-system",
+      "role": "runtime",
+      "responsibility": "NautilusKernel 组装 Data/Risk/Exec/Portfolio/Trader 与 Cache。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-data",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-portfolio",
+        "nautilus-risk",
+        "nautilus-trading"
+      ],
+      "keyFiles": [
+        "crates/system/src/kernel.rs",
+        "crates/system/src/builder.rs",
+        "crates/system/src/trader.rs"
+      ],
+      "keySymbols": [
+        "NautilusKernel",
+        "NautilusKernelBuilder::build",
+        "Trader"
+      ],
+      "entryPoints": [
+        "crates/system/src/lib.rs"
+      ],
+      "modules": [
+        "kernel",
+        "builder",
+        "trader",
+        "controller"
+      ],
+      "evidence": "NautilusKernel fields: data_engine/risk_engine/exec_engine/portfolio/trader/cache",
+      "dependents": [
+        "nautilus-backtest",
+        "nautilus-event-store",
+        "nautilus-pyo3"
+      ]
+    },
+    {
+      "id": "nautilus-persistence",
+      "role": "storage",
+      "responsibility": "历史数据 catalog / Parquet 读写，支撑回测数据注入。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-model",
+        "nautilus-serialization"
+      ],
+      "keyFiles": [
+        "crates/persistence/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/persistence/src/lib.rs"
+      ],
+      "modules": [
+        "catalog",
+        "backend"
+      ],
+      "evidence": "crates/persistence/Cargo.toml; used optionally by data/backtest",
+      "dependents": []
+    },
+    {
+      "id": "nautilus-backtest",
+      "role": "runtime",
+      "responsibility": "BacktestEngine + SimulatedExchange：确定性时钟推进与仿真撮合。",
+      "deps": [
+        "nautilus-analysis",
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-data",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-portfolio",
+        "nautilus-risk",
+        "nautilus-system",
+        "nautilus-trading"
+      ],
+      "keyFiles": [
+        "crates/backtest/src/engine.rs",
+        "crates/backtest/src/exchange.rs",
+        "crates/backtest/src/node.rs"
+      ],
+      "keySymbols": [
+        "BacktestEngine",
+        "BacktestEngine::run",
+        "SimulatedExchange"
+      ],
+      "entryPoints": [
+        "crates/backtest/src/lib.rs"
+      ],
+      "modules": [
+        "engine",
+        "exchange",
+        "node",
+        "modules"
+      ],
+      "evidence": "BacktestEngine::run → run_impl; SimulatedExchange in exchange.rs; Cargo deps include system/risk/trading",
+      "dependents": [
+        "nautilus-pyo3",
+        "nautilus-research-worker"
+      ]
+    },
+    {
+      "id": "nautilus-network",
+      "role": "extension",
+      "responsibility": "WebSocket/HTTP 网络基座，供 live 与 venue 适配器复用。",
+      "deps": [
+        "nautilus-core"
+      ],
+      "keyFiles": [
+        "crates/network/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/network/src/lib.rs"
+      ],
+      "modules": [
+        "websocket",
+        "http"
+      ],
+      "evidence": "crates/network/Cargo.toml depends on nautilus-core; live depends on network",
+      "dependents": [
+        "nautilus-live"
+      ]
+    },
+    {
+      "id": "nautilus-live",
+      "role": "runtime",
+      "responsibility": "LiveNode：真实时钟、venue 客户端、重连与运行循环。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-network"
+      ],
+      "keyFiles": [
+        "crates/live/src/node/mod.rs",
+        "crates/live/src/node/builder.rs"
+      ],
+      "keySymbols": [
+        "LiveNode",
+        "LiveNodeBuilder::build",
+        "LiveNode::run"
+      ],
+      "entryPoints": [
+        "crates/live/src/lib.rs"
+      ],
+      "modules": [
+        "node",
+        "client"
+      ],
+      "evidence": "LiveNode::run / run_with_mode; Cargo.toml core deps + optional system/data/risk/trading features",
+      "dependents": [
+        "nautilus-pyo3"
+      ]
+    },
+    {
+      "id": "nautilus-event-store",
+      "role": "storage",
+      "responsibility": "事件存储与重放，支撑 crash-only 恢复路径。",
+      "deps": [
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-execution",
+        "nautilus-model",
+        "nautilus-system"
+      ],
+      "keyFiles": [
+        "crates/event_store/src/lib.rs",
+        "crates/system/src/event_store.rs"
+      ],
+      "keySymbols": [
+        "KernelEventStore"
+      ],
+      "entryPoints": [
+        "crates/event_store/src/lib.rs"
+      ],
+      "modules": [
+        "store",
+        "replay"
+      ],
+      "evidence": "crates/event_store/Cargo.toml; NautilusKernel event_store field; logos architecture FR-004",
+      "dependents": []
+    },
+    {
+      "id": "nautilus-pyo3",
+      "role": "host",
+      "responsibility": "Python 控制面绑定：把内核与适配器暴露给 Python 编排。",
+      "deps": [
+        "nautilus-backtest",
+        "nautilus-common",
+        "nautilus-core",
+        "nautilus-data",
+        "nautilus-execution",
+        "nautilus-live",
+        "nautilus-model",
+        "nautilus-portfolio",
+        "nautilus-risk",
+        "nautilus-system",
+        "nautilus-trading"
+      ],
+      "keyFiles": [
+        "crates/pyo3/src/lib.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/pyo3/src/lib.rs"
+      ],
+      "modules": [
+        "python"
+      ],
+      "evidence": "crates/pyo3/Cargo.toml features python for core engine crates; README PyO3 control plane",
+      "dependents": []
+    },
+    {
+      "id": "nautilus-research-domain",
+      "role": "host",
+      "responsibility": "A股研究协调器：SQLite 元数据、快照、任务状态与研究命令契约。",
+      "deps": [],
+      "keyFiles": [
+        "crates/research-domain/src/coordinator.rs",
+        "crates/research-domain/src/task.rs",
+        "crates/research-domain/src/store.rs"
+      ],
+      "keySymbols": [
+        "Coordinator",
+        "Coordinator::submit_run",
+        "TaskState"
+      ],
+      "entryPoints": [
+        "crates/research-domain/src/lib.rs"
+      ],
+      "modules": [
+        "coordinator",
+        "store",
+        "universe",
+        "plan",
+        "quotes"
+      ],
+      "evidence": "crates/research-domain/Cargo.toml: 无 nautilus-* 库依赖；research-worker 仅在 [dev-dependencies]",
+      "dependents": [
+        "nautilus-research-cli",
+        "nautilus-research-desktop",
+        "nautilus-research-worker"
+      ]
+    },
+    {
+      "id": "nautilus-research-worker",
+      "role": "host",
+      "responsibility": "研究工作进程：装配快照行情并调用回测引擎产出结果。",
+      "deps": [
+        "nautilus-research-domain",
+        "nautilus-backtest",
+        "nautilus-model",
+        "nautilus-trading",
+        "nautilus-execution",
+        "nautilus-common"
+      ],
+      "keyFiles": [
+        "crates/research-worker/src/adapter.rs",
+        "crates/research-worker/src/runner.rs"
+      ],
+      "keySymbols": [
+        "run_task",
+        "execute",
+        "run_ema_daily"
+      ],
+      "entryPoints": [
+        "crates/research-worker/src/lib.rs"
+      ],
+      "modules": [
+        "adapter",
+        "runner",
+        "fees"
+      ],
+      "evidence": "adapter.rs run_task→execute; Cargo.toml depends on backtest/model/trading",
+      "dependents": [
+        "nautilus-research-cli",
+        "nautilus-research-desktop"
+      ]
+    },
+    {
+      "id": "nautilus-research-desktop",
+      "role": "host",
+      "responsibility": "egui/eframe 桌面宿主：GUI 发类型化消息，协调器在后台线程。",
+      "deps": [
+        "nautilus-research-domain",
+        "nautilus-research-worker"
+      ],
+      "keyFiles": [
+        "crates/research-desktop/src/main.rs",
+        "crates/research-desktop/src/app.rs",
+        "crates/research-desktop/src/theme.rs"
+      ],
+      "keySymbols": [
+        "main",
+        "ResearchApp",
+        "eframe::App"
+      ],
+      "entryPoints": [
+        "crates/research-desktop/src/main.rs"
+      ],
+      "modules": [
+        "app",
+        "theme",
+        "bridge"
+      ],
+      "evidence": "main.rs eframe::run_native; ResearchApp; Cargo.toml path deps domain/worker",
+      "dependents": []
+    },
+    {
+      "id": "nautilus-research-cli",
+      "role": "host",
+      "responsibility": "研究 CLI 薄壳：参数 → 类型化命令 → 复用 Coordinator。",
+      "deps": [
+        "nautilus-research-domain",
+        "nautilus-research-worker"
+      ],
+      "keyFiles": [
+        "crates/research-cli/src/main.rs"
+      ],
+      "keySymbols": [],
+      "entryPoints": [
+        "crates/research-cli/src/main.rs"
+      ],
+      "modules": [
+        "cli"
+      ],
+      "evidence": "crates/research-cli/Cargo.toml path deps; core-05-research-architecture CLI 薄壳说明",
+      "dependents": []
+    }
+  ],
+  "flows": {
+    "backtest-tick": {
+      "id": "backtest-tick",
+      "title": "回测主循环",
+      "priority": "P0",
+      "summary": "历史数据注入后，BacktestEngine 推进时钟：行情→策略→风控→仿真撮合→组合核算。",
+      "nodes": [
+        {
+          "id": "bt1",
+          "label": "装配 Kernel + 数据",
+          "crate": "nautilus-backtest",
+          "file": "crates/backtest/src/engine.rs",
+          "symbol": "BacktestEngine",
+          "responsibility": "持有 venues/kernel/数据索引，准备确定性回放。",
+          "verification": "verified",
+          "evidence": "pub struct BacktestEngine in engine.rs"
+        },
+        {
+          "id": "bt2",
+          "label": "run() 入口",
+          "crate": "nautilus-backtest",
+          "file": "crates/backtest/src/engine.rs",
+          "symbol": "BacktestEngine::run",
+          "responsibility": "校验错误态后进入 run_impl，结束后 finalize。",
+          "verification": "verified",
+          "evidence": "engine.rs:699 BacktestEngine::run → run_impl"
+        },
+        {
+          "id": "bt3",
+          "label": "DataEngine 发布行情",
+          "crate": "nautilus-data",
+          "file": "crates/data/src/engine/mod.rs",
+          "symbol": "DataEngine::process_data",
+          "responsibility": "处理回放数据点并发布到 MessageBus。",
+          "verification": "verified",
+          "evidence": "DataEngine::process_data / process_pipeline"
+        },
+        {
+          "id": "bt4",
+          "label": "Strategy 响应并下单",
+          "crate": "nautilus-trading",
+          "file": "crates/trading/src/strategy/mod.rs",
+          "symbol": "submit_order_native",
+          "responsibility": "写 Cache、发布 OrderInitialized，发送 TradingCommand。",
+          "verification": "verified",
+          "evidence": "submit_order_native → publish_order_initialized + send_risk_command"
+        },
+        {
+          "id": "bt5",
+          "label": "RiskEngine 预检",
+          "crate": "nautilus-risk",
+          "file": "crates/risk/src/engine/mod.rs",
+          "symbol": "RiskEngine::execute",
+          "responsibility": "额度/节流等检查，通过后转发执行队列。",
+          "verification": "verified",
+          "evidence": "RiskEngine::execute; handler → exec_engine_queue_execute"
+        },
+        {
+          "id": "bt6",
+          "label": "SimulatedExchange 撮合",
+          "crate": "nautilus-backtest",
+          "file": "crates/backtest/src/exchange.rs",
+          "symbol": "SimulatedExchange",
+          "responsibility": "仿真撮合与流动性模型，生成执行事件。",
+          "verification": "verified",
+          "evidence": "pub struct SimulatedExchange; runtime-dataflow 回测链路"
+        },
+        {
+          "id": "bt7",
+          "label": "ExecutionEngine 回写",
+          "crate": "nautilus-execution",
+          "file": "crates/execution/src/engine/mod.rs",
+          "symbol": "ExecutionEngine",
+          "responsibility": "更新 Cache 并经 MessageBus 发布订单/成交事件。",
+          "verification": "partial",
+          "evidence": "ExecutionEngine owns clients/cache; architecture overview 执行事件回写"
+        },
+        {
+          "id": "bt8",
+          "label": "Portfolio 核算",
+          "crate": "nautilus-portfolio",
+          "file": "crates/portfolio/src/portfolio.rs",
+          "symbol": "Portfolio",
+          "responsibility": "消费事件增量更新敞口与盈亏。",
+          "verification": "verified",
+          "evidence": "Portfolio struct; 03-runtime-dataflow.md"
+        }
+      ],
+      "edges": [
+        [
+          "bt1",
+          "bt2"
+        ],
+        [
+          "bt2",
+          "bt3"
+        ],
+        [
+          "bt3",
+          "bt4"
+        ],
+        [
+          "bt4",
+          "bt5"
+        ],
+        [
+          "bt5",
+          "bt6"
+        ],
+        [
+          "bt6",
+          "bt7"
+        ],
+        [
+          "bt7",
+          "bt8"
+        ],
+        [
+          "bt8",
+          "bt3"
+        ]
+      ]
+    },
+    "order-lifecycle": {
+      "id": "order-lifecycle",
+      "title": "订单命令链路",
+      "priority": "P0",
+      "summary": "Strategy.submit_order → RiskEngine → ExecutionEngine → venue/仿真，事件回写 Cache/Bus。",
+      "nodes": [
+        {
+          "id": "ol1",
+          "label": "submit_order_native",
+          "crate": "nautilus-trading",
+          "file": "crates/trading/src/strategy/mod.rs",
+          "symbol": "submit_order_native",
+          "responsibility": "校验 INITIALIZED，加入 Cache，构造 SubmitOrder。",
+          "verification": "verified",
+          "evidence": "strategy/mod.rs:2335 submit_order_native"
+        },
+        {
+          "id": "ol2",
+          "label": "publish OrderInitialized",
+          "crate": "nautilus-trading",
+          "file": "crates/trading/src/strategy/mod.rs",
+          "symbol": "publish_order_initialized",
+          "responsibility": "向 events.order.{strategy_id} 发布初始化事件。",
+          "verification": "verified",
+          "evidence": "publish_order_event(topic, OrderEventAny::Initialized)"
+        },
+        {
+          "id": "ol3",
+          "label": "send_risk_command",
+          "crate": "nautilus-trading",
+          "file": "crates/trading/src/strategy/mod.rs",
+          "symbol": "send_risk_command",
+          "responsibility": "点对点发送到 risk_engine_queue_execute。",
+          "verification": "verified",
+          "evidence": "MessagingSwitchboard::risk_engine_queue_execute"
+        },
+        {
+          "id": "ol4",
+          "label": "RiskEngine::execute",
+          "crate": "nautilus-risk",
+          "file": "crates/risk/src/engine/mod.rs",
+          "symbol": "RiskEngine::execute",
+          "responsibility": "预检；拒单则发 OrderRejected，通过则转发。",
+          "verification": "verified",
+          "evidence": "RiskEngine::execute + register_msgbus_handlers"
+        },
+        {
+          "id": "ol5",
+          "label": "ExecutionEngine 路由",
+          "crate": "nautilus-execution",
+          "file": "crates/execution/src/engine/mod.rs",
+          "symbol": "ExecutionEngine::register_msgbus_handlers",
+          "responsibility": "按 venue/client 路由 TradingCommand。",
+          "verification": "verified",
+          "evidence": "exec_engine_execute handler; clients/routing_map fields"
+        },
+        {
+          "id": "ol6",
+          "label": "Client / SimulatedExchange",
+          "crate": "nautilus-backtest",
+          "file": "crates/backtest/src/exchange.rs",
+          "symbol": "SimulatedExchange",
+          "responsibility": "仿真或真实客户端执行并回报。",
+          "verification": "partial",
+          "evidence": "回测用 SimulatedExchange；实盘经 adapters ExecutionClient"
+        },
+        {
+          "id": "ol7",
+          "label": "订单事件发布",
+          "crate": "nautilus-common",
+          "file": "crates/common/src/msgbus/api.rs",
+          "symbol": "publish_order_event",
+          "responsibility": "Submitted/Accepted/Filled 等事件广播。",
+          "verification": "verified",
+          "evidence": "msgbus/api.rs publish_order_event"
+        }
+      ],
+      "edges": [
+        [
+          "ol1",
+          "ol2"
+        ],
+        [
+          "ol2",
+          "ol3"
+        ],
+        [
+          "ol3",
+          "ol4"
+        ],
+        [
+          "ol4",
+          "ol5"
+        ],
+        [
+          "ol5",
+          "ol6"
+        ],
+        [
+          "ol6",
+          "ol7"
+        ]
+      ]
+    },
+    "live-message": {
+      "id": "live-message",
+      "title": "实盘消息流",
+      "priority": "P1",
+      "summary": "Venue WS → Adapter → DataEngine → Strategy → Risk/Exec → Venue，回报回写内核。",
+      "nodes": [
+        {
+          "id": "lm1",
+          "label": "LiveNode::run",
+          "crate": "nautilus-live",
+          "file": "crates/live/src/node/mod.rs",
+          "symbol": "LiveNode::run",
+          "responsibility": "启动实盘节点运行循环。",
+          "verification": "verified",
+          "evidence": "pub async fn run in node/mod.rs:1070"
+        },
+        {
+          "id": "lm2",
+          "label": "Network I/O",
+          "crate": "nautilus-network",
+          "file": "crates/network/src/lib.rs",
+          "symbol": "",
+          "responsibility": "tokio 异步承载 REST/WS。",
+          "verification": "partial",
+          "evidence": "live Cargo.toml depends on nautilus-network; README tokio networking"
+        },
+        {
+          "id": "lm3",
+          "label": "Adapter DataClient",
+          "crate": "nautilus-live",
+          "file": "crates/adapters/binance/src/lib.rs",
+          "symbol": "",
+          "responsibility": "解析 venue 行情为规范化 Data。",
+          "verification": "partial",
+          "evidence": "workspace adapters; architecture D-03/D-05"
+        },
+        {
+          "id": "lm4",
+          "label": "DataEngine 处理",
+          "crate": "nautilus-data",
+          "file": "crates/data/src/engine/mod.rs",
+          "symbol": "DataEngine::process_data",
+          "responsibility": "发布行情事件到 MessageBus。",
+          "verification": "verified",
+          "evidence": "DataEngine::process_data"
+        },
+        {
+          "id": "lm5",
+          "label": "Strategy 决策",
+          "crate": "nautilus-trading",
+          "file": "crates/trading/src/strategy/mod.rs",
+          "symbol": "submit_order_native",
+          "responsibility": "同回测命令路径进入风控。",
+          "verification": "verified",
+          "evidence": "同一 submit_order_native；03-runtime-dataflow 实盘链路同构"
+        },
+        {
+          "id": "lm6",
+          "label": "ExecutionClient 下单",
+          "crate": "nautilus-execution",
+          "file": "crates/execution/src/engine/mod.rs",
+          "symbol": "ExecutionEngine",
+          "responsibility": "路由到真实 ExecutionClient。",
+          "verification": "partial",
+          "evidence": "ExecutionEngine clients IndexMap; live adapters"
+        },
+        {
+          "id": "lm7",
+          "label": "回报 → Cache/Bus",
+          "crate": "nautilus-common",
+          "file": "crates/common/src/cache/mod.rs",
+          "symbol": "Cache",
+          "responsibility": "状态更新并通知 Portfolio/Risk/Strategy。",
+          "verification": "partial",
+          "evidence": "architecture overview + runtime-dataflow live path"
+        }
+      ],
+      "edges": [
+        [
+          "lm1",
+          "lm2"
+        ],
+        [
+          "lm2",
+          "lm3"
+        ],
+        [
+          "lm3",
+          "lm4"
+        ],
+        [
+          "lm4",
+          "lm5"
+        ],
+        [
+          "lm5",
+          "lm6"
+        ],
+        [
+          "lm6",
+          "lm7"
+        ]
+      ]
+    },
+    "crash-recovery": {
+      "id": "crash-recovery",
+      "title": "崩溃恢复重放",
+      "priority": "P1",
+      "summary": "crash-only：重启后从 event store/backing 重放事件重建 Cache/Portfolio。",
+      "nodes": [
+        {
+          "id": "cr1",
+          "label": "节点重启",
+          "crate": "nautilus-system",
+          "file": "crates/system/src/kernel.rs",
+          "symbol": "NautilusKernel",
+          "responsibility": "重新创建内核实例，可选加载 event store。",
+          "verification": "partial",
+          "evidence": "kernel event_store / event_store_replay fields"
+        },
+        {
+          "id": "cr2",
+          "label": "加载历史事件",
+          "crate": "nautilus-event-store",
+          "file": "crates/event_store/src/lib.rs",
+          "symbol": "KernelEventStore",
+          "responsibility": "从持久化存储读取事件流。",
+          "verification": "partial",
+          "evidence": "event_store crate + system/event_store.rs trait"
+        },
+        {
+          "id": "cr3",
+          "label": "重放至 Cache",
+          "crate": "nautilus-common",
+          "file": "crates/common/src/cache/mod.rs",
+          "symbol": "Cache",
+          "responsibility": "按事件顺序重建订单/仓位等状态。",
+          "verification": "partial",
+          "evidence": "03-runtime-dataflow §3.3 恢复路径"
+        },
+        {
+          "id": "cr4",
+          "label": "Portfolio 重建",
+          "crate": "nautilus-portfolio",
+          "file": "crates/portfolio/src/portfolio.rs",
+          "symbol": "Portfolio",
+          "responsibility": "消费重放事件恢复核算视图。",
+          "verification": "partial",
+          "evidence": "runtime-dataflow recovery; Portfolio consumer"
+        },
+        {
+          "id": "cr5",
+          "label": "继续处理新事件",
+          "crate": "nautilus-live",
+          "file": "crates/live/src/node/mod.rs",
+          "symbol": "LiveNode::run",
+          "responsibility": "恢复完成后进入正常实时处理。",
+          "verification": "unverified",
+          "evidence": "架构文档描述；具体衔接点未在本次逐行核验"
+        }
+      ],
+      "edges": [
+        [
+          "cr1",
+          "cr2"
+        ],
+        [
+          "cr2",
+          "cr3"
+        ],
+        [
+          "cr3",
+          "cr4"
+        ],
+        [
+          "cr4",
+          "cr5"
+        ]
+      ]
+    },
+    "research-run": {
+      "id": "research-run",
+      "title": "研序研究运行",
+      "priority": "P0",
+      "summary": "Desktop/CLI → Coordinator 入队 → Worker 子进程读快照并调用回测引擎 → 产物提交。",
+      "nodes": [
+        {
+          "id": "rr1",
+          "label": "Desktop 启动",
+          "crate": "nautilus-research-desktop",
+          "file": "crates/research-desktop/src/main.rs",
+          "symbol": "main",
+          "responsibility": "eframe 窗口 + attach_bridge(workspace)。",
+          "verification": "verified",
+          "evidence": "main.rs eframe::run_native + ResearchApp::attach_bridge"
+        },
+        {
+          "id": "rr2",
+          "label": "Coordinator::submit_run",
+          "crate": "nautilus-research-domain",
+          "file": "crates/research-domain/src/coordinator.rs",
+          "symbol": "Coordinator::submit_run",
+          "responsibility": "持久化任务元数据并启动 worker。",
+          "verification": "verified",
+          "evidence": "pub fn submit_run in coordinator.rs"
+        },
+        {
+          "id": "rr3",
+          "label": "Worker run_task",
+          "crate": "nautilus-research-worker",
+          "file": "crates/research-worker/src/adapter.rs",
+          "symbol": "run_task",
+          "responsibility": "工作进程入口，调用共享 execute。",
+          "verification": "verified",
+          "evidence": "pub fn run_task → execute"
+        },
+        {
+          "id": "rr4",
+          "label": "装配行情快照",
+          "crate": "nautilus-research-worker",
+          "file": "crates/research-worker/src/adapter.rs",
+          "symbol": "execute",
+          "responsibility": "读 SQLite/对象存储分区 Parquet 与辅助数据。",
+          "verification": "verified",
+          "evidence": "execute() 读 manifest.partitions + parquet_io::read_quotes_partition"
+        },
+        {
+          "id": "rr5",
+          "label": "调用回测引擎",
+          "crate": "nautilus-research-worker",
+          "file": "crates/research-worker/src/runner.rs",
+          "symbol": "run_ema_daily",
+          "responsibility": "在 worker 线程内驱动 BacktestEngine（引擎非 Send）。",
+          "verification": "verified",
+          "evidence": "runner.rs run_ema_daily; Cargo depends on nautilus-backtest; architecture note Rc/RefCell"
+        },
+        {
+          "id": "rr6",
+          "label": "写产物并回填哈希",
+          "crate": "nautilus-research-domain",
+          "file": "crates/research-domain/src/coordinator.rs",
+          "symbol": "Coordinator",
+          "responsibility": "校验清单、原子提交元数据终态。",
+          "verification": "partial",
+          "evidence": "adapter execute 注释写产物→回填哈希; core-05 两阶段提交"
+        }
+      ],
+      "edges": [
+        [
+          "rr1",
+          "rr2"
+        ],
+        [
+          "rr2",
+          "rr3"
+        ],
+        [
+          "rr3",
+          "rr4"
+        ],
+        [
+          "rr4",
+          "rr5"
+        ],
+        [
+          "rr5",
+          "rr6"
+        ]
+      ]
+    }
+  },
+  "readingPath": [
+    {
+      "id": "step-1",
+      "module": "nautilus-model",
+      "why": "所有事件与订单语义都建立在领域类型上。",
+      "whatToRead": [
+        "crates/model/src/lib.rs",
+        "crates/model/src/orders/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "Order/Event 边界",
+        "行情数据类型"
+      ],
+      "skip": [
+        "各 venue 专用扩展"
+      ]
+    },
+    {
+      "id": "step-2",
+      "module": "nautilus-common",
+      "why": "MessageBus 与 Cache 是组件协作的中枢。",
+      "whatToRead": [
+        "crates/common/src/msgbus/core.rs",
+        "crates/common/src/cache/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "发布/点对点发送",
+        "Cache 存什么"
+      ],
+      "skip": [
+        "external backing 细节"
+      ]
+    },
+    {
+      "id": "step-3",
+      "module": "nautilus-system",
+      "why": "先看 Kernel 如何把六组件装在一起。",
+      "whatToRead": [
+        "crates/system/src/kernel.rs",
+        "crates/system/src/builder.rs"
+      ],
+      "whatToUnderstand": [
+        "NautilusKernel 字段",
+        "Builder 装配顺序"
+      ],
+      "skip": [
+        "streaming feature 分支"
+      ]
+    },
+    {
+      "id": "step-4",
+      "module": "nautilus-data",
+      "why": "理解行情如何进入策略回调。",
+      "whatToRead": [
+        "crates/data/src/engine/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "process_data",
+        "subscribe/request 命令"
+      ],
+      "skip": [
+        "复杂聚合器实现"
+      ]
+    },
+    {
+      "id": "step-5",
+      "module": "nautilus-trading",
+      "why": "掌握下单入口与命令分流。",
+      "whatToRead": [
+        "crates/trading/src/strategy/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "submit_order_native",
+        "risk/emulator/algo 分支"
+      ],
+      "skip": [
+        "示例策略全集"
+      ]
+    },
+    {
+      "id": "step-6",
+      "module": "nautilus-risk",
+      "why": "看清预检如何拦截或放行命令。",
+      "whatToRead": [
+        "crates/risk/src/engine/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "execute",
+        "msgbus handlers"
+      ],
+      "skip": [
+        "节流器内部算法细节"
+      ]
+    },
+    {
+      "id": "step-7",
+      "module": "nautilus-execution",
+      "why": "命令如何路由到客户端并回写事件。",
+      "whatToRead": [
+        "crates/execution/src/engine/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "clients/routing_map",
+        "事件回写路径"
+      ],
+      "skip": [
+        "各 OMS 特例"
+      ]
+    },
+    {
+      "id": "step-8",
+      "module": "nautilus-backtest",
+      "why": "把整条链放到确定性时钟里跑通。",
+      "whatToRead": [
+        "crates/backtest/src/engine.rs",
+        "crates/backtest/src/exchange.rs"
+      ],
+      "whatToUnderstand": [
+        "run/run_impl",
+        "SimulatedExchange 角色"
+      ],
+      "skip": [
+        "DeFi 扩展路径"
+      ]
+    },
+    {
+      "id": "step-9",
+      "module": "nautilus-live",
+      "why": "对照实盘节点与回测的同构/差异。",
+      "whatToRead": [
+        "crates/live/src/node/mod.rs"
+      ],
+      "whatToUnderstand": [
+        "LiveNode::run",
+        "与 network/adapters 关系"
+      ],
+      "skip": [
+        "具体 venue 协议细节"
+      ]
+    },
+    {
+      "id": "step-10",
+      "module": "nautilus-research-domain",
+      "why": "本仓库 A股研究宿主如何复用回测引擎。",
+      "whatToRead": [
+        "crates/research-domain/src/coordinator.rs",
+        "crates/research-worker/src/adapter.rs",
+        "crates/research-desktop/src/main.rs"
+      ],
+      "whatToUnderstand": [
+        "Coordinator 任务状态机",
+        "worker 隔离与引擎非 Send"
+      ],
+      "skip": [
+        "AI 工作台离线原型页面"
+      ]
+    }
+  ]
+}

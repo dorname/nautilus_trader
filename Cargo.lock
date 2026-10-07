@@ -7950,7 +7950,9 @@ dependencies = [
  "nautilus-research-domain",
  "nautilus-research-testkit",
  "nautilus-research-worker",
+ "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

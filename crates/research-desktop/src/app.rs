@@ -67,6 +67,12 @@ const NODES: [(&str, &str, &str, &str, u32); 6] = [
     ),
 ];
 
+/// 原型 `plan()` 参考快照选项。
+const PLAN_SNAP_IDS: [&str; 2] = ["PLAN-20260108", "PLAN-20260105"];
+const PLAN_SNAP_LABELS: [&str; 2] = ["01-08 收盘 · 合成计划快照", "01-05 收盘 · 过期示例"];
+const PLAN_SYMS: [&str; 3] = ["SYN-A", "SYN-B", "SYN-C"];
+const PLAN_PRICES: [f64; 3] = [11.00, 19.50, 8.50];
+
 /// 提交类页面的轮询键。
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PageKey {
@@ -75,6 +81,29 @@ enum PageKey {
     Plan,
     /// 实验运行（事件调试 / 回测实验共用入口）。
     Run,
+}
+
+/// 离线演示任务动作（对齐原型 `startTask`，约 850ms 后提交）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemoAction {
+    /// 从需求生成设计草稿（不保存 D）。
+    DesignDraft,
+    /// 生成策略代码草稿。
+    GenerateCode,
+    /// 模拟更新数据快照。
+    UpdateData,
+}
+
+/// 进行中的离线演示任务。
+#[derive(Debug, Clone)]
+struct DemoTask {
+    /// 任务序号（取消时与当前任务比对，避免过期完成）。
+    id: u64,
+    label: &'static str,
+    action: DemoAction,
+    /// 启动时的项目修订计数（输入变化则丢弃结果）。
+    stamp: u64,
+    started: std::time::Instant,
 }
 
 /// 净值比较面板缓存（RD-005：键 = 最近两次实验任务 ID 对，（次新, 最新）；
@@ -104,9 +133,15 @@ pub struct ResearchApp {
     pub snapshot_page: PageState<TaskWatch>,
     pub universe_saved: Option<nautilus_research_domain::protocol::UniverseRef>,
 
-    // ---- 股票池
+    // ---- 股票池（演示层筛选 + 协调器规则）
     pub universe_form: UniverseForm,
     pub universe_page: PageState<TaskWatch>,
+    /// 股票池搜索关键字（原型 `poolSearch`）。
+    pub pool_search: String,
+    /// 股票池市场筛选索引：0=全部 / 1=沪市 / 2=深市。
+    pub pool_market: usize,
+    /// 候选样本详情弹层（fixture 下标）。
+    pub pool_stock_detail: Option<usize>,
 
     // ---- 回测实验（运行参数 + 协调器比较）
     pub run_form: RunForm,
@@ -130,15 +165,26 @@ pub struct ResearchApp {
     pub ai_req_acceptance: String,
     pub ai_req_alloc: f64,
     pub ai_req_min_amount: String,
-    // 策略设计：设计说明；策略开发：代码草稿
+    // 策略设计：设计说明与投入/成交额草稿（原型 designAllocation / designAmount，万元）
     pub ai_design_note: String,
+    pub ai_design_alloc: f64,
+    pub ai_design_min_amount: String,
     pub ai_code_source: String,
+    /// 上次「检查草稿」通过时的源码快照（原型 `checked`；与当前草稿相等才可保存）。
+    pub ai_code_checked: Option<String>,
+    /// 展示资金约束修复差异（原型 `showDiff`）。
+    pub show_code_diff: bool,
     // 实验任务与当前实验引用
     pub ai_run: PageState<TaskWatch>,
     pub ai_experiment: Option<usize>,
     // 计划桥：交易日/持仓 JSON/核对结果/导出产物
     pub ai_plan_trade_date: String,
     pub ai_plan_json: String,
+    /// 参考快照下标（0 = PLAN-20260108，1 = 过期示例）。
+    pub ai_plan_snapshot: usize,
+    pub ai_plan_cash: String,
+    pub ai_plan_qty: [String; 3],
+    pub ai_plan_sell: [String; 3],
     pub ai_plan_issues: Option<Vec<String>>,
     pub ai_plan_csv: Option<String>,
 
@@ -149,8 +195,15 @@ pub struct ResearchApp {
     pub show_logs: bool,
     /// 运行记录（任务动作、依据和产物；不含模型内部推理）。
     pub logs: Vec<String>,
-    /// 对话产物卡（项目 ID, 消息序号 → 目标路由）。
-    pub chat_cards: Vec<(usize, usize, Route)>,
+    /// 离线演示任务（设计生成 / 代码生成 / 数据更新）。
+    demo_task: Option<DemoTask>,
+    /// 可重试的上次离线任务。
+    demo_retry: Option<( &'static str, DemoAction)>,
+    /// 下次离线任务模拟失败（运行记录控制）。
+    fail_next: bool,
+    demo_task_seq: u64,
+    /// 对话产物卡（项目 ID, 消息序号 → 目标路由 + 原型 title/desc）。
+    pub chat_cards: Vec<ArtifactCard>,
     /// 新建项目浮层。
     pub new_project_open: bool,
     pub new_project_name: String,
@@ -158,14 +211,40 @@ pub struct ResearchApp {
     pub design_tab_flow: bool,
     /// 设计页选中节点（NODES 下标）。
     pub design_node: usize,
+    /// 调试页节点筛选：空 = 全部事件。
+    pub debug_filter: String,
     /// 调试页比较的两个实验 ID。
     pub debug_cmp: [usize; 2],
-    /// 版本只读查看浮层（版本 ID, 源码）。
-    pub view_source: Option<(usize, String)>,
+    /// 版本只读查看浮层（版本 ID, 源码, 可选高亮行号）。
+    pub view_source: Option<(usize, String, Option<u32>)>,
+    /// 需求只读查看浮层（需求版本 ID）。
+    pub view_req: Option<usize>,
+    /// 调试页当前选中的实验 ID。
+    pub debug_run_id: usize,
+    /// 调试页当前事件序号（1-based；0 = 起点前）。
+    pub debug_event_index: usize,
+    /// 调试页是否在自动播放。
+    pub debug_playing: bool,
+    /// 开发页待定位的源码行（1-based）。
+    pub jump_code_line: Option<u32>,
+    /// 计划导出二次确认浮层。
+    pub plan_export_confirm: bool,
+    /// 调试自动播放节拍。
+    debug_play_at: Option<std::time::Instant>,
     /// 对话区回底标记（新消息后滚动到底部）。
     chat_pin: bool,
     /// 上一帧路由（用于一次性恢复滚动位置）。
     last_route: Option<Route>,
+}
+
+/// 对话产物卡（对齐原型 `.artifact-card`：图标 + 标题 + 说明 + 箭头）。
+#[derive(Debug, Clone)]
+pub struct ArtifactCard {
+    pub project_id: usize,
+    pub msg_index: usize,
+    pub route: Route,
+    pub title: String,
+    pub desc: String,
 }
 
 impl ResearchApp {
@@ -188,6 +267,9 @@ impl ResearchApp {
                 ignore_missing: false,
             },
             universe_page: PageState::default(),
+            pool_search: String::new(),
+            pool_market: 0,
+            pool_stock_detail: None,
             run_form: RunForm::default(),
             compare_form: CompareForm::default(),
             compare_error: None,
@@ -199,29 +281,55 @@ impl ResearchApp {
             workspace: Workspace::new(),
             ai_input: String::new(),
             ai_notice: None,
-            ai_req_text: String::new(),
-            ai_req_acceptance: String::new(),
-            ai_req_alloc: 30.0,
-            ai_req_min_amount: "1000000".into(),
-            ai_design_note: String::new(),
-            ai_code_source: String::new(),
+            ai_req_text: crate::workspace::DRAFT_REQ_TEXT.into(),
+            ai_req_acceptance: crate::workspace::DRAFT_ACCEPTANCE.into(),
+            ai_req_alloc: crate::workspace::DRAFT_ALLOC_PCT,
+            ai_req_min_amount: crate::workspace::DRAFT_MIN_AMOUNT_WAN.into(),
+            ai_design_note: crate::workspace::DRAFT_DESIGN_NOTE.into(),
+            ai_design_alloc: crate::workspace::DRAFT_ALLOC_PCT,
+            ai_design_min_amount: crate::workspace::DRAFT_MIN_AMOUNT_WAN.into(),
+            ai_code_source: crate::workspace::DRAFT_CODE_ORIGINAL.into(),
+            ai_code_checked: None,
+            show_code_diff: false,
             ai_run: PageState::default(),
             ai_experiment: None,
-            ai_plan_trade_date: String::new(),
+            ai_plan_trade_date: "2026-01-09".into(),
             ai_plan_json: String::new(),
+            ai_plan_snapshot: 0,
+            ai_plan_cash: "10000".into(),
+            ai_plan_qty: ["0".into(), "0".into(), "0".into()],
+            ai_plan_sell: ["0".into(), "0".into(), "0".into()],
             ai_plan_issues: None,
             ai_plan_csv: None,
             focus: false,
             show_logs: false,
             logs: Vec::new(),
-            // 欢迎消息挂需求草稿产物卡（与原型一致）
-            chat_cards: vec![(1, 0, Route::Requirements)],
+            demo_task: None,
+            demo_retry: None,
+            fail_next: false,
+            demo_task_seq: 0,
+            // 欢迎消息挂需求草稿产物卡（与原型 createProject 首条一致）
+            chat_cards: vec![ArtifactCard {
+                project_id: 1,
+                msg_index: 0,
+                route: Route::Requirements,
+                title: crate::nav::WELCOME_CARD_TITLE.into(),
+                desc: crate::nav::WELCOME_CARD_DESC.into(),
+            }],
             new_project_open: false,
             new_project_name: String::new(),
             design_tab_flow: true,
             design_node: 3,
             debug_cmp: [1, 2],
+            debug_filter: String::new(),
             view_source: None,
+            view_req: None,
+            debug_run_id: 0,
+            debug_event_index: 0,
+            debug_playing: false,
+            jump_code_line: None,
+            plan_export_confirm: false,
+            debug_play_at: None,
             chat_pin: true,
             last_route: None,
         }
@@ -343,6 +451,22 @@ impl ResearchApp {
     /// （pub 仅为测试可达，GUI 入口仍是 eframe::App::ui）。
     #[doc(hidden)]
     pub fn render_root(&mut self, ui: &mut egui::Ui) {
+        // 仅 Ctrl/Cmd + 滚轮缩放：egui 会把该手势写入 zoom_delta 并清零
+        // smooth_scroll_delta。纯滚轮 / 触控板双指滑动不得改 zoom_factor
+        // （部分环境会额外发出 Pinch→Event::Zoom，必须用修饰键门禁过滤）。
+        // 键盘 Ctrl+/−/0 由 egui Options::zoom_with_keyboard 默认处理。
+        let (zd, zoom_chord) = ui.ctx().input(|i| {
+            let chord = i.modifiers.command || i.modifiers.ctrl;
+            (i.zoom_delta(), chord)
+        });
+        if zoom_chord && (zd - 1.0).abs() > 0.001 {
+            let next = (ui.ctx().zoom_factor() * zd).clamp(0.5, 2.0);
+            ui.ctx().set_zoom_factor(next);
+        }
+        // 字号倍率固定 1.0：缩放统一交给 zoom_factor，避免双重缩放
+        theme::set_type_scale(1.0);
+        ui.spacing_mut().button_padding = egui::vec2(12.0, 8.0);
+
         // 双环境柔光铺满根矩形：左上绿 / 右下青（面板玻璃半透明，柔光透出）
         theme::paint_ambient(ui);
         // 水平间距手动管理（卡片间隙 = APP_GAP）
@@ -389,16 +513,63 @@ impl ResearchApp {
         ] {
             self.poll(key);
         }
-        // 按需重绘：有活跃任务才定时轮询；否则事件驱动，静默零帧（CPU 红线）
-        if self.active_task_count() > 0 {
-            ui.ctx().request_repaint_after(POLL_INTERVAL);
+        self.poll_demo_task();
+        // 调试自动播放：约 700ms 推进一事件
+        if self.debug_playing {
+            let due = self
+                .debug_play_at
+                .map(|t| t.elapsed() >= std::time::Duration::from_millis(700))
+                .unwrap_or(true);
+            if due {
+                self.debug_play_tick();
+                self.debug_play_at = Some(std::time::Instant::now());
+            }
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // 按需重绘：有活跃任务时 ~20fps 驱动 spinner（帧内仍 poll）；否则事件驱动
+        if self.active_task_count() > 0 || self.demo_task.is_some() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50).max(POLL_INTERVAL / 10));
+        }
+    }
+
+    /// 自动播放推进一格（`debug_event_index` = 筛选列表 0-based 下标）。
+    fn debug_play_tick(&mut self) {
+        let n = self.debug_filtered_len();
+        if n == 0 {
+            self.debug_playing = false;
+            return;
+        }
+        if self.debug_event_index + 1 >= n {
+            self.debug_event_index = n - 1;
+            self.debug_playing = false;
+            return;
+        }
+        self.debug_event_index += 1;
+    }
+
+    fn debug_filtered_len(&self) -> usize {
+        self.workspace
+            .current()
+            .experiments
+            .iter()
+            .find(|e| e.id == self.debug_run_id)
+            .and_then(|e| e.demo.as_ref())
+            .map(|d| {
+                d.events
+                    .iter()
+                    .filter(|ev| self.debug_filter.is_empty() || ev.node == self.debug_filter)
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// 左侧栏（唯一导航）：品牌 + 项目选择/新建 + 两组 11 路由 + 底部离线声明。
     fn render_sidebar(&mut self, ui: &mut egui::Ui, plan: LayoutPlan) {
         // 列 Ui 已带固定 max_rect：玻璃卡直接矩形绘制，内容在带内边距的子列内排布
         let card = ui.max_rect();
+        theme::paint_drop_shadow(ui.painter(), card, 16.0);
         ui.painter().rect(
             card,
             CornerRadius::same(16),
@@ -406,6 +577,7 @@ impl ResearchApp {
             Stroke::new(1.0, theme::BORDER),
             egui::StrokeKind::Inside,
         );
+        theme::paint_inset_top(ui.painter(), card, 14.0);
         let content = card.shrink2(egui::vec2(14.0, 0.0));
         let content = egui::Rect::from_min_max(
             Pos2::new(content.left(), card.top() + 22.0),
@@ -429,61 +601,21 @@ impl ResearchApp {
             if slim {
                 let (mark_rect, _) =
                     ui.allocate_exact_size(egui::Vec2::splat(29.0), Sense::hover());
-                ui.painter().circle_filled(
-                    mark_rect.center(),
-                    21.0,
-                    Color32::from_rgba_premultiplied(34, 197, 94, 89),
-                );
-                let mut mesh = egui::Mesh::default();
-                mesh.colored_vertex(mark_rect.left_top(), theme::ACCENT_TEXT);
-                mesh.colored_vertex(mark_rect.right_top(), theme::ACCENT);
-                mesh.colored_vertex(mark_rect.right_bottom(), theme::ACCENT_STRONG);
-                mesh.colored_vertex(mark_rect.left_bottom(), theme::ACCENT);
-                mesh.add_triangle(0, 1, 2);
-                mesh.add_triangle(0, 2, 3);
-                ui.painter().add(egui::Shape::mesh(mesh));
-                ui.painter().text(
-                    mark_rect.center(),
-                    ALIGN2_CENTER,
-                    "研",
-                    FontId::proportional(19.0),
-                    theme::BASE,
-                );
+                theme::paint_brand_mark(ui.painter(), mark_rect);
             } else {
                 ui.horizontal(|ui| {
                     let (mark_rect, _) =
                         ui.allocate_exact_size(egui::Vec2::splat(29.0), Sense::hover());
-                    // 辉光：box-shadow 0 0 14px rgba(34,197,94,.35) 近似——外圈半透明绿晕
-                    ui.painter().circle_filled(
-                        mark_rect.center(),
-                        21.0,
-                        Color32::from_rgba_premultiplied(34, 197, 94, 89),
-                    );
-                    // 145° 线性渐变（#4ade80 → #16a34a）：四顶点插值 Mesh
-                    let mut mesh = egui::Mesh::default();
-                    let (tl, tr, br, bl) = (
-                        mark_rect.left_top(),
-                        mark_rect.right_top(),
-                        mark_rect.right_bottom(),
-                        mark_rect.left_bottom(),
-                    );
-                    mesh.colored_vertex(tl, theme::ACCENT_TEXT);
-                    mesh.colored_vertex(tr, theme::ACCENT);
-                    mesh.colored_vertex(br, theme::ACCENT_STRONG);
-                    mesh.colored_vertex(bl, theme::ACCENT);
-                    mesh.add_triangle(0, 1, 2);
-                    mesh.add_triangle(0, 2, 3);
-                    ui.painter().add(egui::Shape::mesh(mesh));
-                    ui.painter().text(
-                        mark_rect.center(),
-                        ALIGN2_CENTER,
-                        "研",
-                        FontId::proportional(19.0),
-                        theme::BASE,
-                    );
+                    theme::paint_brand_mark(ui.painter(), mark_rect);
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
-                        ui.label(lbl("研序", 20.0, theme::TEXT));
+                        // 原型 `.brand`：letter-spacing 3px
+                        ui.label(
+                            egui::RichText::new("研序")
+                                .font(FontId::proportional(theme::fs(20.0)))
+                                .extra_letter_spacing(3.0)
+                                .color(theme::TEXT),
+                        );
                         ui.label(lbl("策略研究工作区", 9.0, theme::MUTED));
                     });
                 });
@@ -513,7 +645,7 @@ impl ResearchApp {
                     });
                 ui.add_space(6.0);
                 if ui
-                    .add_sized([w, 26.0], theme::ghost_button("＋ 新建研究项目"))
+                    .add_sized([w, 24.0], theme::small_ghost_button("＋ 新建研究项目"))
                     .clicked()
                 {
                     self.new_project_open = true;
@@ -563,7 +695,7 @@ impl ResearchApp {
                     avatar_rect.center(),
                     ALIGN2_CENTER,
                     "本地",
-                    FontId::proportional(10.0),
+                    FontId::proportional(theme::fs(10.0)),
                     theme::TEXT2,
                 );
                 if !slim {
@@ -586,19 +718,19 @@ impl ResearchApp {
     /// Slim 档（≤900）只显居中图标、隐藏文字与计数（原型 @900 图标栏）。
     fn nav_item(&mut self, ui: &mut egui::Ui, route: Route, w: f32, slim: bool) {
         let active = self.session.route == route;
+        // 原型 nav：回测实验始终显示 runs.length（含 0）
         let count = (route == Route::Experiments && !slim)
-            .then(|| self.workspace.current().experiments.len())
-            .filter(|n| *n > 0);
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 30.0), Sense::click());
+            .then(|| self.workspace.current().experiments.len());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, theme::fs(30.0)), Sense::click());
         let fill = if active {
-            Color32::from_rgba_premultiplied(5, 20, 11, 20)
+            theme::ACCENT_SOFT
         } else if resp.hovered() {
-            Color32::from_rgba_premultiplied(250, 250, 250, 10)
+            Color32::from_rgba_premultiplied(10, 10, 10, 10)
         } else {
             Color32::TRANSPARENT
         };
         let stroke = if active {
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 61))
+            Stroke::new(1.0, theme::ACCENT_BORDER)
         } else {
             Stroke::NONE
         };
@@ -638,7 +770,7 @@ impl ResearchApp {
                 Pos2::new(tx, cy),
                 egui::Align2::LEFT_CENTER,
                 route.title(),
-                FontId::proportional(12.0),
+                FontId::proportional(theme::fs(12.0)),
                 if active { theme::TEXT } else { theme::MUTED },
             );
             if let Some(n) = count {
@@ -646,7 +778,7 @@ impl ResearchApp {
                     Pos2::new(rect.right() - 10.0, cy),
                     egui::Align2::RIGHT_CENTER,
                     n.to_string(),
-                    FontId::monospace(10.0),
+                    FontId::monospace(theme::fs(10.0)),
                     theme::FAINT,
                 );
             }
@@ -682,6 +814,7 @@ impl ResearchApp {
         // 列 Ui 已带固定 max_rect：用 max_rect 高度做三段切分（避免依赖
         // available_height 在 Frame 包裹语义下的行高塌缩）
         let card = ui.max_rect();
+        theme::paint_drop_shadow(ui.painter(), card, 16.0);
         ui.painter().rect(
             card,
             CornerRadius::same(16),
@@ -689,6 +822,7 @@ impl ResearchApp {
             Stroke::new(1.0, theme::BORDER),
             egui::StrokeKind::Inside,
         );
+        theme::paint_inset_top(ui.painter(), card, 14.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         let (_, body_h, _) = layout::rows(card.height());
         self.render_topbar(ui, card.width());
@@ -700,58 +834,80 @@ impl ResearchApp {
     }
 
     /// 顶栏：面包屑（研究项目 / 项目名）+ 演示环境 tag + 运行记录按钮。
+    /// 显式左右切带，避免 `horizontal` + `right_to_left` 把右簇换行叠进对话栏。
     fn render_topbar(&mut self, ui: &mut egui::Ui, w: f32) {
         let project = self.workspace.current().name.clone();
-        let resp = ui
-            .allocate_ui(sz(w, layout::TOPBAR_H), |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(25.0);
-                    ui.label(lbl("研究项目", 12.0, theme::MUTED));
-                    ui.add_space(10.0);
-                    ui.label(lbl("/", 12.0, theme::FAINT));
-                    ui.add_space(10.0);
-                    ui.label(lbl(project, 12.0, theme::TEXT2));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(25.0);
-                        if ui.add(theme::ghost_button("运行记录")).clicked() {
-                            self.show_logs = true;
-                        }
-                        ui.add_space(8.0);
-                        theme::tag_ui(ui, "● 演示环境", TagKind::Accent);
-                    });
-                });
-            })
-            .response;
-        let r = resp.rect;
+        let (rect, _) = ui.allocate_exact_size(sz(w, layout::TOPBAR_H), Sense::hover());
+        // 原型 `.topbar`：rgba(255,255,255,.02) 衬底 + 底部分割
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, theme::WHITE_03);
         ui.painter().line_segment(
             [
-                Pos2::new(r.left(), r.bottom()),
-                Pos2::new(r.right(), r.bottom()),
+                Pos2::new(rect.left(), rect.bottom()),
+                Pos2::new(rect.right(), rect.bottom()),
             ],
             Stroke::new(1.0, theme::BORDER),
         );
+        let mid = rect.center().x;
+        let mut left = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    Pos2::new(rect.left() + 25.0, rect.top()),
+                    Pos2::new(mid - 8.0, rect.bottom()),
+                ))
+                .layout(egui::Layout::left_to_right(Align::Center)),
+        );
+        left.label(lbl("研究项目", 12.0, theme::MUTED));
+        left.add_space(10.0);
+        left.label(lbl("/", 12.0, theme::FAINT));
+        left.add_space(10.0);
+        left.label(lbl(project, 12.0, theme::TEXT2));
+        let mut right = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    Pos2::new(mid, rect.top()),
+                    Pos2::new(rect.right() - 25.0, rect.bottom()),
+                ))
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        if right.add(theme::small_ghost_button("运行记录")).clicked() {
+            self.show_logs = true;
+        }
+        right.add_space(8.0);
+        theme::tag_live_ui(&mut right, "演示环境");
     }
 
     /// footer：本地研究桌面声明 + 溯源声明（RD-006：移除「原型/刷新重置」HTML 语义，
     /// 原生桌面工作区 SQLite 持久化、无浏览器刷新概念）。
     fn render_footer(&mut self, ui: &mut egui::Ui, w: f32) {
-        let resp = ui
-            .allocate_ui(sz(w, layout::FOOTER_H), |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(20.0);
-                    ui.label(lbl(theme::FOOTER_LEFT, 9.0, theme::FAINT));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(20.0);
-                        ui.label(lbl("所有结果可追溯至输入与版本", 9.0, theme::FAINT));
-                    });
-                });
-            })
-            .response;
-        let r = resp.rect;
+        let (rect, _) = ui.allocate_exact_size(sz(w, layout::FOOTER_H), Sense::hover());
+        // 原型 `.footer`：rgba(0,0,0,.25) 衬底
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::ZERO,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 64),
+        );
         ui.painter().line_segment(
-            [Pos2::new(r.left(), r.top()), Pos2::new(r.right(), r.top())],
+            [Pos2::new(rect.left(), rect.top()), Pos2::new(rect.right(), rect.top())],
             Stroke::new(1.0, theme::BORDER),
         );
+        let mut left = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    Pos2::new(rect.left() + 20.0, rect.top()),
+                    Pos2::new(rect.center().x, rect.bottom()),
+                ))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        left.label(lbl(theme::FOOTER_LEFT, 9.0, theme::FAINT));
+        let mut right = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_max(
+                    Pos2::new(rect.center().x, rect.top()),
+                    Pos2::new(rect.right() - 20.0, rect.bottom()),
+                ))
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        right.label(lbl("所有结果可追溯至输入与版本", 9.0, theme::FAINT));
     }
 
     /// 主体：工作区画布（含 workspace-head）+ 右对话栏（专注模式收起）。
@@ -779,6 +935,8 @@ impl ResearchApp {
                 body.min + egui::vec2(w - chat_w, 0.0),
                 egui::vec2(chat_w, h),
             );
+            ui.painter()
+                .rect_filled(chat_rect, CornerRadius::ZERO, theme::CHAT_BG);
             let mut chat_ui = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(chat_rect)
@@ -812,33 +970,34 @@ impl ResearchApp {
                 .allocate_ui(sz(w, 44.0), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.add_space(23.0);
-                        ui.label(lbl("◇", 12.0, theme::ACCENT_TEXT));
+                        let (mark, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(12.0), Sense::hover());
+                        icons::paint_diamond(ui.painter(), mark, theme::ACCENT_TEXT);
                         ui.add_space(8.0);
                         ui.label(lbl("项目产物", 12.0, theme::TEXT2));
                         ui.add_space(8.0);
                         theme::tag_ui(ui, &version_tag, TagKind::Neutral);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(23.0);
+                            // 内嵌字体无 ⤢ → 空框；矢量图标 + 文案均可点
                             let label = if self.focus {
-                                "返回对话 ⤡"
+                                "返回对话"
                             } else {
-                                "展开工作区 ⤢"
+                                "展开工作区"
                             };
-                            if ui.add(theme::ghost_button(label)).clicked() {
+                            let (ir, icon_resp) =
+                                ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
+                            icons::paint_expand(ui.painter(), ir, theme::TEXT2);
+                            ui.add_space(4.0);
+                            let text_resp = ui.add(theme::small_ghost_button(label));
+                            if text_resp.clicked() || icon_resp.clicked() {
                                 self.focus = !self.focus;
                             }
                         });
                     });
                 })
                 .response;
-            let hr = head.rect;
-            ui.painter().line_segment(
-                [
-                    Pos2::new(hr.left(), hr.bottom()),
-                    Pos2::new(hr.right(), hr.bottom()),
-                ],
-                Stroke::new(1.0, theme::BORDER),
-            );
+            let _ = head;
 
             // 画布滚动：切路由一次性恢复保存的滚动偏移，每帧回写
             let route = self.session.route;
@@ -850,14 +1009,29 @@ impl ResearchApp {
             }
             let out = sa.show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
+                ui.set_max_width(w);
                 ui.add_space(20.0);
+                let pad = 25.0;
+                // 专注模式：原型 `.focus .canvas { max-width:1120px; margin:0 auto }`
+                let band_w = if self.focus {
+                    w.min(layout::FOCUS_CANVAS_MAX_W)
+                } else {
+                    w
+                };
+                let side = ((w - band_w) * 0.5).max(0.0);
+                let inner_w = (band_w - pad * 2.0).max(0.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(25.0);
-                    ui.vertical(|ui| {
-                        self.render_notice(ui);
-                        self.render_page(ui, route);
-                        ui.add_space(24.0);
-                    });
+                    ui.add_space(side + pad);
+                    ui.allocate_ui_with_layout(
+                        sz(inner_w, 0.0),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.set_max_width(inner_w);
+                            self.render_notice(ui);
+                            self.render_page(ui, route);
+                            ui.add_space(24.0);
+                        },
+                    );
                 });
             });
             self.session.record_scroll(route, out.state.offset.y);
@@ -898,35 +1072,42 @@ impl ResearchApp {
             );
             let _ = left_line;
 
-            // 头部：✧ 研究助手 / 从一个想法，到可追溯的计划 + 预设对话 tag
-            ui.allocate_ui(sz(w, 64.0), |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(22.0);
-                    Frame::NONE
-                        .fill(Color32::from_rgba_premultiplied(5, 20, 11, 20))
-                        .corner_radius(CornerRadius::same(8))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_rgba_premultiplied(8, 26, 15, 51),
-                        ))
-                        .inner_margin(Margin::symmetric(7, 5))
-                        .show(ui, |ui| {
-                            ui.label(lbl("✧", 13.0, theme::ACCENT_TEXT));
-                        });
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        ui.label(lbl("研究助手", 13.0, theme::TEXT));
-                        ui.label(lbl("从一个想法，到可追溯的计划", 9.0, theme::MUTED));
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(22.0);
-                        theme::tag_ui(ui, "预设对话", TagKind::Neutral);
-                    });
-                });
-            });
+            // 头部：28×28 助手徽标 + 标题 + 预设对话（原型无底部分割线）
+            let (head, _) = ui.allocate_exact_size(sz(w, 64.0), Sense::hover());
+            let logo = egui::Rect::from_center_size(
+                Pos2::new(head.left() + 36.0, head.center().y),
+                egui::Vec2::splat(28.0),
+            );
+            ui.painter().rect(
+                logo,
+                CornerRadius::same(8),
+                theme::ACCENT_SOFT,
+                Stroke::new(1.0, theme::ACCENT_BORDER),
+                egui::StrokeKind::Inside,
+            );
+            icons::paint_sparkle(ui.painter(), logo.shrink(6.0), theme::ACCENT_TEXT);
+            let mut title_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_min_max(
+                        Pos2::new(logo.right() + 8.0, head.top() + 12.0),
+                        Pos2::new(head.right() - 92.0, head.bottom() - 8.0),
+                    ))
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            title_ui.label(lbl("研究助手", 13.0, theme::TEXT));
+            title_ui.label(lbl("从一个想法，到可追溯的计划", 9.0, theme::MUTED));
+            let mut tag_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(egui::Rect::from_center_size(
+                        Pos2::new(head.right() - 48.0, head.center().y),
+                        egui::vec2(72.0, 22.0),
+                    ))
+                    .layout(egui::Layout::left_to_right(Align::Center)),
+            );
+            theme::tag_ui(&mut tag_ui, "预设对话", TagKind::Neutral);
 
             // 消息流（最近 20 条，避免长会话拖慢帧；完整历史保留在会话态）
-            let msgs: Vec<(bool, String, Option<Route>)> = {
+            let msgs: Vec<(bool, String, Option<ArtifactCard>)> = {
                 let p = self.workspace.current();
                 let start = p.messages.len().saturating_sub(20);
                 p.messages[start..]
@@ -946,7 +1127,14 @@ impl ResearchApp {
             // frame，内容仍向下溢出——改为显式矩形切带：底带按 chips 两行上限预留，
             // 消息流填中间）。
             const CHAT_INPUT_H: f32 = 178.0;
-            let task_bar_h = if self.active_task().is_some() { 40.0 } else { 0.0 };
+            let task_bar_h = if self.active_task().is_some()
+                || self.demo_task.is_some()
+                || self.demo_retry.is_some()
+            {
+                40.0
+            } else {
+                0.0
+            };
             let rest = ui.available_rect_before_wrap();
             let band_top = (rest.bottom() - CHAT_INPUT_H - task_bar_h).max(rest.top());
             let scroll_rect =
@@ -968,11 +1156,21 @@ impl ResearchApp {
                         ui.add_space(22.0);
                         ui.vertical(|ui| {
                             ui.set_min_width(ui.available_width());
-                            ui.centered_and_justified(|ui| {
-                                ui.label(lbl("项目对话 · 上下文与产物持续关联", 9.0, theme::FAINT));
+                            ui.add_space(6.0);
+                            ui.allocate_ui(sz(ui.available_width(), 18.0), |ui| {
+                                ui.with_layout(
+                                    Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.label(lbl(
+                                            "项目对话 · 上下文与产物持续关联",
+                                            9.0,
+                                            theme::FAINT,
+                                        ));
+                                    },
+                                );
                             });
                             for (is_user, text, card) in &msgs {
-                                self.render_message(ui, *is_user, text, *card);
+                                self.render_message(ui, *is_user, text, card.clone());
                             }
                             if self.chat_pin {
                                 ui.scroll_to_cursor(Some(Align::BOTTOM));
@@ -990,11 +1188,13 @@ impl ResearchApp {
                     .layout(Layout::top_down(Align::Min)),
             );
             let ui = &mut band_ui;
-            // 任务条（活跃任务：取消入口）
-            let task = self
+            // 任务条（协调器 / 离线演示 / 可重试）
+            let coord = self
                 .active_task()
                 .map(|(id, label, key)| (id.to_string(), label, key));
-            if let Some((task_id, label, key)) = task {
+            let demo_label = self.demo_task.as_ref().map(|t| t.label);
+            let retry = self.demo_retry.filter(|_| self.demo_task.is_none() && coord.is_none());
+            if coord.is_some() || demo_label.is_some() || retry.is_some() {
                 ui.allocate_ui(sz(w, 40.0), |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -1008,12 +1208,64 @@ impl ResearchApp {
                             ))
                             .inner_margin(Margin::symmetric(12, 10))
                             .show(ui, |ui| {
-                                ui.label(mono(ellipsis(&label, 18), 11.0, theme::ACCENT_TEXT));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.add(theme::ghost_button("取消")).clicked() {
-                                        self.do_cancel(task_id.to_string(), key);
-                                    }
-                                });
+                                if let Some((task_id, label, key)) = coord {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        let (sr, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            Sense::hover(),
+                                        );
+                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        icons::paint_task_spin(
+                                            ui.painter(),
+                                            sr,
+                                            phase,
+                                            theme::ACCENT_TEXT,
+                                        );
+                                        ui.label(mono(
+                                            format!("{}…", ellipsis(label, 18)),
+                                            11.0,
+                                            theme::ACCENT_TEXT,
+                                        ));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(theme::ghost_button("取消")).clicked() {
+                                            self.do_cancel(task_id, key);
+                                        }
+                                    });
+                                } else if let Some(label) = demo_label {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        let (sr, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            Sense::hover(),
+                                        );
+                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        icons::paint_task_spin(
+                                            ui.painter(),
+                                            sr,
+                                            phase,
+                                            theme::ACCENT_TEXT,
+                                        );
+                                        ui.label(mono(
+                                            format!("{label}…"),
+                                            11.0,
+                                            theme::ACCENT_TEXT,
+                                        ));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(theme::ghost_button("取消")).clicked() {
+                                            self.cancel_demo_task();
+                                        }
+                                    });
+                                } else if let Some((label, action)) = retry {
+                                    ui.label(mono("任务未完成 · 可重试", 11.0, theme::MUTED));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(theme::ghost_button("重试")).clicked() {
+                                            self.start_demo_task(label, action);
+                                        }
+                                    });
+                                }
                             });
                     });
                 });
@@ -1024,65 +1276,101 @@ impl ResearchApp {
                 ui.add_space(18.0);
                 ui.vertical(|ui| {
                     ui.set_min_width(ui.available_width());
-                    // 建议 chips（随研究阶段推进）
+                    // 建议 chips（随研究阶段推进；原型 padding 5×8）
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+                        ui.spacing_mut().item_spacing.x = 6.0;
                         for s in self.suggestions() {
-                            if ui
-                                .add(
-                                    egui::Button::new(lbl(s, 10.0, theme::MUTED))
-                                        .fill(theme::GLASS)
-                                        .corner_radius(CornerRadius::same(7)),
-                                )
-                                .clicked()
-                            {
+                            if ui.add(theme::chip_button(s)).clicked() {
                                 self.do_ai_send_text(s.to_string());
                             }
                         }
                     });
                     ui.add_space(8.0);
-                    // compose-box：输入 + ↵ 发送
-                    Frame::NONE
+                    // compose-box：外阴影先铺，再画描边盒（对齐原型 box-shadow）
+                    let foreshadow = ui.available_rect_before_wrap();
+                    let approx = egui::Rect::from_min_size(
+                        foreshadow.min,
+                        egui::vec2(foreshadow.width(), 118.0),
+                    );
+                    theme::paint_compose_shadow(ui.painter(), approx);
+                    let compose = Frame::NONE
                         .fill(theme::GLASS_STRONG)
                         .corner_radius(CornerRadius::same(12))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_rgba_premultiplied(8, 26, 15, 77),
-                        ))
+                        .stroke(Stroke::new(1.0, theme::COMPOSE_STROKE))
                         .inner_margin(Margin::same(11))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width());
                             let mut input = self.ai_input.clone();
                             let resp = ui.add(
-                                egui::TextEdit::singleline(&mut input)
+                                area_edit(&mut input)
                                     .hint_text("描述你的研究想法，或让助手解释当前结果…")
-                                    .desired_width(ui.available_width()),
+                                    .font(FontId::proportional(theme::fs(12.0)))
+                                    .desired_rows(2)
+                                    .desired_width(ui.available_width())
+                                    .min_size(egui::vec2(0.0, 64.0)),
                             );
                             if resp.changed() {
                                 self.ai_input = input;
                             }
-                            ui.add_space(6.0);
+                            ui.add_space(7.0);
                             ui.horizontal(|ui| {
                                 ui.label(lbl("↵ 发送 · Shift + ↵ 换行", 9.0, theme::FAINT));
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let send = ui
-                                        .add(theme::primary_button("↑"))
-                                        .on_hover_text("发送消息");
-                                    let enter = resp.lost_focus()
-                                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    // 原型 `.send`：圆角主色方钮 + 上箭头（非文字 ↑）
+                                    let (sr, sresp) = ui.allocate_exact_size(
+                                        egui::vec2(30.0, 30.0),
+                                        Sense::click(),
+                                    );
+                                    ui.painter().rect(
+                                        sr,
+                                        CornerRadius::same(8),
+                                        theme::ACCENT,
+                                        Stroke::NONE,
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    icons::paint_send_up(
+                                        ui.painter(),
+                                        sr.shrink(7.0),
+                                        theme::BASE,
+                                    );
+                                    let send = sresp.on_hover_text("发送消息");
+                                    let enter = resp.has_focus()
+                                        && ui.input(|i| {
+                                            i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
+                                        });
                                     if send.clicked() || enter {
-                                        let text = std::mem::take(&mut self.ai_input);
+                                        let mut text = std::mem::take(&mut self.ai_input);
+                                        if text.ends_with('\n') {
+                                            text.pop();
+                                        }
                                         self.do_ai_send_text(text);
                                     }
                                 });
                             });
                         });
+                    // 原型 compose-box inset 顶高光
+                    let cr = compose.response.rect;
+                    ui.painter().hline(
+                        (cr.left() + 12.0)..=(cr.right() - 12.0),
+                        cr.top() + 1.0,
+                        Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(255, 255, 255, 15),
+                        ),
+                    );
                     ui.add_space(6.0);
-                    ui.centered_and_justified(|ui| {
-                        ui.label(lbl(
-                            "离线预设交互 · 计算来自合成样本 · 未接入模型",
-                            9.0,
-                            theme::FAINT,
-                        ));
+                    ui.allocate_ui(sz(ui.available_width(), 16.0), |ui| {
+                        ui.with_layout(
+                            Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                ui.label(lbl(
+                                    "离线预设交互 · 计算来自合成样本 · 未接入模型",
+                                    9.0,
+                                    theme::FAINT,
+                                ));
+                            },
+                        );
                     });
                     ui.add_space(6.0);
                 });
@@ -1096,7 +1384,7 @@ impl ResearchApp {
         ui: &mut egui::Ui,
         is_user: bool,
         text: &str,
-        card: Option<Route>,
+        card: Option<ArtifactCard>,
     ) {
         ui.add_space(10.0);
         if is_user {
@@ -1120,50 +1408,110 @@ impl ResearchApp {
                     });
             });
         } else {
-            ui.label(lbl("✧ 研究助手", 10.0, theme::ACCENT_TEXT));
+            ui.horizontal(|ui| {
+                let (sp, _) = ui.allocate_exact_size(egui::Vec2::splat(10.0), Sense::hover());
+                icons::paint_sparkle(ui.painter(), sp, theme::ACCENT_TEXT);
+                ui.add_space(4.0);
+                ui.label(lbl("研究助手", 10.0, theme::ACCENT_TEXT));
+            });
             ui.label(lbl(text, 12.0, theme::TEXT2));
         }
-        if let Some(route) = card {
-            ui.add_space(4.0);
-            let title = route.title();
+        if let Some(card) = card {
+            ui.add_space(8.0);
             let inner = ui
-                .horizontal(|ui| {
-                    ui.set_min_width(ui.available_width());
-                    Frame::NONE
-                        .fill(Color32::from_rgba_premultiplied(6, 21, 12, 26))
-                        .corner_radius(CornerRadius::same(9))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_rgba_premultiplied(8, 26, 15, 56),
-                        ))
-                        .inner_margin(Margin::symmetric(13, 10))
-                        .show(ui, |ui| {
-                            ui.label(lbl(title, 12.0, theme::TEXT));
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(lbl("→", 12.0, theme::ACCENT_TEXT));
+                .allocate_ui_with_layout(
+                    sz(ui.available_width(), 0.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        // 原型 `.artifact-card`：先铺 130° 渐变再叠内容（painter 顺序）
+                        Frame::NONE
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(9))
+                            .stroke(Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(34, 197, 94, 56),
+                            ))
+                            .inner_margin(Margin::symmetric(13, 10))
+                            .show(ui, |ui| {
+                                let w = ui.available_width();
+                                let origin = ui.cursor().left_top() - egui::vec2(13.0, 10.0);
+                                theme::paint_artifact_bg(
+                                    ui.painter(),
+                                    egui::Rect::from_min_size(
+                                        origin,
+                                        egui::vec2(w + 26.0, 56.0),
+                                    ),
+                                );
+                                ui.horizontal(|ui| {
+                                    let (icon_rect, _) = ui.allocate_exact_size(
+                                        egui::Vec2::splat(16.0),
+                                        Sense::hover(),
+                                    );
+                                    icons::paint_icon(
+                                        ui.painter(),
+                                        icon_rect,
+                                        icons::for_route(card.route),
+                                        theme::ACCENT_TEXT,
+                                    );
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(lbl(&card.title, 12.0, theme::TEXT));
+                                        ui.label(lbl(&card.desc, 10.0, theme::MUTED));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let (ar, _) = ui.allocate_exact_size(
+                                            egui::Vec2::splat(14.0),
+                                            Sense::hover(),
+                                        );
+                                        icons::paint_icon(
+                                            ui.painter(),
+                                            ar,
+                                            icons::IconKind::Arrow,
+                                            theme::ACCENT_TEXT,
+                                        );
+                                    });
+                                });
                             });
-                        });
-                })
+                    },
+                )
                 .response;
             let resp = inner.interact(Sense::click());
             if resp.clicked() {
                 let from = self.session.route;
-                self.session.navigate(route, self.session.scroll_of(from));
+                self.session
+                    .navigate(card.route, self.session.scroll_of(from));
             }
         }
         ui.add_space(12.0);
     }
 
     /// 产物卡查找（项目 ID + 消息序号 → 目标路由）。
-    fn chat_card(&self, project_id: usize, msg_index: usize) -> Option<Route> {
+    fn chat_card(&self, project_id: usize, msg_index: usize) -> Option<ArtifactCard> {
         self.chat_cards
             .iter()
             .rev()
-            .find(|(pid, idx, _)| *pid == project_id && *idx == msg_index)
-            .map(|(_, _, r)| *r)
+            .find(|c| c.project_id == project_id && c.msg_index == msg_index)
+            .cloned()
     }
 
-    /// 建议文案（随研究阶段：无需求 → 需求草稿；无设计 → 设计；否则代码/实验/报告）。
+    fn push_artifact(
+        &mut self,
+        project_id: usize,
+        msg_index: usize,
+        route: Route,
+        title: impl Into<String>,
+        desc: impl Into<String>,
+    ) {
+        self.chat_cards.push(ArtifactCard {
+            project_id,
+            msg_index,
+            route,
+            title: title.into(),
+            desc: desc.into(),
+        });
+    }
+
+    /// 建议文案（原型：`req?design?[代码,实验,报告]:[设计,解释]:[需求草稿,解释]`）。
     fn suggestions(&self) -> Vec<&'static str> {
         let p = self.workspace.current();
         if p.active_req.is_none() {
@@ -1203,6 +1551,64 @@ impl ResearchApp {
                 });
             ui.add_space(12.0);
         }
+        // 原型 draftNotice：相对已保存版本的脏草稿全局提示
+        let dirty = self.draft_dirty_names();
+        if !dirty.is_empty() {
+            Self::warn_banner(
+                ui,
+                &format!(
+                    "{}草稿尚未确认或保存。运行使用已保存版本，草稿尚未生效。",
+                    dirty.join("、")
+                ),
+            );
+        }
+    }
+
+    /// 相对当前已确认/已保存产物的脏草稿名称（需求 / 设计 / 源码）。
+    fn draft_dirty_names(&self) -> Vec<&'static str> {
+        let p = self.workspace.current();
+        let mut names = Vec::new();
+        if let Some(id) = p.active_req {
+            if let Some(r) = p.reqs.get(id - 1) {
+                let min_ok = self
+                    .ai_req_min_amount
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .is_some_and(|v| (v - r.min_amount).abs() < 1e-9);
+                if self.ai_req_text != r.text
+                    || self.ai_req_acceptance != r.acceptance
+                    || (self.ai_req_alloc / 100.0 - r.allocation).abs() > 1e-9
+                    || !min_ok
+                {
+                    names.push("需求");
+                }
+            }
+        }
+        if let Some(id) = p.active_design {
+            if let Some(d) = p.designs.get(id - 1) {
+                let min_ok = self
+                    .ai_design_min_amount
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .is_some_and(|v| (v - d.min_amount).abs() < 1e-9);
+                if self.ai_design_note != d.note
+                    || (self.ai_design_alloc / 100.0 - d.allocation).abs() > 1e-9
+                    || !min_ok
+                {
+                    names.push("设计");
+                }
+            }
+        }
+        if let Some(id) = p.active_version {
+            if let Some(v) = p.versions.get(id - 1) {
+                if self.ai_code_source != v.source {
+                    names.push("源码");
+                }
+            }
+        }
+        names
     }
 
     /// 警示横幅（琥珀）。
@@ -1245,14 +1651,15 @@ impl ResearchApp {
             "需求、策略与实验在这里连接成一条完整的研究路径。",
         );
 
-        // hero（原型 .hero：110° 线性渐变底 + 右侧 hero-orbit 双环）
-        Frame::NONE
+        // hero（原型 .hero：110° 线性渐变底 + 右侧 hero-orbit 双环；勿垫 GLASS 灰罩）
+        let hero = Frame::NONE
+            .fill(Color32::TRANSPARENT)
             .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
             .stroke(Stroke::new(1.0, theme::BORDER))
             .inner_margin(Margin::same(24))
             .show(ui, |ui| {
                 let hero_rect = ui.max_rect();
-                // 110° 渐变底（左上亮 → 右下暗）
+                // 110° 渐变底（左上亮 → 右下暗）+ 右上径向绿柔光
                 {
                     let mut mesh = egui::Mesh::default();
                     mesh.colored_vertex(hero_rect.left_top(), icons::HERO_GRADIENT_FROM);
@@ -1262,6 +1669,11 @@ impl ResearchApp {
                     mesh.add_triangle(0, 1, 2);
                     mesh.add_triangle(0, 2, 3);
                     ui.painter().add(egui::Shape::mesh(mesh));
+                    ui.painter().circle_filled(
+                        Pos2::new(hero_rect.right() - 20.0 - 40.0, hero_rect.top() + 8.0),
+                        88.0,
+                        Color32::from_rgba_unmultiplied(34, 197, 94, 33),
+                    );
                 }
                 // hero-orbit：右上 110px 双环（窄窗 70px 降透明度）
                 let narrow = layout::plan_for_width(ui.max_rect().width()) == LayoutPlan::Compact;
@@ -1275,6 +1687,7 @@ impl ResearchApp {
                 );
                 icons::paint_hero_orbit(ui.painter(), orbit_rect, narrow);
                 ui.set_min_width(ui.available_width());
+                ui.set_min_height(170.0);
                 ui.horizontal(|ui| {
                     theme::tag_ui(ui, "A股 · 日线", TagKind::Accent);
                     theme::tag_ui(
@@ -1283,11 +1696,15 @@ impl ResearchApp {
                         TagKind::Neutral,
                     );
                 });
-                ui.add_space(10.0);
-                ui.label(lbl(&project_name, 20.0, theme::TEXT));
-                ui.add_space(6.0);
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(&project_name)
+                        .font(FontId::proportional(theme::fs(20.0)))
+                        .color(theme::TEXT),
+                );
+                ui.add_space(8.0);
                 ui.label(lbl(&next_reason, 12.0, theme::MUTED));
-                ui.add_space(14.0);
+                ui.add_space(15.0);
                 ui.horizontal(|ui| {
                     if ui.add(theme::primary_button(&next_label)).clicked() {
                         let from = self.session.route;
@@ -1295,19 +1712,25 @@ impl ResearchApp {
                             .navigate(next_route, self.session.scroll_of(from));
                     }
                     ui.add_space(8.0);
+                    // 原型 `explain`：写入概念辨析对话并跳转验证边界产物卡
                     if ui.add(theme::ghost_button("了解验证流程")).clicked() {
-                        let from = self.session.route;
-                        self.session
-                            .navigate(Route::Validate, self.session.scroll_of(from));
+                        self.do_ai_send_text("了解验证流程".into());
                     }
                 });
             });
-        ui.add_space(12.0);
+        theme::paint_inset_top(ui.painter(), hero.response.rect, 16.0);
+        ui.add_space(15.0);
 
-        // 指标卡 ×3
-        ui.horizontal(|ui| {
-            let w = (ui.available_width() - 24.0) / 3.0;
-            for (top, value, bottom) in [
+        // 指标卡 ×3（原型 .metric-grid；@900 只保留第一张）
+        let slim_metrics = {
+            let win_w = ui
+                .input(|i| i.raw.screen_rect.map(|r| r.width()))
+                .unwrap_or(1440.0);
+            layout::plan_for_width(win_w) == LayoutPlan::Slim
+        };
+        metric_grid(
+            ui,
+            &[
                 (
                     "研究阶段",
                     next_route.title().to_string(),
@@ -1323,27 +1746,10 @@ impl ResearchApp {
                     format!("{exps_len:02}"),
                     "输入与结果可追溯".to_string(),
                 ),
-            ] {
-                // RD-008：horizontal 父级下 allocate_ui 继承水平布局，指标卡
-                // 三段文字需纵向堆叠——显式 top_down（Frame 同样继承父布局）
-                ui.allocate_ui_with_layout(sz(w, 0.0), Layout::top_down(Align::Min), |ui| {
-                    Frame::NONE
-                        .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
-                        .corner_radius(CornerRadius::same(10))
-                        .stroke(Stroke::new(1.0, theme::BORDER))
-                        .inner_margin(Margin::same(17))
-                        .show(ui, |ui| {
-                            ui.label(lbl(top, 10.0, theme::MUTED));
-                            ui.add_space(8.0);
-                            ui.label(mono(value, 23.0, theme::TEXT));
-                            ui.add_space(4.0);
-                            ui.label(lbl(bottom, 10.0, theme::MUTED));
-                        });
-                });
-                ui.add_space(12.0);
-            }
-        });
-        ui.add_space(4.0);
+            ],
+            slim_metrics,
+        );
+        ui.add_space(15.0);
 
         // 研究路径（五阶段，可点击跳转）
         let stages: Vec<(Route, String, String, String, TagKind)> = {
@@ -1433,58 +1839,71 @@ impl ResearchApp {
                 ),
             ]
         };
-        panel(
+        panel_flush(
             ui,
             "研究路径",
             Some(("同一项目 · 全程关联", TagKind::Neutral)),
             |ui| {
+                let n = stages.len();
                 for (i, (route, title, desc, state, kind)) in stages.iter().enumerate() {
-                    let inner = ui
-                        .horizontal(|ui| {
+                    let last = i + 1 == n;
+                    let w = ui.available_width();
+                    let row = ui.allocate_ui_with_layout(
+                        egui::vec2(w, 62.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
                             ui.set_min_width(ui.available_width());
-                            ui.add_space(2.0);
-                            // 步号圆圈
+                            let r = ui.max_rect();
+                            if ui.rect_contains_pointer(r) {
+                                ui.painter().rect_filled(r, CornerRadius::ZERO, theme::WHITE_03);
+                            }
+                            if !last {
+                                ui.painter().line_segment(
+                                    [r.left_bottom(), r.right_bottom()],
+                                    Stroke::new(1.0, theme::BORDER),
+                                );
+                            }
+                            ui.add_space(18.0);
+                            // 原型 `.step-num`：空心绿圈 + accent-text 等宽步号
                             let (rect, _) =
                                 ui.allocate_exact_size(egui::vec2(25.0, 25.0), Sense::hover());
                             let c = rect.center();
                             ui.painter().circle_stroke(
                                 c,
-                                12.0,
-                                Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 64)),
+                                12.5,
+                                Stroke::new(1.0, theme::ACCENT_STEP_STROKE),
                             );
                             ui.painter().text(
                                 c,
                                 ALIGN2_CENTER,
                                 format!("{:02}", i + 1),
-                                FontId::monospace(10.0),
+                                FontId::monospace(theme::fs(10.0)),
                                 theme::ACCENT_TEXT,
                             );
-                            ui.add_space(8.0);
+                            ui.add_space(13.0);
                             ui.vertical(|ui| {
                                 ui.label(lbl(title, 12.0, theme::TEXT));
+                                ui.add_space(5.0);
                                 ui.label(lbl(desc, 10.0, theme::MUTED));
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.add_space(18.0);
+                                let (ir, _) =
+                                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+                                icons::paint_icon(
+                                    ui.painter(),
+                                    ir,
+                                    icons::IconKind::Arrow,
+                                    theme::FAINT,
+                                );
+                                ui.add_space(8.0);
                                 theme::tag_ui(ui, state, *kind);
-                                ui.add_space(6.0);
-                                ui.label(lbl("→", 12.0, theme::FAINT));
                             });
-                        })
-                        .response;
-                    let resp = inner.interact(Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(
-                            resp.rect,
-                            CornerRadius::same(7),
-                            Color32::from_rgba_premultiplied(250, 250, 250, 8),
-                        );
-                    }
-                    if resp.clicked() {
+                        },
+                    );
+                    if row.response.interact(Sense::click()).clicked() {
                         let from = self.session.route;
                         self.session.navigate(*route, self.session.scroll_of(from));
-                    }
-                    if i + 1 < stages.len() {
-                        ui.add_space(4.0);
                     }
                 }
             },
@@ -1492,7 +1911,7 @@ impl ResearchApp {
 
         ui.add_space(10.0);
         ui.label(lbl(
-            "当前为离线桌面演示。你可以通过右侧对话推进，也可以直接打开文档、代码与实验。所有演示结果均标注来源。",
+            "当前为离线原型。你可以通过右侧对话推进，也可以直接打开文档、代码与实验。所有演示结果均标注来源。",
             10.0,
             theme::FAINT,
         ));
@@ -1500,29 +1919,28 @@ impl ResearchApp {
 
     // ---- 需求文档 ------------------------------------------------------------
     fn render_requirements(&mut self, ui: &mut egui::Ui) {
-        let (req_saved, draft_dirty) = {
+        let req_saved = {
             let p = self.workspace.current();
-            let saved = p.active_req.map(|id| p.reqs[id - 1].clone());
-            let dirty = saved.as_ref().is_some_and(|r| {
-                self.ai_req_text != r.text
-                    || self.ai_req_acceptance != r.acceptance
-                    || (self.ai_req_alloc / 100.0 - r.allocation).abs() > 1e-9
-                    || self.ai_req_min_amount.trim().parse::<f64>().ok() != Some(r.min_amount)
-            });
-            (saved, dirty)
+            p.active_req.map(|id| p.reqs[id - 1].clone())
         };
-        page_header(
+        let req_badge = {
+            let p = self.workspace.current();
+            p.active_req.map(|id| format!("R{id} 已确认"))
+        };
+        let req_badge_kind = if req_badge.is_some() {
+            TagKind::Accent
+        } else {
+            TagKind::Neutral
+        };
+        let req_badge_text = req_badge.unwrap_or_else(|| "未确认草稿".into());
+        page_header_ex(
             ui,
             "阶段 01 / 定义问题",
             "研究需求",
             "把想法转成明确的约束与可检验的标准。",
+            Some((req_badge_text.as_str(), req_badge_kind)),
+            None,
         );
-        if draft_dirty {
-            Self::warn_banner(
-                ui,
-                "需求草稿尚未确认或保存。运行使用已确认版本，草稿尚未生效。",
-            );
-        }
 
         panel(
             ui,
@@ -1530,56 +1948,65 @@ impl ResearchApp {
             Some(("可直接编辑", TagKind::Neutral)),
             |ui| {
                 ui.label(field("研究目标与处理逻辑"));
+                ui.add_space(7.0);
                 let mut text = self.ai_req_text.clone();
                 if ui
-                    .add(
-                        egui::TextEdit::multiline(&mut text)
-                            .desired_rows(4)
-                            .desired_width(ui.available_width()),
-                    )
+                    .add(area_edit(&mut text).desired_rows(4).desired_width(ui.available_width()))
                     .changed()
                 {
                     self.ai_req_text = text;
                 }
-                ui.add_space(12.0);
+                ui.add_space(16.0);
                 ui.label(field("验收标准"));
+                ui.add_space(7.0);
                 let mut acc = self.ai_req_acceptance.clone();
                 if ui
-                    .add(
-                        egui::TextEdit::multiline(&mut acc)
-                            .desired_rows(3)
-                            .desired_width(ui.available_width()),
-                    )
+                    .add(area_edit(&mut acc).desired_rows(3).desired_width(ui.available_width()))
                     .changed()
                 {
                     self.ai_req_acceptance = acc;
                 }
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(field("目标投入比例（%）"));
-                        ui.add(
-                            egui::DragValue::new(&mut self.ai_req_alloc)
-                                .range(0.0..=100.0)
-                                .speed(1.0),
-                        );
-                    });
-                    ui.add_space(14.0);
-                    ui.vertical(|ui| {
-                        ui.label(field("最低成交额（元）"));
+                ui.add_space(16.0);
+                two_field_row(
+                    ui,
+                    |ui| {
+                        field_label(ui, "目标投入比例（%）");
+                        let mut alloc_s = format!("{:.0}", self.ai_req_alloc);
+                        if ui
+                            .add(line_edit(&mut alloc_s).desired_width(ui.available_width()))
+                            .changed()
+                        {
+                            if let Ok(v) = alloc_s.parse::<f64>() {
+                                self.ai_req_alloc = v;
+                            }
+                        }
+                    },
+                    |ui| {
+                        field_label(ui, "最低成交额（万元）");
                         let mut v = self.ai_req_min_amount.clone();
                         if ui
-                            .add(egui::TextEdit::singleline(&mut v).desired_width(160.0))
+                            .add(line_edit(&mut v).desired_width(ui.available_width()))
                             .changed()
                         {
                             self.ai_req_min_amount = v;
                         }
-                    });
-                });
+                    },
+                );
                 ui.add_space(14.0);
-                if ui.add(theme::primary_button("确认需求")).clicked() {
-                    self.do_confirm_requirement();
-                }
+                ui.horizontal(|ui| {
+                    let confirm = if req_saved.is_some() {
+                        "确认并保存新需求版本"
+                    } else {
+                        "确认需求"
+                    };
+                    if ui.add(theme::primary_button(confirm)).clicked() {
+                        self.do_confirm_requirement();
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(theme::ghost_button("下载文档")).clicked() {
+                        self.export_requirement_draft();
+                    }
+                });
                 ui.add_space(10.0);
                 ui.label(note(
                 "确认后生成需求版本。修改上游规格会使旧设计、代码与验证结论过期，历史实验仍保持原样。",
@@ -1596,12 +2023,7 @@ impl ResearchApp {
                 .map(|r| {
                     (
                         r.id,
-                        format!(
-                            "需求 R{} · 投入 {:.0}% · 成交额 ≥{:.0}",
-                            r.id,
-                            r.allocation * 100.0,
-                            r.min_amount
-                        ),
+                        format!("需求 R{} · 投入 {:.0}%", r.id, r.allocation * 100.0),
                         p.active_req == Some(r.id),
                     )
                 })
@@ -1609,17 +2031,24 @@ impl ResearchApp {
         };
         panel(ui, "确认历史", None, |ui| {
             if history.is_empty() {
-                ui.label(note("还没有确认版本。草稿保留在当前项目内，重启会重置。"));
+                ui.label(note("还没有确认版本。草稿保留在当前项目内，刷新会重置。"));
             } else {
                 for (id, desc, active) in history {
-                    ui.horizontal(|ui| {
-                        ui.label(lbl(desc, 11.0, theme::TEXT2));
-                        if active {
-                            ui.add_space(6.0);
-                            theme::tag_ui(ui, "当前", TagKind::Accent);
-                        }
-                        let _ = id;
-                    });
+                    let label = if active {
+                        format!("{desc}  ·  当前")
+                    } else {
+                        desc
+                    };
+                    if ui
+                        .add(
+                            theme::default_button(format!("{label}    查看只读版本 →"))
+                                .min_size(egui::vec2(ui.available_width(), 40.0)),
+                        )
+                        .clicked()
+                    {
+                        self.view_req = Some(id);
+                    }
+                    ui.add_space(6.0);
                 }
             }
         });
@@ -1647,13 +2076,13 @@ impl ResearchApp {
         } else {
             TagKind::Neutral
         };
-        page_header(
-            ui,
-            "阶段 02 / 处理逻辑",
-            "策略设计",
-            "文档、处理图与代码，共用同一份策略逻辑。",
-        );
         if !req_ok {
+            page_header(
+                ui,
+                "阶段 02 / 处理逻辑",
+                "策略设计",
+                "先明确需求，再设计处理逻辑。",
+            );
             if empty_panel(
                 ui,
                 "等待确认需求",
@@ -1666,163 +2095,147 @@ impl ResearchApp {
             }
             return;
         }
+        page_header_ex(
+            ui,
+            "阶段 02 / 处理逻辑",
+            "策略设计",
+            "文档、处理图与代码，共用同一份策略逻辑。",
+            Some((design_state.as_str(), kind)),
+            None,
+        );
 
         panel(ui, "设计说明", Some((&design_state, kind)), |ui| {
             let mut note_text = self.ai_design_note.clone();
-            if ui
-                .add(
-                    egui::TextEdit::multiline(&mut note_text)
-                        .desired_rows(5)
-                        .desired_width(ui.available_width()),
-                )
-                .changed()
-            {
-                self.ai_design_note = note_text;
-            }
-            ui.add_space(12.0);
-            let (alloc, min_amt) = {
-                let p = self.workspace.current();
-                let r = &p.reqs[p.active_req.unwrap_or(1) - 1];
-                (r.allocation, r.min_amount)
-            };
-            kv(
-                ui,
-                &[
-                    ("投入比例", format!("{:.0}%（沿用需求版本）", alloc * 100.0)),
-                    ("最低成交额", format!("≥{min_amt:.0} 元")),
-                ],
-            );
+                if ui
+                    .add(
+                        area_edit(&mut note_text)
+                            .desired_rows(5)
+                            .desired_width(ui.available_width()),
+                    )
+                    .changed()
+                {
+                    self.ai_design_note = note_text;
+                }
+                ui.add_space(16.0);
+                two_field_row(
+                    ui,
+                    |ui| {
+                        field_label(ui, "投入比例（%）");
+                        let mut alloc_s = format!("{:.0}", self.ai_design_alloc);
+                        if ui
+                            .add(line_edit(&mut alloc_s).desired_width(ui.available_width()))
+                            .changed()
+                        {
+                            if let Ok(v) = alloc_s.parse::<f64>() {
+                                self.ai_design_alloc = v;
+                            }
+                        }
+                    },
+                    |ui| {
+                        field_label(ui, "最低成交额（万元）");
+                        let mut v = self.ai_design_min_amount.clone();
+                        if ui
+                            .add(line_edit(&mut v).desired_width(ui.available_width()))
+                            .changed()
+                        {
+                            self.ai_design_min_amount = v;
+                        }
+                    },
+                );
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 if ui.add(theme::primary_button("保存设计版本")).clicked() {
                     self.do_generate_design();
                 }
                 ui.add_space(8.0);
-                if ui.add(theme::ghost_button("从需求生成设计")).clicked() {
-                    let req_text = self.workspace.current().reqs
-                        [self.workspace.current().active_req.unwrap_or(1) - 1]
-                        .text
-                        .clone();
-                    self.ai_design_note = format!(
-                        "按需求 R：{req_text}\n\n处理顺序：可见数据 → 股票池过滤 → 信号形成 → 仓位计算 → 模拟成交 → 指标计算。信号日与执行日分离。"
-                    );
+                if ui.add(theme::default_button("从需求生成设计")).clicked() {
+                    self.start_demo_task("生成策略设计", DemoAction::DesignDraft);
+                }
+                ui.add_space(8.0);
+                if ui.add(theme::ghost_button("下载设计")).clicked() {
+                    self.export_design_draft();
                 }
             });
         });
 
         ui.add_space(6.0);
-        panel(ui, "策略处理图", None, |ui| {
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                ui.vertical(|ui| {
-                    ui.label(note("图描述预期行为；运行事件描述实际结果。"));
-                });
-                if ui
-                    .add(tab_button("时序图", !self.design_tab_flow))
-                    .clicked()
-                {
-                    self.design_tab_flow = false;
-                }
-                ui.add_space(4.0);
-                if ui.add(tab_button("流程图", self.design_tab_flow)).clicked() {
-                    self.design_tab_flow = true;
-                }
-            });
-            ui.add_space(10.0);
-            if self.design_tab_flow {
-                // 流程图：2×3 节点卡（静态结构）
-                for row in 0..2 {
-                    ui.horizontal(|ui| {
-                        for col in 0..3 {
-                            let idx = row * 3 + col;
-                            self.node_card(ui, idx);
-                            if col < 2 {
-                                ui.add_space(4.0);
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(lbl("→", 12.0, theme::ACCENT));
-                                });
-                                ui.add_space(4.0);
-                            }
+        {
+            let mut go_flow = false;
+            let mut go_seq = false;
+            panel_with_right(
+                ui,
+                "策略处理图",
+                |ui| {
+                    // 原型 panel-head：流程图 → 时序图
+                    if ui.add(tab_button("流程图", self.design_tab_flow)).clicked() {
+                        go_flow = true;
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add(tab_button("时序图", !self.design_tab_flow))
+                        .clicked()
+                    {
+                        go_seq = true;
+                    }
+                },
+                |ui| {
+                    if self.design_tab_flow {
+                        if let Some(i) = paint_flow_diagram(ui, self.design_node) {
+                            self.design_node = i;
                         }
-                    });
-                    ui.add_space(6.0);
-                }
-                ui.label(note(
-                    "跨交易日 · 信号与执行分离（信号日收盘形成信号，下一交易日开盘执行）。",
-                ));
-            } else {
-                // 时序图：文字化时序（六节点五步）
+                    } else if let Some(i) = paint_sequence_diagram(ui, self.design_node) {
+                        self.design_node = i;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(note(
+                        "点击节点查看接口含义与源码映射。图描述预期行为；运行事件描述实际结果。",
+                    ));
+                },
+            );
+            if go_flow {
+                self.design_tab_flow = true;
+            }
+            if go_seq {
+                self.design_tab_flow = false;
+            }
+        }
+
+        let (name, input, output, line, nid) = {
+            let n = &NODES[self.design_node.min(NODES.len() - 1)];
+            let (input, output) = n.3.split_once(" → ").unwrap_or((n.3, ""));
+            (n.1, input.to_string(), output.to_string(), n.4, n.0)
+        };
+        panel(
+            ui,
+            &format!("节点检查 · {name}"),
+            Some((&format!("节点 {nid}"), TagKind::Neutral)),
+            |ui| {
                 kv(
                     ui,
                     &[
+                        ("输入", input),
+                        ("输出", output),
                         (
-                            "信号日",
-                            "① 可见行情 → ② 入选样本 → ③ 目标比例（收盘后形成信号）".to_string(),
+                            "设计参数",
+                            format!(
+                                "投入 {:.0}% · 成交额 ≥ {} 万元",
+                                self.ai_design_alloc, self.ai_design_min_amount
+                            ),
                         ),
-                        (
-                            "执行日",
-                            "④ 资金约束 → ⑤ 成交回报（此时才读取开盘价）".to_string(),
-                        ),
-                        ("估值", "现金与持仓按当日收盘估值".to_string()),
                     ],
                 );
-            }
-            ui.add_space(10.0);
-            // 节点检查
-            let (name, io, line) = {
-                let n = &NODES[self.design_node.min(NODES.len() - 1)];
-                (n.1, n.3, n.4)
-            };
-            ui.separator();
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(lbl(format!("节点检查 · {name}"), 12.0, theme::TEXT));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::tag_ui(
-                        ui,
-                        NODES[self.design_node.min(NODES.len() - 1)].0,
-                        TagKind::Neutral,
-                    );
-                });
-            });
-            ui.add_space(6.0);
-            kv(
-                ui,
-                &[
-                    ("输入 / 输出", io.to_string()),
-                    ("源码映射", format!("示例源码第 {line} 行")),
-                ],
-            );
-        });
-    }
-
-    /// 流程图节点卡（选中态绿描边）。
-    fn node_card(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let idx = idx.min(NODES.len() - 1);
-        let (id, name, sub, _io, _line) = NODES[idx];
-        let selected = self.design_node.min(NODES.len() - 1) == idx;
-        let inner = Frame::NONE
-            .fill(Color32::from_rgb(0x14, 0x18, 0x16))
-            .corner_radius(CornerRadius::same(9))
-            .stroke(Stroke::new(
-                1.0,
-                if selected {
-                    theme::ACCENT
-                } else {
-                    Color32::from_rgb(0x24, 0x3B, 0x2E)
-                },
-            ))
-            .inner_margin(Margin::symmetric(14, 10))
-            .show(ui, |ui| {
-                ui.set_min_width((ui.available_width() - 40.0) / 3.0);
-                ui.label(lbl(format!("{:02}　{name}", idx + 1), 11.0, theme::TEXT));
-                ui.label(lbl(sub, 9.0, Color32::from_rgb(0x6B, 0x7F, 0x74)));
-                let _ = id;
-            })
-            .response;
-        let resp = inner.interact(Sense::click());
-        if resp.clicked() {
-            self.design_node = idx;
-        }
+                ui.add_space(10.0);
+                if ui
+                    .add(theme::small_default_button(&format!("定位示例源码第 {line} 行")))
+                    .clicked()
+                {
+                    self.jump_code_line = Some(line);
+                    let from = self.session.route;
+                    self.session
+                        .navigate(Route::Develop, self.session.scroll_of(from));
+                }
+            },
+        );
     }
 
     // ---- 策略开发 ------------------------------------------------------------
@@ -1842,44 +2255,210 @@ impl ResearchApp {
             };
             (design_ok, state)
         };
-        page_header(
+        let header_kind = if version_state.starts_with('v') {
+            TagKind::Accent
+        } else {
+            TagKind::Neutral
+        };
+        page_header_ex(
             ui,
             "阶段 03 / 策略实现",
             "策略开发",
             "保存明确的版本，再把它交给实验与验证。",
+            Some((version_state.as_str(), header_kind)),
+            None,
         );
         if !design_ok {
-            Self::warn_banner(ui, "当前没有匹配需求的设计。请先在策略设计页保存设计版本。");
+            Self::warn_banner(ui, "当前没有匹配需求的设计。请先保存设计版本。");
         }
 
-        panel(
-            ui,
-            "策略源码",
-            Some((&version_state, TagKind::Accent)),
-            |ui| {
-                let mut src = self.ai_code_source.clone();
-                if ui
-                    .add(
-                        egui::TextEdit::multiline(&mut src)
-                            .desired_rows(10)
+        let checked_ok = self
+            .ai_code_checked
+            .as_ref()
+            .is_some_and(|c| c == &self.ai_code_source);
+        let line_n = self.ai_code_source.lines().count();
+        // 原型 develop：panel-head（文件名）→ .code 深色编辑区 → panel-head（行数）→ pad 按钮
+        Frame::NONE
+            .fill(theme::GLASS)
+            .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
+            .stroke(Stroke::new(1.0, theme::BORDER))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                let head = Frame::NONE
+                    .inner_margin(Margin {
+                        left: 19,
+                        right: 19,
+                        top: 14,
+                        bottom: 14,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let (ir, _) =
+                                ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+                            icons::paint_icon(
+                                ui.painter(),
+                                ir,
+                                icons::IconKind::Code,
+                                theme::MUTED,
+                            );
+                            ui.add_space(8.0);
+                            ui.label(lbl("策略示例.py", 10.0, theme::MUTED));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.add(theme::small_ghost_button("下载")).clicked() {
+                                    self.export_strategy_source();
+                                }
+                                ui.add_space(6.0);
+                                theme::tag_ui(
+                                    ui,
+                                    if checked_ok {
+                                        "映射检查通过"
+                                    } else {
+                                        "草稿待检查"
+                                    },
+                                    if checked_ok {
+                                        TagKind::Accent
+                                    } else {
+                                        TagKind::Neutral
+                                    },
+                                );
+                            });
+                        });
+                    });
+                {
+                    let hr = head.response.rect;
+                    ui.painter().line_segment(
+                        [
+                            Pos2::new(hr.left(), hr.bottom()),
+                            Pos2::new(hr.right(), hr.bottom()),
+                        ],
+                        Stroke::new(1.0, theme::BORDER),
+                    );
+                }
+                Frame::NONE
+                    .fill(theme::CODE_BG)
+                    .inner_margin(Margin::same(18))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        if let Some(line) = self.jump_code_line {
+                            ui.label(lbl(
+                                format!("▶ 定位到第 {line} 行（设计节点 / 事件检查器）"),
+                                11.0,
+                                theme::ACCENT_TEXT,
+                            ));
+                            ui.add_space(8.0);
+                            if ui.add(theme::small_ghost_button("清除定位")).clicked() {
+                                self.jump_code_line = None;
+                            }
+                            ui.add_space(8.0);
+                        }
+                        let mut src = self.ai_code_source.clone();
+                        let te = egui::TextEdit::multiline(&mut src)
+                            .desired_rows(16)
                             .desired_width(ui.available_width())
-                            .font(FontId::monospace(12.0)),
-                    )
-                    .changed()
+                            .font(FontId::monospace(theme::fs(11.0)))
+                            .text_color(theme::CODE_FG)
+                            .frame(Frame::NONE)
+                            .code_editor();
+                        if ui.add(te).changed() {
+                            self.ai_code_source = src;
+                        }
+                    });
+                let foot = Frame::NONE
+                    .inner_margin(Margin {
+                        left: 19,
+                        right: 19,
+                        top: 12,
+                        bottom: 12,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(note("Python 示例文本 · 不执行任意代码"));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.label(note(format!("{line_n} 行")));
+                            });
+                        });
+                    });
                 {
-                    self.ai_code_source = src;
+                    let hr = foot.response.rect;
+                    ui.painter().line_segment(
+                        [
+                            Pos2::new(hr.left(), hr.bottom()),
+                            Pos2::new(hr.right(), hr.bottom()),
+                        ],
+                        Stroke::new(1.0, theme::BORDER),
+                    );
                 }
+                Frame::NONE.inner_margin(Margin::same(19)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.add(theme::default_button("检查草稿")).clicked() {
+                            self.do_check_code();
+                        }
+                        ui.add_space(8.0);
+                        let save = ui.add_enabled(
+                            checked_ok && design_ok,
+                            theme::primary_button("保存版本"),
+                        );
+                        if save.clicked() {
+                            self.do_save_version();
+                        }
+                        ui.add_space(8.0);
+                        if ui.add(theme::ghost_button("生成初始代码")).clicked() {
+                            self.start_demo_task("生成策略代码", DemoAction::GenerateCode);
+                        }
+                    });
+                });
+            });
+        ui.add_space(12.0);
+
+        panel(ui, "资金约束修复", None, |ui| {
+            ui.label(note(
+                "原始示例按信号收盘价计算数量，执行日价格和费用可能导致资金不足。修复将资金检查放到下一交易日的成交阶段。",
+            ));
+            ui.add_space(10.0);
+            if self.show_code_diff {
+                Frame::NONE
+                    .fill(Color32::from_rgba_unmultiplied(34, 197, 94, 15))
+                    .stroke(Stroke::new(0.0, theme::BORDER))
+                    .inner_margin(Margin {
+                        left: 12,
+                        right: 12,
+                        top: 12,
+                        bottom: 12,
+                    })
+                    .show(ui, |ui| {
+                        let r = ui.max_rect();
+                        ui.painter().vline(
+                            r.left(),
+                            r.y_range(),
+                            Stroke::new(2.0, theme::ACCENT),
+                        );
+                        ui.label(mono(
+                            "− 按信号收盘价计算数量，未预留费用\n＋ 执行阶段使用开盘价，先预留 5 元费用，再取整手数量",
+                            11.0,
+                            theme::TEXT2,
+                        ));
+                    });
                 ui.add_space(8.0);
-                ui.label(note("源码为研究草稿记录，桌面不在本地执行任意代码；实验运行由协调器以 EMA 模板与运行参数执行。"));
-                ui.add_space(12.0);
-                if ui
-                    .add(theme::primary_button("保存版本（不可变）"))
-                    .clicked()
-                {
-                    self.do_save_version();
-                }
-            },
-        );
+                ui.horizontal(|ui| {
+                    if ui.add(theme::primary_button("应用修复到草稿")).clicked() {
+                        self.ai_code_source = crate::workspace::DRAFT_CODE_FIXED.into();
+                        self.ai_code_checked = None;
+                        self.show_code_diff = false;
+                        self.record("已应用资金约束修复草稿 · 需重新检查");
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(theme::ghost_button("取消差异")).clicked() {
+                        self.show_code_diff = false;
+                    }
+                });
+            } else if ui.add(theme::default_button("查看修复差异")).clicked() {
+                self.show_code_diff = true;
+                self.tell(
+                    "建议在成交阶段使用可见的开盘价，并预留费用。工作区展示修改差异；应用后需要重新检查、保存版本和运行实验。",
+                    Some(Route::Develop),
+                );
+            }
+        });
 
         ui.add_space(6.0);
         let versions: Vec<(usize, usize, usize, bool, bool)> = {
@@ -1900,74 +2479,120 @@ impl ResearchApp {
         };
         panel(ui, "不可变版本", None, |ui| {
             if versions.is_empty() {
-                ui.label(note("检查草稿并保存后，版本会出现在这里。保存后不可覆盖。"));
+                ui.label(note("检查草稿并保存后，版本会出现在这里。"));
             }
-            for (id, req, design, fresh, active) in versions {
-                ui.horizontal(|ui| {
-                    ui.label(mono(
-                        format!("v{id} · R{req} / D{design}"),
-                        11.0,
-                        theme::TEXT2,
-                    ));
+            for (id, req, design, fresh, active) in &versions {
+                let variant = self
+                    .workspace
+                    .current()
+                    .versions
+                    .get(id - 1)
+                    .map(|v| {
+                        if crate::workspace::code_preset_variant(&v.source) == Some(2) {
+                            "资金约束修复"
+                        } else {
+                            "原始"
+                        }
+                    })
+                    .unwrap_or("原始");
+                let row = ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new(mono(
+                            format!("v{id} · {variant}  R{req} / D{design}"),
+                            11.0,
+                            theme::TEXT2,
+                        )).fill(Color32::TRANSPARENT).stroke(Stroke::NONE))
+                        .clicked()
+                    {
+                        self.workspace.current_mut().active_version = Some(*id);
+                    }
                     ui.add_space(8.0);
                     theme::tag_ui(
                         ui,
-                        if active {
-                            "当前"
-                        } else if fresh {
+                        if *active {
+                            "已选中"
+                        } else if *fresh {
                             "可选"
                         } else {
                             "过期"
                         },
-                        if active {
+                        if *active {
                             TagKind::Accent
                         } else {
                             TagKind::Neutral
                         },
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(theme::ghost_button("查看")).clicked() {
+                        if ui.add(theme::small_default_button("查看")).clicked() {
                             self.view_source = self
                                 .workspace
                                 .current()
                                 .versions
                                 .get(id - 1)
-                                .map(|v| (v.id, v.source.clone()));
+                                .map(|v| (v.id, v.source.clone(), None));
                         }
                     });
                 });
+                let _ = row;
                 ui.add_space(6.0);
+            }
+            if !versions.is_empty() {
+                ui.add_space(8.0);
+                let can_run = {
+                    let p = self.workspace.current();
+                    p.active_version
+                        .map(|id| self.workspace.version_fresh(id))
+                        .unwrap_or(false)
+                        && !self.ai_run.watch.is_active()
+                };
+                ui.add_enabled_ui(can_run, |ui| {
+                    if ui
+                        .add(theme::primary_button("运行选中版本"))
+                        .clicked()
+                    {
+                        self.do_ai_run();
+                    }
+                });
             }
         });
     }
 
     // ---- 事件调试 ------------------------------------------------------------
     fn render_debug(&mut self, ui: &mut egui::Ui) {
-        let exps: Vec<(usize, usize, Option<String>, Option<String>)> = self
+        let exps: Vec<(usize, usize, u32, i64)> = self
             .workspace
             .current()
             .experiments
             .iter()
             .map(|e| {
-                (
-                    e.id,
-                    e.version_id,
-                    e.task_id.clone(),
-                    e.total_return.clone(),
-                )
+                let (rej, held) = e
+                    .demo
+                    .as_ref()
+                    .map(|d| (d.rejected, d.held))
+                    .unwrap_or((0, 0));
+                (e.id, e.version_id, rej, held)
             })
             .collect();
-        page_header(
+        let debug_badge = exps
+            .last()
+            .map(|(id, ver, _, _)| format!("E{id} / v{ver}"));
+        page_header_ex(
             ui,
             "阶段 04 / 解释运行行为",
             "事件调试",
-            "回放实验证据，查看任务状态与比较归因。",
+            if exps.is_empty() {
+                "沿着一笔信号与订单，找到问题发生的位置。"
+            } else {
+                "回放冻结实验，查看每一步的输入、输出与账户变化。"
+            },
+            debug_badge.as_deref().map(|s| (s, TagKind::Accent)),
+            None,
         );
         if exps.is_empty() {
             if empty_panel(
                 ui,
-                "还没有实验记录",
-                "先保存一个策略版本并运行实验。历史实验与任务证据在此保留。",
+                "还没有运行事件",
+                "先保存一个策略版本并运行合成实验。",
                 Some("打开策略开发"),
             ) {
                 let from = self.session.route;
@@ -1977,91 +2602,300 @@ impl ResearchApp {
             return;
         }
 
-        // 当前版本状态 + 运行/取消
-        let (vid, fresh) = {
-            let p = self.workspace.current();
-            (
-                p.active_version,
-                p.active_version
-                    .map(|v| self.workspace.version_fresh(v))
-                    .unwrap_or(false),
-            )
-        };
-        panel(
-            ui,
-            "当前版本与运行",
-            Some(("证据来自任务引用", TagKind::Neutral)),
-            |ui| {
-                match vid {
-                    Some(v) => ui.label(lbl(
-                        format!(
-                            "当前版本 v{v}：{}",
-                            if fresh {
-                                "可运行"
-                            } else {
-                                "已过期，请重新保存版本"
-                            }
-                        ),
-                        12.0,
-                        if fresh { theme::ACCENT } else { theme::RED },
-                    )),
-                    None => ui.label(lbl("尚无版本：请先在策略开发页保存", 12.0, theme::RED)),
+        if self.debug_run_id == 0 || !exps.iter().any(|(id, _, _, _)| *id == self.debug_run_id)
+        {
+            self.debug_run_id = exps.last().map(|(id, _, _, _)| *id).unwrap_or(0);
+            self.debug_event_index = 0;
+            self.debug_playing = false;
+        }
+        let selected = exps
+            .iter()
+            .find(|(id, _, _, _)| *id == self.debug_run_id)
+            .cloned()
+            .or_else(|| exps.last().cloned())
+            .unwrap_or((0, 0, 0, 0));
+        let demo = self
+            .workspace
+            .current()
+            .experiments
+            .iter()
+            .find(|e| e.id == selected.0)
+            .and_then(|e| e.demo.clone());
+        let filtered: Vec<crate::demo_sim::DemoEvent> = demo
+            .as_ref()
+            .map(|d| {
+                d.events
+                    .iter()
+                    .filter(|ev| self.debug_filter.is_empty() || ev.node == self.debug_filter)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !filtered.is_empty() && self.debug_event_index >= filtered.len() {
+            self.debug_event_index = filtered.len() - 1;
+        }
+        let has_step_events = !filtered.is_empty();
+        let mut run_changed = false;
+        let mut rewind = false;
+        let mut step = false;
+        let mut toggle_play = false;
+        let mut pick_seq: Option<usize> = None;
+        let mut jump_line: Option<u32> = None;
+
+        panel(ui, "事件回放", None, |ui| {
+            ui.horizontal(|ui| {
+                let status = if selected.2 > 0 {
+                    "订单拒绝"
+                } else {
+                    "已完成"
                 };
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.add(theme::primary_button("运行实验")).clicked() {
-                        self.do_ai_run();
-                    }
-                    if self.ai_run.watch.is_active() {
-                        if let Some(t) = self.ai_run.watch.task_id() {
-                            let t = t.to_string();
-                            if ui.add(theme::ghost_button("取消")).clicked() {
-                                self.do_cancel(t, PageKey::Run);
-                            }
+                let label = format!("E{} · v{} · {status}", selected.0, selected.1);
+                let prev = self.debug_run_id;
+                egui::ComboBox::from_id_salt("debug-run")
+                    .selected_text(label)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for (id, ver, rej, _) in &exps {
+                            let st = if *rej > 0 { "订单拒绝" } else { "已完成" };
+                            ui.selectable_value(
+                                &mut self.debug_run_id,
+                                *id,
+                                format!("E{id} · v{ver} · {st}"),
+                            );
                         }
+                    });
+                if self.debug_run_id != prev {
+                    run_changed = true;
+                }
+                ui.add_space(8.0);
+                ui.add_enabled_ui(has_step_events, |ui| {
+                    if ui
+                        .add(theme::small_default_button("回到起点"))
+                        .on_disabled_hover_text("当前实验无逐步事件")
+                        .clicked()
+                    {
+                        rewind = true;
+                    }
+                    ui.add_space(4.0);
+                    if ui
+                        .add(theme::small_default_button("单步 →"))
+                        .on_disabled_hover_text("当前实验无逐步事件")
+                        .clicked()
+                    {
+                        step = true;
+                    }
+                    ui.add_space(4.0);
+                    let play_label = if self.debug_playing { "暂停" } else { "播放" };
+                    if ui
+                        .add(theme::small_primary_button(play_label))
+                        .on_disabled_hover_text("当前实验无逐步事件")
+                        .clicked()
+                    {
+                        toggle_play = true;
                     }
                 });
-                render_watch(ui, &self.ai_run);
-                ui.add_space(8.0);
-                ui.label(note("调试解释代码为什么这样运行；回测回答历史模拟表现。此处为任务级证据，逐事件回放属于后续生产能力。"));
-            },
-        );
+            });
+            ui.add_space(10.0);
+            ui.horizontal_wrapped(|ui| {
+                let all = self.debug_filter.is_empty();
+                if ui.add(tab_button("全部事件", all)).clicked() {
+                    self.debug_filter.clear();
+                    self.debug_event_index = 0;
+                }
+                for n in &NODES {
+                    let on = self.debug_filter == n.0;
+                    if ui.add(tab_button(n.1, on)).clicked() {
+                        self.debug_filter = n.0.to_string();
+                        self.debug_event_index = 0;
+                    }
+                }
+            });
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .max_height(255.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("debug-events")
+                        .num_columns(4)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            for h in ["序号", "时点", "节点 / 标的", "结果"] {
+                                ui.label(mono(h, 10.0, theme::FAINT));
+                            }
+                            ui.end_row();
+                            if filtered.is_empty() {
+                                ui.label(note("当前筛选下没有事件。"));
+                                ui.end_row();
+                            } else {
+                                for (i, ev) in filtered.iter().enumerate() {
+                                    let selected_row = i == self.debug_event_index;
+                                    let node_name = NODES
+                                        .iter()
+                                        .find(|n| n.0 == ev.node)
+                                        .map(|n| n.1)
+                                        .unwrap_or(ev.node.as_str());
+                                    let row = format!(
+                                        "{:02}  {}  {} / {}  {}",
+                                        ev.seq,
+                                        &ev.visible_at[5.min(ev.visible_at.len())..],
+                                        node_name,
+                                        ev.symbol,
+                                        ev.status
+                                    );
+                                    let resp = ui.selectable_label(selected_row, mono(
+                                        format!("{:02}", ev.seq),
+                                        11.0,
+                                        theme::TEXT2,
+                                    ));
+                                    if resp.clicked() {
+                                        pick_seq = Some(i);
+                                    }
+                                    ui.label(mono(
+                                        ev.visible_at
+                                            .get(5..)
+                                            .unwrap_or(ev.visible_at.as_str()),
+                                        11.0,
+                                        theme::MUTED,
+                                    ));
+                                    ui.vertical(|ui| {
+                                        ui.label(lbl(node_name, 11.0, theme::TEXT2));
+                                        ui.label(mono(&ev.symbol, 10.0, theme::MUTED));
+                                    });
+                                    let bad = ev.status.contains("拒绝");
+                                    ui.label(lbl(
+                                        &ev.status,
+                                        11.0,
+                                        if bad { theme::RED } else { theme::TEXT2 },
+                                    ));
+                                    let _ = row;
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+            ui.add_space(8.0);
+            ui.label(note(
+                "播放已记录的事件；此处不是实时策略断点调试器。",
+            ));
+        });
+
+        if run_changed {
+            self.debug_event_index = 0;
+            self.debug_playing = false;
+        }
+        if rewind {
+            self.debug_event_index = 0;
+            self.debug_playing = false;
+        }
+        if step {
+            let n = filtered.len();
+            if n > 0 {
+                self.debug_event_index = (self.debug_event_index + 1).min(n - 1);
+            }
+            self.debug_playing = false;
+        }
+        if toggle_play {
+            self.debug_playing = !self.debug_playing;
+            self.debug_play_at = None;
+        }
+        if let Some(i) = pick_seq {
+            self.debug_event_index = i;
+            self.debug_playing = false;
+        }
 
         ui.add_space(6.0);
+        let eid = selected.0;
+        let evidence = format!("证据来自 E{eid}");
+        let current = filtered.get(self.debug_event_index).cloned();
         panel(
             ui,
-            "实验记录",
-            Some(("历史实验不变", TagKind::Neutral)),
+            "事件检查器",
+            Some((evidence.as_str(), TagKind::Neutral)),
             |ui| {
-                egui::Grid::new("debug-exp-grid").show(ui, |ui| {
-                    for head in ["实验", "版本", "任务", "期末收益"] {
-                        ui.label(mono(head, 10.0, theme::FAINT));
+                if let Some(ev) = &current {
+                    ui.horizontal(|ui| {
+                        theme::tag_ui(ui, &ev.symbol, TagKind::Neutral);
+                        let bad = ev.status.contains("拒绝");
+                        theme::tag_ui(
+                            ui,
+                            &ev.status,
+                            if bad { TagKind::Bad } else { TagKind::Accent },
+                        );
+                        ui.label(note(&ev.visible_at));
+                    });
+                    ui.add_space(10.0);
+                    ui.columns(2, |cols| {
+                        cols[0].label(note("输入"));
+                        cols[0].label(mono(&ev.input_json, 11.0, theme::TEXT2));
+                        cols[1].label(note("输出"));
+                        cols[1].label(mono(&ev.output_json, 11.0, theme::TEXT2));
+                    });
+                    ui.add_space(10.0);
+                    if ui
+                        .add(theme::small_default_button(format!(
+                            "定位冻结源码 · 第 {} 行",
+                            ev.line
+                        )))
+                        .clicked()
+                    {
+                        jump_line = Some(ev.line);
                     }
-                    ui.end_row();
-                    for (id, ver, task, ret) in &exps {
-                        ui.label(mono(format!("E{id}"), 11.0, theme::TEXT2));
-                        ui.label(mono(format!("v{ver}"), 11.0, theme::TEXT2));
-                        ui.label(mono(
-                            task.clone().unwrap_or_else(|| "（无任务）".into()),
-                            11.0,
-                            theme::MUTED,
-                        ));
-                        ui.label(mono(
-                            ret.clone().unwrap_or_else(|| "—".into()),
-                            11.0,
-                            theme::TEXT2,
-                        ));
-                        ui.end_row();
-                    }
-                });
+                } else {
+                    ui.label(note("当前筛选下没有事件。"));
+                }
             },
         );
+        if let Some(line) = jump_line {
+            let src = self
+                .workspace
+                .current()
+                .experiments
+                .iter()
+                .find(|e| e.id == selected.0)
+                .and_then(|e| {
+                    self.workspace
+                        .current()
+                        .versions
+                        .get(e.version_id - 1)
+                        .map(|v| (v.id, v.source.clone()))
+                });
+            if let Some((id, source)) = src {
+                self.view_source = Some((id, source, Some(line)));
+            }
+        }
 
+        ui.add_space(6.0);
+        let conclusion = if selected.2 > 0 {
+            "仓位数量按旧参考价估算，执行价格与费用使订单成本超过现金。查看成交事件，再应用开发区的修复。"
+        } else if selected.3 > 0 {
+            "资金约束已满足。接下来检查回测指标与验证证据，不能只根据一次收益判断策略有效。"
+        } else {
+            "没有形成持仓。请检查股票池、信号条件与投入比例。"
+        };
+        panel(ui, "这次运行告诉我们什么", None, |ui| {
+            ui.label(note(conclusion));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::default_button("查看修复差异")).clicked() {
+                    self.show_code_diff = true;
+                    let from = self.session.route;
+                    self.session
+                        .navigate(Route::Develop, self.session.scroll_of(from));
+                }
+                ui.add_space(8.0);
+                if ui.add(theme::ghost_button("回测实验")).clicked() {
+                    let from = self.session.route;
+                    self.session
+                        .navigate(Route::Experiments, self.session.scroll_of(from));
+                }
+            });
+        });
+
+        // 原型 debug 无「实验比较归因」主面板；比较入口收起到折叠区，主路径留给事件回放
         ui.add_space(6.0);
         let ids: Vec<usize> = exps.iter().map(|(id, _, _, _)| *id).collect();
         let cmp_a = self.debug_cmp[0];
         let cmp_b = self.debug_cmp[1];
-        panel(ui, "实验比较归因", None, |ui| {
+        ui.collapsing("实验比较归因（高级）", |ui| {
             ui.horizontal(|ui| {
                 ui.label(field("实验 A"));
                 egui::ComboBox::from_id_salt("debug-cmp-a")
@@ -2103,7 +2937,6 @@ impl ResearchApp {
                     }
                 }
             });
-            ui.add_space(8.0);
             ui.label(note(
                 "同输入实验的分歧归因代码；跨输入实验先列出输入差异，不归因代码。",
             ));
@@ -2113,231 +2946,263 @@ impl ResearchApp {
 
     // ---- 回测实验 ------------------------------------------------------------
     fn render_experiments(&mut self, ui: &mut egui::Ui) {
-        let (versions_len, exps_len, last_ret, exps) = {
+        // id, ver, ret, cash, held, rejected, final_nav, return_pct, drawdown
+        let exps: Vec<(
+            usize,
+            usize,
+            Option<String>,
+            Option<f64>,
+            Option<i64>,
+            Option<u32>,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+        )> = {
             let p = self.workspace.current();
-            (
-                p.versions.len(),
-                p.experiments.len(),
-                p.experiments
-                    .iter()
-                    .rev()
-                    .find_map(|e| e.total_return.clone()),
-                p.experiments
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.id,
-                            e.version_id,
-                            e.task_id.clone(),
-                            e.total_return.clone(),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            p.experiments
+                .iter()
+                .map(|e| {
+                    let d = e.demo.as_ref();
+                    (
+                        e.id,
+                        e.version_id,
+                        e.total_return.clone(),
+                        d.map(|x| x.cash),
+                        d.map(|x| x.held),
+                        d.map(|x| x.rejected),
+                        d.map(|x| x.final_nav),
+                        d.map(|x| x.return_pct),
+                        d.map(|x| x.drawdown_pct),
+                    )
+                })
+                .collect()
         };
-        page_header(
+        let empty_runs = exps.is_empty();
+        let last = exps.last().cloned();
+        let last_id = last.as_ref().map(|e| e.0).unwrap_or(0);
+        let ret_pct = last
+            .as_ref()
+            .and_then(|e| e.7.map(|p| format!("{p:.2}%")).or_else(|| e.2.as_deref().map(format_return_pct)))
+            .unwrap_or_else(|| "—".into());
+        let nav_text = last
+            .as_ref()
+            .and_then(|e| {
+                e.6.map(|v| format!("{v:.2}"))
+                    .or_else(|| e.2.as_deref().and_then(nav_from_return).map(|v| format!("{v:.2}")))
+            })
+            .unwrap_or_else(|| "—".into());
+        let dd_text = last
+            .as_ref()
+            .and_then(|e| e.8.map(|d| format!("{d:.2}%")))
+            .unwrap_or_else(|| "—".into());
+        if page_header_ex(
             ui,
             "实验 / 历史模拟",
             "回测实验",
-            "冻结输入、运行模拟，再比较结果。",
-        );
-
-        // 指标卡 ×3
-        ui.horizontal(|ui| {
-            let w = (ui.available_width() - 24.0) / 3.0;
-            for (top, value, bottom) in [
-                (
-                    "策略版本",
-                    format!("{versions_len:02}"),
-                    "保存后不可覆盖".to_string(),
-                ),
-                (
-                    "已完成实验",
-                    format!("{exps_len:02}"),
-                    "输入与结果可追溯".to_string(),
-                ),
-                (
-                    "最近收益",
-                    last_ret.clone().unwrap_or_else(|| "—".into()),
-                    "完成实验后回填".to_string(),
-                ),
-            ] {
-                // RD-008：horizontal 父级下 allocate_ui 继承水平布局，指标卡
-                // 三段文字需纵向堆叠——显式 top_down（Frame 同样继承父布局）
-                ui.allocate_ui_with_layout(sz(w, 0.0), Layout::top_down(Align::Min), |ui| {
-                    Frame::NONE
-                        .fill(Color32::from_rgba_premultiplied(250, 250, 250, 8))
-                        .corner_radius(CornerRadius::same(10))
-                        .stroke(Stroke::new(1.0, theme::BORDER))
-                        .inner_margin(Margin::same(17))
-                        .show(ui, |ui| {
-                            ui.label(lbl(top, 10.0, theme::MUTED));
-                            ui.add_space(8.0);
-                            ui.label(mono(value, 23.0, theme::TEXT));
-                            ui.add_space(4.0);
-                            ui.label(lbl(bottom, 10.0, theme::MUTED));
-                        });
-                });
-                ui.add_space(12.0);
+            if empty_runs {
+                "冻结输入、运行模拟，再比较结果。"
+            } else {
+                "回测回答历史模拟表现，验证决定证据是否充分。"
+            },
+            None,
+            if empty_runs {
+                None
+            } else {
+                Some("运行当前版本")
+            },
+        ) {
+            self.do_ai_run();
+        }
+        if empty_runs {
+            if empty_panel(
+                ui,
+                "准备你的第一次实验",
+                "选择一个已保存且未过期的策略版本。合成计算将真实产出账户与事件记录。",
+                Some("运行合成实验"),
+            ) {
+                self.do_ai_run();
             }
-        });
+            self.poll(PageKey::Run);
+            return;
+        }
+
+        let nav_label = format!("E{last_id} 期末净值");
+        metric_grid(
+            ui,
+            &[
+                (
+                    nav_label.as_str(),
+                    nav_text,
+                    "初始 10,000.00 元".to_string(),
+                ),
+                (
+                    "累计收益",
+                    ret_pct,
+                    "仅合成样本 · 不年化".to_string(),
+                ),
+                ("最大回撤", dd_text, "三个估值点".to_string()),
+            ],
+            false,
+        );
         ui.add_space(4.0);
 
-        // 运行参数 + 提交（真实协调器执行，冻结当前版本）
-        let snapshot_status = self
-            .pick_snapshot()
-            .map(|(_, id)| id)
-            .unwrap_or_else(|| "尚无（请在数据中心导入）".into());
-        let universe_status = self
-            .universe_saved
-            .as_ref()
-            .map(|u| u.universe_id.clone())
-            .unwrap_or_else(|| "尚无（请在股票池保存）".into());
-        panel(
-            ui,
-            "运行参数",
-            Some(("EMA 模板 · 严格模式", TagKind::Neutral)),
-            |ui| {
-                ui.horizontal(|ui| {
-                    for (name, key) in [("fast", 0u8), ("slow", 1), ("top_k", 2)] {
-                        ui.label(mono(name, 11.0, theme::MUTED));
-                        match key {
-                            0 => {
-                                ui.add(egui::DragValue::new(&mut self.run_form.fast));
-                            }
-                            1 => {
-                                ui.add(egui::DragValue::new(&mut self.run_form.slow));
-                            }
-                            _ => {
-                                ui.add(egui::DragValue::new(&mut self.run_form.top_k));
-                            }
-                        }
-                        ui.add_space(10.0);
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(field("起止"));
-                    let mut s = self.run_form.start.clone();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut s).desired_width(100.0))
-                        .changed()
-                    {
-                        self.run_form.start = s;
-                    }
-                    let mut e = self.run_form.end.clone();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut e).desired_width(100.0))
-                        .changed()
-                    {
-                        self.run_form.end = e;
-                    }
-                    ui.add_space(10.0);
-                    ui.label(field("资金"));
-                    let mut c = self.run_form.capital.clone();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut c).desired_width(100.0))
-                        .changed()
-                    {
-                        self.run_form.capital = c;
-                    }
-                });
-                ui.collapsing("成本假设", |ui| {
-                    for (name, field_i) in [
-                        ("佣金率", 0u8),
-                        ("最低佣金", 1),
-                        ("卖出税", 2),
-                        ("其他费", 3),
-                        ("滑点 bps", 4),
-                        ("参与率", 5),
-                    ] {
-                        ui.horizontal(|ui| {
-                            ui.label(field(name));
-                            let mut v = match field_i {
-                                0 => self.run_form.commission_rate.clone(),
-                                1 => self.run_form.min_commission.clone(),
-                                2 => self.run_form.sell_tax.clone(),
-                                3 => self.run_form.other_fee.clone(),
-                                4 => self.run_form.slippage_bps.clone(),
-                                _ => self.run_form.participation.clone(),
-                            };
-                            if ui
-                                .add(egui::TextEdit::singleline(&mut v).desired_width(120.0))
-                                .changed()
-                            {
-                                match field_i {
-                                    0 => self.run_form.commission_rate = v,
-                                    1 => self.run_form.min_commission = v,
-                                    2 => self.run_form.sell_tax = v,
-                                    3 => self.run_form.other_fee = v,
-                                    4 => self.run_form.slippage_bps = v,
-                                    _ => self.run_form.participation = v,
-                                }
-                            }
-                        });
-                    }
-                });
-                kv(
-                    ui,
-                    &[("数据快照", snapshot_status), ("股票池", universe_status)],
-                );
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui.add(theme::primary_button("运行当前版本")).clicked() {
-                        self.do_ai_run();
-                    }
-                    if self.ai_run.watch.is_active() {
-                        if let Some(t) = self.ai_run.watch.task_id() {
-                            let t = t.to_string();
-                            if ui.add(theme::ghost_button("取消")).clicked() {
-                                self.do_cancel(t, PageKey::Run);
-                            }
-                        }
-                    }
-                });
-                render_watch(ui, &self.ai_run);
-            },
-        );
-
-        ui.add_space(6.0);
-        panel(
-            ui,
-            "实验记录",
-            Some(("证据可追溯", TagKind::Neutral)),
-            |ui| {
-                if exps.is_empty() {
-                    ui.label(note("还没有实验。选择已保存且未过期的策略版本运行。"));
-                } else {
-                    egui::Grid::new("exp-grid").show(ui, |ui| {
-                        for head in ["实验", "版本", "任务", "期末收益", ""] {
-                            ui.label(mono(head, 10.0, theme::FAINT));
-                        }
-                        ui.end_row();
-                        for (id, ver, task, ret) in &exps {
-                            ui.label(mono(format!("E{id} / v{ver}"), 11.0, theme::TEXT2));
-                            ui.label(mono(
-                                task.clone().unwrap_or_else(|| "—".into()),
-                                11.0,
-                                theme::MUTED,
-                            ));
-                            ui.label(mono(
-                                ret.clone().unwrap_or_else(|| "—".into()),
-                                11.0,
-                                theme::TEXT2,
-                            ));
-                            ui.end_row();
-                        }
-                    });
-                }
-            },
-        );
-
-        ui.add_space(6.0);
-        // 净值比较（RD-005：原型 equityChart——最近两次实验折线 + 归因横幅）
         self.render_equity_chart(ui);
 
         ui.add_space(6.0);
-        // 运行比较（协调器运行 ID 比较）
-        panel(ui, "运行比较", None, |ui| {
+        let mut export_clicked = false;
+        let mut go_debug: Option<usize> = None;
+        let mut snap_msg: Option<String> = None;
+        let mut go_div = false;
+        panel_with_right(
+            ui,
+            "实验记录",
+            |ui| {
+                if ui.add(theme::small_default_button("导出 JSON")).clicked() {
+                    export_clicked = true;
+                }
+            },
+            |ui| {
+                egui::Grid::new("exp-grid")
+                    .num_columns(5)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        for head in ["实验 / 版本", "收益", "期末现金", "持仓 / 拒绝", "证据"] {
+                            ui.label(mono(head, 10.0, theme::FAINT));
+                        }
+                        ui.end_row();
+                        for (id, ver, ret, cash, held, rej, _fin, rpct, _) in &exps {
+                            ui.label(mono(format!("E{id} / v{ver}"), 11.0, theme::TEXT2));
+                            let pct = rpct
+                                .map(|p| format!("{p:.2}%"))
+                                .or_else(|| ret.as_deref().map(format_return_pct))
+                                .unwrap_or_else(|| "—".into());
+                            ui.label(mono(pct, 11.0, theme::TEXT2));
+                            ui.label(mono(
+                                cash.map(|c| format!("{c:.2}")).unwrap_or_else(|| "—".into()),
+                                11.0,
+                                theme::TEXT2,
+                            ));
+                            ui.label(mono(
+                                match (held, rej) {
+                                    (Some(h), Some(r)) => format!("{h} 股 / {r}"),
+                                    _ => "—".into(),
+                                },
+                                11.0,
+                                theme::TEXT2,
+                            ));
+                            ui.horizontal(|ui| {
+                                if ui.add(theme::small_default_button("调试")).clicked() {
+                                    go_debug = Some(*id);
+                                }
+                                if ui.add(theme::small_ghost_button("快照")).clicked() {
+                                    snap_msg = Some(format!(
+                                        "实验 E{id} 冻结快照：v{ver} · 合成演示证据包。"
+                                    ));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+            },
+        );
+        if export_clicked {
+            self.export_experiments_json();
+        }
+        if let Some(id) = go_debug {
+            self.debug_run_id = id;
+            self.debug_event_index = 0;
+            let from = self.session.route;
+            self.session
+                .navigate(Route::Debug, self.session.scroll_of(from));
+        }
+        if let Some(msg) = snap_msg {
+            self.tell(msg, None);
+        }
+
+        ui.add_space(6.0);
+        let divergence = self.workspace.first_event_divergence();
+        panel(ui, "首个事件分歧", None, |ui| {
+            match &divergence {
+                None if exps.len() < 2 => {
+                    ui.label(note(
+                        "运行两个版本后，自动比较事件输出，定位第一个不同之处。",
+                    ));
+                }
+                None => {
+                    ui.label(note("最近两次实验事件输出一致，或缺少合成事件证据。"));
+                }
+                Some((a, b, e, f)) => {
+                    let node_name = NODES
+                        .iter()
+                        .find(|n| n.0 == e.node)
+                        .map(|n| n.1)
+                        .unwrap_or(e.node.as_str());
+                    ui.label(note(format!(
+                        "{node_name} · {} · {}",
+                        e.symbol, e.date
+                    )));
+                    ui.add_space(6.0);
+                    ui.label(mono(
+                        format!(
+                            "E{a}：{}\nE{b}：{}",
+                            e.output_json,
+                            f.as_ref()
+                                .map(|x| x.output_json.as_str())
+                                .unwrap_or("事件缺失")
+                        ),
+                        11.0,
+                        theme::TEXT2,
+                    ));
+                    ui.add_space(8.0);
+                    if ui
+                        .add(theme::small_default_button("定位分歧事件"))
+                        .clicked()
+                    {
+                        go_div = true;
+                    }
+                }
+            }
+        });
+        if go_div {
+            if let Some((_, b, e, _)) = divergence {
+                self.debug_run_id = b;
+                self.debug_filter.clear();
+                self.debug_playing = false;
+                let ix = self
+                    .workspace
+                    .current()
+                    .experiments
+                    .iter()
+                    .find(|x| x.id == b)
+                    .and_then(|x| x.demo.as_ref())
+                    .and_then(|d| {
+                        d.events
+                            .iter()
+                            .position(|ev| ev.node == e.node && ev.symbol == e.symbol && ev.date == e.date)
+                    })
+                    .unwrap_or(0);
+                self.debug_event_index = ix;
+                let from = self.session.route;
+                self.session
+                    .navigate(Route::Debug, self.session.scroll_of(from));
+            }
+        }
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add(theme::primary_button("生成当前版本验证报告"))
+                .clicked()
+            {
+                self.do_make_report();
+            }
+            ui.add_space(8.0);
+            theme::tag_ui(ui, "合成数据 · 非真实回测", TagKind::Warn);
+        });
+
+        ui.add_space(6.0);
+        // 协调器「运行比较」默认折叠，避免挤占原型主路径（净值 / 实验记录 / 验证）
+        ui.collapsing("运行比较（协调器）", |ui| {
             ui.label(note(
                 "2..5 个运行 ID（逗号分割；ID 见任务记录），跨输入比较不归因代码。",
             ));
@@ -2346,7 +3211,7 @@ impl ResearchApp {
                 .add(
                     egui::TextEdit::singleline(&mut text)
                         .desired_width(ui.available_width())
-                        .font(FontId::monospace(12.0)),
+                        .font(FontId::monospace(theme::fs(12.0))),
                 )
                 .changed()
             {
@@ -2394,35 +3259,74 @@ impl ResearchApp {
         });
 
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add(theme::primary_button("生成当前版本验证报告"))
-                .clicked()
-            {
-                self.do_make_report();
-            }
-            ui.add_space(8.0);
-            theme::tag_ui(ui, "回测不是策略验证", TagKind::Warn);
+        ui.collapsing("运行参数（协调器）", |ui| {
+            ui.horizontal(|ui| {
+                ui.label(mono("fast", 11.0, theme::MUTED));
+                ui.add(egui::DragValue::new(&mut self.run_form.fast));
+                ui.label(mono("slow", 11.0, theme::MUTED));
+                ui.add(egui::DragValue::new(&mut self.run_form.slow));
+                ui.label(field("资金"));
+                let mut c = self.run_form.capital.clone();
+                if ui
+                    .add(egui::TextEdit::singleline(&mut c).desired_width(100.0))
+                    .changed()
+                {
+                    self.run_form.capital = c;
+                }
+            });
+            render_watch(ui, &self.ai_run);
         });
+
         self.poll(PageKey::Run);
     }
 
-    /// 净值比较面板（RD-005）：最近两次有任务实验的净值折线 + 归因横幅。
-    ///
-    /// 数据：协调器 query_rows equity 桶（任务 ID 即运行句柄），缓存键控懒加载；
-    /// 无实验 / 运行中 / 读取失败均显式占位，不空白冒充已实现（RD-005 期望 3）。
+    /// 净值比较面板：优先离线合成 `demo.equity`（对齐原型）；否则协调器任务曲线。
     fn render_equity_chart(&mut self, ui: &mut egui::Ui) {
-        let latest = self.workspace.latest_task_experiments(2); // 新→旧
-        let key = (
-            latest.get(1).map(|x| x.2.clone()),
-            latest.first().map(|x| x.2.clone()),
-        );
+        let demo_latest: Vec<(usize, usize, crate::demo_sim::DemoRun)> = self
+            .workspace
+            .current()
+            .experiments
+            .iter()
+            .rev()
+            .filter_map(|e| {
+                e.demo
+                    .as_ref()
+                    .map(|d| (e.id, e.version_id, d.clone()))
+            })
+            .take(2)
+            .collect();
+        let task_latest = self.workspace.latest_task_experiments(2); // 新→旧
+        let key = if !demo_latest.is_empty() {
+            (
+                demo_latest.get(1).map(|x| format!("demo:{}", x.0)),
+                demo_latest.first().map(|x| format!("demo:{}", x.0)),
+            )
+        } else {
+            (
+                task_latest.get(1).map(|x| x.2.clone()),
+                task_latest.first().map(|x| x.2.clone()),
+            )
+        };
         if self.equity_chart.key != key {
             let mut series: Vec<(String, Vec<crate::bridge::EquityPoint>)> = Vec::new();
             let mut error = None;
             let mut pending = false;
-            if let Some(bridge) = &self.bridge {
-                for (id, ver, task) in latest.iter().rev() {
+            if !demo_latest.is_empty() {
+                let dates = ["2026-01-05", "2026-01-06", "2026-01-07"];
+                for (id, ver, demo) in demo_latest.iter().rev() {
+                    let pts: Vec<_> = demo
+                        .equity
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| crate::bridge::EquityPoint {
+                            date: dates.get(i).unwrap_or(&"2026-01-07").to_string(),
+                            value: *v,
+                        })
+                        .collect();
+                    series.push((format!("E{id} / v{ver}"), pts));
+                }
+            } else if let Some(bridge) = &self.bridge {
+                for (id, ver, task) in task_latest.iter().rev() {
                     match bridge.equity_curve(task) {
                         Ok(pts) => series.push((format!("E{id} / v{ver}"), pts)),
                         Err(e) if e.code == nautilus_research_domain::ErrorCode::RunNotReady => {
@@ -2441,132 +3345,85 @@ impl ResearchApp {
                 pending,
             };
         }
-        let banner = if latest.len() == 2 {
-            self.workspace
-                .comparison_banner(latest[1].0, latest[0].0)
-                .ok()
+        let banner_ids: Option<(usize, usize)> = if demo_latest.len() == 2 {
+            Some((demo_latest[1].0, demo_latest[0].0))
+        } else if task_latest.len() == 2 {
+            Some((task_latest[1].0, task_latest[0].0))
         } else {
             None
         };
-        let empty_experiments = latest.is_empty();
+        let banner = banner_ids.and_then(|(a, b)| self.workspace.comparison_banner(a, b).ok());
+        let empty_experiments = demo_latest.is_empty() && task_latest.is_empty();
         let chart = self.equity_chart.clone();
-        panel(ui, "净值比较", None, |ui| {
-            if let Some(text) = &banner {
-                ui.label(note(text.clone()));
-                ui.add_space(8.0);
-            }
-            if let Some(err) = &chart.error {
-                ui.label(lbl(err.clone(), 11.0, theme::RED));
-            }
-            if chart.pending {
-                ui.label(note("运行尚未完成，净值曲线待任务终态后可用。"));
-            }
-            let drawable: Vec<&(String, Vec<crate::bridge::EquityPoint>)> = chart
-                .series
+        let badges: Vec<String> = if !demo_latest.is_empty() {
+            demo_latest
                 .iter()
-                .filter(|(_, pts)| !pts.is_empty())
-                .collect();
-            if drawable.is_empty() {
-                if chart.error.is_none() && !chart.pending {
-                    ui.label(note(if empty_experiments {
-                        "还没有可绘制的实验。运行当前版本后自动绘制最近两次净值曲线。"
-                    } else {
-                        "净值序列为空：运行产物未含净值行。"
-                    }));
-                }
-                return;
-            }
-            // 轴范围（原型 low/high 上下留边）
-            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-            for (_, pts) in &drawable {
-                for p in pts.iter() {
-                    lo = lo.min(p.value);
-                    hi = hi.max(p.value);
-                }
-            }
-            let pad = ((hi - lo) * 0.05).max(1.0);
-            let (lo, hi) = (lo - pad, hi + pad);
-            // 悬停标签：系列名 → 日期列（原型「E{id} · 日期 · 净值」）
-            let hover_dates: Vec<(String, Vec<String>)> = drawable
+                .rev()
+                .map(|(id, ver, _)| format!("E{id} / v{ver}"))
+                .collect()
+        } else {
+            task_latest
                 .iter()
-                .map(|(label, pts)| {
-                    (
-                        label.clone(),
-                        pts.iter().map(|p| p.date.clone()).collect::<Vec<_>>(),
-                    )
-                })
-                .collect();
-            let axis_dates: Vec<String> = drawable
-                .last()
-                .map(|(_, pts)| pts.iter().map(|p| p.date.clone()).collect())
-                .unwrap_or_default();
-            egui_plot::Plot::new("equity-compare")
-                .height(240.0)
-                .include_y(lo)
-                .include_y(hi)
-                .legend(egui_plot::Legend::default())
-                .x_axis_formatter(move |mark, _range| {
-                    let i = mark.value.round() as usize;
-                    if (mark.value - i as f64).abs() < 1e-6 {
-                        axis_dates.get(i).cloned().unwrap_or_default()
-                    } else {
-                        String::new()
-                    }
-                })
-                .label_formatter(move |pos| match pos {
-                    egui_plot::HoverPosition::NearDataPoint {
-                        plot_name,
-                        position,
-                        index,
-                    } => {
-                        let date = hover_dates
-                            .iter()
-                            .find(|(name, _)| name == plot_name)
-                            .and_then(|(_, dates)| dates.get(*index))
-                            .map(String::as_str)
-                            .unwrap_or("");
-                        Some(format!("{plot_name} · {date} · 净值 {:.2}", position.y))
-                    }
-                    _ => None,
-                })
-                .show(ui, |plot_ui| {
-                    for (i, (label, pts)) in drawable.iter().enumerate() {
-                        let latest_one = i == drawable.len() - 1;
-                        let color = if latest_one {
-                            theme::ACCENT_TEXT
+                .rev()
+                .map(|(id, ver, _)| format!("E{id} / v{ver}"))
+                .collect()
+        };
+        panel_with_right(
+            ui,
+            "净值比较",
+            |ui| {
+                for b in &badges {
+                    theme::tag_ui(ui, b, TagKind::Accent);
+                    ui.add_space(6.0);
+                }
+            },
+            |ui| {
+                if let Some(text) = &banner {
+                    ui.label(note(text.clone()));
+                    ui.add_space(8.0);
+                }
+                if let Some(err) = &chart.error {
+                    ui.label(lbl(err.clone(), 11.0, theme::RED));
+                }
+                if chart.pending {
+                    ui.label(note("运行尚未完成，净值曲线待任务终态后可用。"));
+                }
+                let drawable: Vec<&(String, Vec<crate::bridge::EquityPoint>)> = chart
+                    .series
+                    .iter()
+                    .filter(|(_, pts)| !pts.is_empty())
+                    .collect();
+                if drawable.is_empty() {
+                    if chart.error.is_none() && !chart.pending {
+                        ui.label(note(if empty_experiments {
+                            "还没有可绘制的实验。运行当前版本后自动绘制最近两次净值曲线。"
                         } else {
-                            Color32::from_rgb(0x4B, 0x55, 0x63)
-                        };
-                        let points: egui_plot::PlotPoints = pts
-                            .iter()
-                            .enumerate()
-                            .map(|(j, p)| [j as f64, p.value])
-                            .collect();
-                        let mut line = egui_plot::Line::new(label.clone(), points)
-                            .color(color)
-                            .width(if latest_one { 2.5 } else { 2.0 });
-                        if latest_one {
-                            // 原型线性渐变面积（#22c55e .16→0）的 egui 近似：单色半透明填充
-                            line = line.fill(lo as f32).fill_alpha(0.16);
-                        }
-                        plot_ui.line(line);
+                            "净值序列为空：运行产物未含净值行。"
+                        }));
                     }
-                });
-            ui.add_space(6.0);
-            ui.label(note(
-                "显示最近两次实验。每个点由现金＋持仓市值计算，悬停查看数值。",
-            ));
-        });
+                    return;
+                }
+                paint_equity_chart(ui, &drawable);
+                ui.add_space(6.0);
+                ui.label(note(
+                    "显示最近两次实验。每个点由现金＋持仓市值计算，悬停查看数值。",
+                ));
+            },
+        );
     }
 
     // ---- 验证报告 ------------------------------------------------------------
     fn render_validate(&mut self, ui: &mut egui::Ui) {
-        page_header(
+        if page_header_ex(
             ui,
             "阶段 05 / 检查证据",
             "策略验证",
             "先看证据，再形成有边界的结论。",
-        );
+            None,
+            Some("生成验证报告"),
+        ) {
+            self.do_make_report();
+        }
         Self::warn_banner(
             ui,
             "演示检查通过，只表示本样本下的流程与约束检查完成。真实策略验证仍需真实数据、样本外和稳健性证据。",
@@ -2623,8 +3480,8 @@ impl ResearchApp {
                         }
                         ui.add_space(4.0);
                         if ui
-                            .add(theme::ghost_button(&format!(
-                                "打开实验 E{} 的证据 →",
+                            .add(theme::small_default_button(&format!(
+                                "打开实验 E{} 的事件证据 →",
                                 rep.run_id
                             )))
                             .clicked()
@@ -2652,32 +3509,62 @@ impl ResearchApp {
 
         ui.add_space(6.0);
         panel(ui, "正式策略验证", None, |ui| {
-            for (name, state) in [
+            let items = [
                 ("真实行情与历史可见信息检验", "未运行"),
                 ("独立样本外区间评估", "未运行"),
                 ("参数与成本敏感性检验", "未运行"),
                 ("市场适用范围与失效条件评审", "证据不足"),
-            ] {
-                ui.horizontal(|ui| {
-                    ui.label(lbl(name, 11.0, theme::TEXT2));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        theme::tag_ui(ui, state, TagKind::Warn);
-                    });
-                });
-                ui.add_space(8.0);
+            ];
+            let n = items.len();
+            for (i, (name, state)) in items.iter().enumerate() {
+                let w = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, 42.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        let r = ui.max_rect();
+                        if i + 1 < n {
+                            ui.painter().line_segment(
+                                [r.left_bottom(), r.right_bottom()],
+                                Stroke::new(1.0, theme::BORDER),
+                            );
+                        }
+                        ui.label(lbl(*name, 11.0, theme::TEXT2));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            theme::tag_ui(ui, *state, TagKind::Warn);
+                        });
+                    },
+                );
             }
         });
 
         ui.add_space(6.0);
         panel(ui, "四个概念，四种职责", None, |ui| {
-            ui.label(concepts(
-                "调试：解释代码为什么这样运行。\n回测：观察历史模拟结果。\n策略验证：综合证据判断是否满足研究标准。\n计划核对：检查这一次调整是否满足当前账户与数据约束。",
-            ));
+            // 原型 `.concepts b`：术语加粗 TEXT2，释义 muted
+            for (head, rest) in [
+                ("调试", "解释代码为什么这样运行。"),
+                ("回测", "观察历史模拟结果。"),
+                ("策略验证", "综合证据判断是否满足研究标准。"),
+                ("计划核对", "检查这一次调整是否满足当前账户与数据约束。"),
+            ] {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(
+                        egui::RichText::new(head)
+                            .font(FontId::proportional(theme::fs(11.0)))
+                            .strong()
+                            .color(theme::TEXT2),
+                    );
+                    ui.label(lbl(rest, 11.0, theme::MUTED));
+                });
+            }
         });
 
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.add(theme::primary_button("继续演示交易计划")).clicked() {
+            let plan_btn = theme::primary_button("继续演示交易计划");
+            let resp = ui.add_enabled(report_ready(&self.workspace), plan_btn);
+            if resp.clicked() {
                 let from = self.session.route;
                 self.session
                     .navigate(Route::Plan, self.session.scroll_of(from));
@@ -2685,20 +3572,18 @@ impl ResearchApp {
             ui.add_space(8.0);
             ui.label(note("仅演示核对流程，不构成正式交易许可"));
         });
-        ui.add_space(8.0);
-        if ui.add(theme::primary_button("生成验证报告")).clicked() {
-            self.do_make_report();
-        }
     }
 
     // ---- 交易计划 ------------------------------------------------------------
     fn render_plan_page(&mut self, ui: &mut egui::Ui) {
         let ready = report_ready(&self.workspace);
-        page_header(
+        page_header_ex(
             ui,
             "阶段 06 / 从策略到计划",
             "交易计划",
             "一次前向核对：现在持有什么，下一步计划调整什么。",
+            Some(("人工参考 · 演示", TagKind::Warn)),
+            None,
         );
         if !ready {
             Self::warn_banner(
@@ -2707,58 +3592,193 @@ impl ResearchApp {
             );
         }
 
-        // 计划桥（S20：冻结签名 + 核对门控 + 确认导出）
-        let plan_source = {
-            let p = self.workspace.current();
-            p.plan
-                .as_ref()
-                .map(|t| format!("v{} · {} · {}", t.version_id, t.snapshot, t.trade_date))
-        };
+        let draft = self.workspace.current().plan.clone();
         panel(
             ui,
             "计划输入",
             Some(("独立账户快照", TagKind::Neutral)),
             |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(field("交易日"));
-                    let mut d = self.ai_plan_trade_date.clone();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut d).desired_width(120.0))
-                        .changed()
-                    {
-                        self.ai_plan_trade_date = d;
-                    }
-                    ui.add_space(10.0);
-                    ui.label(note("数据快照取最新已导入"));
-                });
-                ui.add_space(8.0);
-                ui.label(field("手工持仓 JSON"));
-                let mut json = self.ai_plan_json.clone();
+                two_field_row(
+                    ui,
+                    |ui| {
+                        field_label(ui, "参考数据快照");
+                        let ix = self.ai_plan_snapshot.min(1);
+                        egui::ComboBox::from_id_salt("plan-snap")
+                            .selected_text(PLAN_SNAP_LABELS[ix])
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                for i in 0..2 {
+                                    ui.selectable_value(
+                                        &mut self.ai_plan_snapshot,
+                                        i,
+                                        PLAN_SNAP_LABELS[i],
+                                    );
+                                }
+                            });
+                    },
+                    |ui| {
+                        field_label(ui, "计划交易日");
+                        let mut d = self.ai_plan_trade_date.clone();
+                        if ui
+                            .add(line_edit(&mut d).desired_width(ui.available_width()))
+                            .changed()
+                        {
+                            self.ai_plan_trade_date = d;
+                        }
+                    },
+                );
+                ui.add_space(16.0);
+                field_label(ui, "可用现金（元）");
+                let mut cash = self.ai_plan_cash.clone();
                 if ui
-                .add(
-                    egui::TextEdit::multiline(&mut json)
-                        .desired_rows(4)
-                        .desired_width(ui.available_width())
-                        .font(FontId::monospace(12.0))
-                        .hint_text(r#"{"cash_cny":"10000","total_assets_cny":"20000","positions":[…]}"#),
-                )
-                .changed()
-            {
-                self.ai_plan_json = json;
-            }
+                    .add(line_edit(&mut cash).desired_width(ui.available_width()))
+                    .changed()
+                {
+                    self.ai_plan_cash = cash;
+                }
+                ui.add_space(16.0);
+                ui.columns(3, |cols| {
+                    for i in 0..3 {
+                        field_label(&mut cols[i], format!("{} · 当前持仓", PLAN_SYMS[i]));
+                        let mut q = self.ai_plan_qty[i].clone();
+                        if cols[i]
+                            .add(line_edit(&mut q).desired_width(cols[i].available_width()))
+                            .changed()
+                        {
+                            self.ai_plan_qty[i] = q;
+                        }
+                        cols[i].add_space(9.0);
+                        field_label(&mut cols[i], "可卖数量");
+                        let mut s = self.ai_plan_sell[i].clone();
+                        if cols[i]
+                            .add(line_edit(&mut s).desired_width(cols[i].available_width()))
+                            .changed()
+                        {
+                            self.ai_plan_sell[i] = s;
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.label(note(
+                    "计划参考价 A / B / C = 11.00 / 19.50 / 8.50 元，区别于回测期末价格。目标市值以现金＋持仓市值为基数；本轮买入不预支卖出收入。",
+                ));
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.add(theme::primary_button("生成计划")).clicked() {
-                        self.do_ai_plan_generate();
+                    ui.add_enabled_ui(ready, |ui| {
+                        if ui.add(theme::primary_button("生成计划草稿")).clicked() {
+                            self.do_ai_plan_generate();
+                        }
+                    });
+                    if let Some(t) = &draft {
+                        ui.add_space(8.0);
+                        let live_sig = {
+                            let cash: f64 =
+                                self.ai_plan_cash.trim().parse().unwrap_or(0.0);
+                            let snap = PLAN_SNAP_IDS[self.ai_plan_snapshot.min(1)];
+                            let rows = crate::bridge::parse_plan_rows(&self.rebuild_ai_plan_json())
+                                .map(|(_, _, r)| r)
+                                .unwrap_or_default();
+                            crate::workspace::plan_signature(
+                                t.version_id,
+                                snap,
+                                self.ai_plan_trade_date.trim(),
+                                cash,
+                                &rows,
+                            )
+                        };
+                        if live_sig == t.signature {
+                            theme::tag_ui(ui, "输入已冻结", TagKind::Accent);
+                        } else {
+                            theme::tag_ui(ui, "输入已变更 · 需重新生成", TagKind::Warn);
+                        }
                     }
-                    ui.add_space(8.0);
-                    if ui.add(theme::ghost_button("核对")).clicked() {
+                });
+            },
+        );
+
+        if let Some(t) = &draft {
+            ui.add_space(6.0);
+            let check_badge = if t.checked
+                && self.ai_plan_issues.as_ref().is_some_and(|i| i.is_empty())
+            {
+                ("演示核对通过", TagKind::Accent)
+            } else {
+                ("尚未通过核对", TagKind::Warn)
+            };
+            panel(ui, "持仓调整清单", Some(check_badge), |ui| {
+                egui::Grid::new("plan-rows")
+                    .num_columns(5)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        for h in ["标的", "参考价", "当前 / 可卖", "目标", "调整"] {
+                            ui.label(mono(h, 10.0, theme::FAINT));
+                        }
+                        ui.end_row();
+                        for (sym, price, cur, sell, tgt, delta) in &t.rows {
+                            ui.label(lbl(sym.clone(), 12.0, theme::TEXT));
+                            ui.label(mono(format!("{price:.2}"), 11.0, theme::TEXT2));
+                            ui.label(mono(format!("{cur} / {sell}"), 11.0, theme::TEXT2));
+                            ui.label(mono(format!("{tgt}"), 11.0, theme::TEXT2));
+                            let adj = if *delta > 0 {
+                                format!("买入 +{delta}")
+                            } else if *delta < 0 {
+                                format!("卖出 {}", delta.abs())
+                            } else {
+                                "保持".into()
+                            };
+                            ui.label(lbl(
+                                adj,
+                                11.0,
+                                if *delta != 0 {
+                                    theme::ACCENT_TEXT
+                                } else {
+                                    theme::MUTED
+                                },
+                            ));
+                            ui.end_row();
+                        }
+                    });
+                let buys: f64 = t
+                    .rows
+                    .iter()
+                    .filter(|r| r.5 > 0)
+                    .map(|r| r.1 * r.5 as f64)
+                    .sum();
+                let budget = {
+                    let p = self.workspace.current();
+                    let alloc = p
+                        .active_design
+                        .and_then(|id| p.designs.get(id - 1))
+                        .map(|d| d.allocation)
+                        .unwrap_or(1.0);
+                    t.total_assets * alloc
+                };
+                ui.add_space(10.0);
+                kv(
+                    ui,
+                    &[
+                        ("账户总资产", format!("{:.2} 元", t.total_assets)),
+                        ("目标投入", format!("{:.2} 元", budget)),
+                        ("买入含费合计", format!("{:.2} 元", buys)),
+                        (
+                            "来源",
+                            format!("v{} · {} · {}", t.version_id, t.snapshot, t.trade_date),
+                        ),
+                    ],
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.add(theme::default_button("核对计划")).clicked() {
                         self.do_ai_plan_check();
                     }
                     ui.add_space(8.0);
-                    if ui.add(theme::primary_button("确认导出")).clicked() {
-                        self.do_ai_plan_export();
-                    }
+                    let export_ok = t.checked
+                        && self.ai_plan_issues.as_ref().is_some_and(|i| i.is_empty());
+                    ui.add_enabled_ui(export_ok, |ui| {
+                        if ui.add(theme::primary_button("确认并导出")).clicked() {
+                            self.plan_export_confirm = true;
+                        }
+                    });
                 });
                 if let Some(issues) = &self.ai_plan_issues {
                     ui.add_space(8.0);
@@ -2770,25 +3790,24 @@ impl ResearchApp {
                         }
                     }
                 }
-                if let Some(src) = &plan_source {
-                    ui.add_space(8.0);
-                    kv(ui, &[("来源", src.clone())]);
-                }
                 if let Some(csv) = &self.ai_plan_csv {
                     ui.add_space(8.0);
                     ui.label(note("导出内容（含演示标识）："));
                     ui.label(mono(csv, 11.0, theme::TEXT));
                 }
-                ui.add_space(6.0);
-                ui.label(note(
-                    "计划使用独立参考快照，绑定策略版本并冻结账户输入；确认导出不发送任何订单。",
-                ));
-            },
-        );
+            });
+        }
 
         ui.add_space(6.0);
-        // 协调器计划（生产对接面板：生成 → 导出 → 备注）
-        panel(ui, "协调器计划（生产对接）", None, |ui| {
+        panel(ui, "计划核对不是回测", None, |ui| {
+            ui.label(concepts(
+                "回测在历史区间反复模拟策略；这里对一个交易日的具体调整做约束核对。核对通过不能保证成交或盈利。文件始终标注“演示计划”，不产生订单。",
+            ));
+        });
+
+        // 生产对接面板默认折叠，避免挤占原型「计划输入 / 清单」主路径
+        ui.add_space(6.0);
+        ui.collapsing("协调器计划（生产对接）", |ui| {
             ui.horizontal(|ui| {
                 ui.label(field("as_of"));
                 let mut as_of = self.plan_form.as_of.clone();
@@ -2800,14 +3819,14 @@ impl ResearchApp {
                 }
             });
             ui.add_space(8.0);
-            ui.label(field("手工持仓 JSON（空 = 使用最近持有版本）"));
+            ui.label(field("协调器持仓（空 = 使用最近持有版本）"));
             let mut holdings = self.plan_form.holdings_json.clone();
             if ui
                 .add(
                     egui::TextEdit::multiline(&mut holdings)
                         .desired_rows(3)
                         .desired_width(ui.available_width())
-                        .font(FontId::monospace(12.0)),
+                        .font(FontId::monospace(theme::fs(12.0))),
                 )
                 .changed()
             {
@@ -2865,29 +3884,84 @@ impl ResearchApp {
                 ui.label(lbl(info, 11.0, theme::ACCENT_TEXT));
             }
         });
-
-        ui.add_space(6.0);
-        panel(ui, "计划核对不是回测", None, |ui| {
-            ui.label(concepts(
-                "回测在历史区间反复模拟策略；计划核对对一个交易日的具体调整做约束核对。核对通过不能保证成交或盈利。文件始终标注“演示计划”，不产生订单。",
-            ));
-        });
         self.poll(PageKey::Plan);
     }
 
     // ---- 数据中心 ------------------------------------------------------------
     fn render_data(&mut self, ui: &mut egui::Ui) {
-        page_header(
+        let data_rev = self.workspace.current().data_revision;
+        let data_id = format!("SYN-202601-r{data_rev}");
+        if page_header_ex(
             ui,
             "资源 / 行情与快照",
             "数据中心",
             "统一管理研究输入，历史实验始终引用原快照。",
-        );
+            None,
+            Some("模拟更新快照"),
+        ) {
+            self.start_demo_task("模拟更新数据快照", DemoAction::UpdateData);
+        }
+
+        // 演示主路径（对齐原型 dataView）
         panel(
             ui,
-            "数据导入",
-            Some(("可重复导入", TagKind::Neutral)),
+            "当前合成数据快照",
+            Some(("只读演示", TagKind::Neutral)),
             |ui| {
+                egui::Grid::new("data_demo_kv")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(field("快照编号"));
+                        ui.label(mono(data_id.clone(), 12.0, theme::TEXT));
+                        ui.end_row();
+                        ui.label(field("样本覆盖"));
+                        ui.label(lbl("3 个合成标的 · 2026-01-05～01-07", 12.0, theme::TEXT));
+                        ui.end_row();
+                        ui.label(field("数据质量"));
+                        ui.label(lbl("样本数值完整；非真实行情", 12.0, theme::TEXT));
+                        ui.end_row();
+                        ui.label(field("复权口径"));
+                        ui.label(lbl("未建模公司行为，无真实复权处理", 12.0, theme::TEXT));
+                        ui.end_row();
+                        ui.label(field("来源"));
+                        ui.label(lbl("内置确定性样本，无网络接入", 12.0, theme::TEXT));
+                        ui.end_row();
+                    });
+                ui.add_space(10.0);
+                ui.label(note(
+                    "模拟更新创建新的快照引用，使当前版本与结论过期。通达信导入、TickFlow 在线更新属于后续生产能力。",
+                ));
+            },
+        );
+
+        ui.add_space(6.0);
+        panel(ui, "价格与信号样本", None, |ui| {
+            egui::Grid::new("data_fixture_table")
+                .striped(true)
+                .num_columns(5)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    for h in ["代码", "信号收盘", "次日开盘", "期末收盘", "成交额 / 万"] {
+                        ui.label(field(h));
+                    }
+                    ui.end_row();
+                    for row in &crate::demo_sim::FIXTURE {
+                        ui.label(mono(row.symbol, 11.0, theme::TEXT));
+                        ui.label(mono(format!("{:.2}", row.close), 11.0, theme::TEXT));
+                        ui.label(mono(format!("{:.2}", row.open), 11.0, theme::TEXT));
+                        ui.label(mono(format!("{:.2}", row.marks[2]), 11.0, theme::TEXT));
+                        ui.label(mono(format!("{:.0}", row.amount), 11.0, theme::TEXT));
+                        ui.end_row();
+                    }
+                });
+        });
+
+        // 协调器导入（次要路径，折叠）
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("协调器导入（可选）")
+            .default_open(false)
+            .show(ui, |ui| {
                 ui.label(field("导入暂存数据（每行一个 CSV 路径）"));
                 let mut edited = self.import_form.paths.join("\n");
                 let response = ui.add(
@@ -2921,75 +3995,179 @@ impl ResearchApp {
                     }
                 });
                 render_watch(ui, &self.snapshot_page);
-            },
-        );
-
-        ui.add_space(6.0);
-        let snapshots: Vec<(String, String, String)> = self
-            .bridge
-            .as_ref()
-            .and_then(|b| b.snapshots(20).ok())
-            .map(|p| {
-                p.items
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.snapshot_id.clone(),
-                            s.as_of.clone(),
-                            s.manifest_hash.chars().take(12).collect(),
-                        )
+                let snapshots: Vec<(String, String, String)> = self
+                    .bridge
+                    .as_ref()
+                    .and_then(|b| b.snapshots(20).ok())
+                    .map(|p| {
+                        p.items
+                            .iter()
+                            .map(|s| {
+                                (
+                                    s.snapshot_id.clone(),
+                                    s.as_of.clone(),
+                                    s.manifest_hash.chars().take(12).collect(),
+                                )
+                            })
+                            .collect()
                     })
-                    .collect()
-            })
-            .unwrap_or_default();
-        panel(ui, "快照清单", None, |ui| {
-            if snapshots.is_empty() {
-                ui.label(note(
-                    self.bridge_error
-                        .as_deref()
-                        .unwrap_or("尚无快照。导入后历史实验将引用原快照。"),
-                ));
-            }
-            for (id, as_of, hash) in snapshots {
-                ui.label(mono(
-                    format!("{id}  as_of={as_of}  清单 {hash}…"),
-                    11.0,
-                    theme::TEXT,
-                ));
-                ui.add_space(4.0);
-            }
-            ui.add_space(4.0);
-            ui.label(note(
-                "模拟更新或再次导入会创建新的快照引用，使当前版本与结论过期；历史实验不变。",
-            ));
-        });
+                    .unwrap_or_default();
+                if !snapshots.is_empty() {
+                    ui.add_space(8.0);
+                    for (id, as_of, hash) in snapshots {
+                        ui.label(mono(
+                            format!("{id}  as_of={as_of}  清单 {hash}…"),
+                            11.0,
+                            theme::TEXT,
+                        ));
+                    }
+                } else if let Some(err) = &self.bridge_error {
+                    ui.label(note(err.as_str()));
+                }
+            });
         self.poll(PageKey::Snapshot);
     }
 
     // ---- 股票池 --------------------------------------------------------------
     fn render_pool(&mut self, ui: &mut egui::Ui) {
-        let saved_state = self
-            .universe_saved
-            .as_ref()
-            .map(|u| format!("已保存 {}", u.universe_id));
-        page_header(
+        let pool_rev = self.workspace.current().pool_revision;
+        let pool_amount = self.workspace.current().pool_amount;
+        let pool_id = format!("U{pool_rev}");
+        let markets = ["全部", "沪市", "深市"];
+        page_header_ex(
             ui,
             "资源 / 可研究的标的",
             "股票池",
-            "规则预览与版本保存；历史实验继续引用当时的规则和成员。",
+            "查看每个标的的入选依据，保存版本供实验引用。",
+            Some((pool_id.as_str(), TagKind::Accent)),
+            None,
         );
-        panel(
-            ui,
-            "筛选规则",
-            Some((
-                saved_state.as_deref().unwrap_or("未保存"),
-                if self.universe_saved.is_some() {
-                    TagKind::Accent
-                } else {
-                    TagKind::Neutral
-                },
-            )),
-            |ui| {
+
+        // 演示主路径（对齐原型 poolView）
+        let mut save_pool = false;
+        panel(ui, "筛选规则", None, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.pool_search)
+                        .desired_width(200.0)
+                        .hint_text("搜索样本代码或名称"),
+                );
+                ui.add_space(10.0);
+                egui::ComboBox::from_id_salt("pool_market")
+                    .selected_text(markets[self.pool_market.min(2)])
+                    .width(88.0)
+                    .show_ui(ui, |ui| {
+                        for (i, name) in markets.iter().enumerate() {
+                            ui.selectable_value(&mut self.pool_market, i, *name);
+                        }
+                    });
+            });
+            ui.add_space(10.0);
+            ui.label(field("最低成交额（万元）"));
+            let mut amount = format!("{pool_amount:.0}");
+            if ui
+                .add(egui::TextEdit::singleline(&mut amount).desired_width(120.0))
+                .changed()
+            {
+                if let Ok(v) = amount.parse::<f64>() {
+                    self.workspace.current_mut().pool_amount = v;
+                }
+            }
+            ui.add_space(12.0);
+            if ui.add(theme::primary_button("保存股票池规则")).clicked() {
+                save_pool = true;
+            }
+            ui.add_space(8.0);
+            ui.label(note(
+                "搜索只过滤展示；保存采用当前市场与成交额规则。历史实验继续引用当时的规则和成员。",
+            ));
+        });
+        if save_pool {
+            let amount = self.workspace.current().pool_amount;
+            let market = markets[self.pool_market.min(2)];
+            match self.workspace.save_demo_pool(amount, market) {
+                Ok((rev, members)) => {
+                    self.record(&format!(
+                        "股票池 · 已保存 U{rev}，成员 {} 个：{}",
+                        members.len(),
+                        members.join(", ")
+                    ));
+                    self.ai_notice = Some("股票池已更新，请保存当前版本后再运行实验。".into());
+                }
+                Err(e) => {
+                    self.ai_notice = Some(e);
+                }
+            }
+        }
+
+        ui.add_space(6.0);
+        let q = self.pool_search.trim().to_lowercase();
+        let market = markets[self.pool_market.min(2)];
+        let amount = self.workspace.current().pool_amount;
+        let mut open_stock: Option<usize> = None;
+        panel(ui, "候选样本", None, |ui| {
+            egui::Grid::new("pool_candidates")
+                .striped(true)
+                .num_columns(3)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    for h in ["代码 / 市场", "成交额", "入选原因"] {
+                        ui.label(field(h));
+                    }
+                    ui.end_row();
+                    let mut any = false;
+                    for (idx, row) in crate::demo_sim::FIXTURE.iter().enumerate() {
+                        let hit_q = q.is_empty()
+                            || row.symbol.to_lowercase().contains(&q)
+                            || row.name.to_lowercase().contains(&q);
+                        let hit_m = market == "全部" || row.market == market;
+                        if !(hit_q && hit_m) {
+                            continue;
+                        }
+                        any = true;
+                        let pass = row.amount >= amount;
+                        let cell = ui
+                            .vertical(|ui| {
+                                let r = ui.add(
+                                    egui::Label::new(mono(row.symbol, 11.0, theme::TEXT))
+                                        .sense(Sense::click()),
+                                );
+                                ui.label(lbl(
+                                    format!("{} · {}", row.market, row.name),
+                                    10.0,
+                                    theme::MUTED,
+                                ));
+                                r
+                            })
+                            .inner;
+                        if cell.clicked() {
+                            open_stock = Some(idx);
+                        }
+                        ui.label(mono(format!("{} 万", row.amount as i64), 11.0, theme::TEXT));
+                        theme::tag_ui(
+                            ui,
+                            if pass { "满足流动性" } else { "成交额不足" },
+                            if pass { TagKind::Accent } else { TagKind::Warn },
+                        );
+                        ui.end_row();
+                    }
+                    if !any {
+                        ui.label(note("没有匹配的样本，请调整搜索条件。"));
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(8.0);
+            ui.label(note("点击样本查看价格、信号与排除原因。"));
+        });
+        if let Some(idx) = open_stock {
+            self.pool_stock_detail = Some(idx);
+        }
+
+        // 协调器规则（次要路径）
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new("协调器规则预览（可选）")
+            .default_open(false)
+            .show(ui, |ui| {
                 ui.label(field("规则 JSON（RuleAST）"));
                 let mut rule = self.universe_form.rule_text.clone();
                 if ui
@@ -2997,7 +4175,7 @@ impl ResearchApp {
                         egui::TextEdit::multiline(&mut rule)
                             .desired_rows(4)
                             .desired_width(ui.available_width())
-                            .font(FontId::monospace(12.0)),
+                            .font(FontId::monospace(theme::fs(12.0))),
                     )
                     .changed()
                 {
@@ -3025,8 +4203,6 @@ impl ResearchApp {
                     }
                 });
                 render_watch(ui, &self.universe_page);
-
-                // 预览成功：三态原因 + 保存版本
                 if let Some(v) = self.universe_page.watch.terminal() {
                     if crate::pipeline::is_success(v) {
                         if let Some(bridge) = &self.bridge {
@@ -3062,14 +4238,13 @@ impl ResearchApp {
                         theme::ACCENT_TEXT,
                     ));
                 }
-            },
-        );
+            });
         self.poll(PageKey::Universe);
     }
 
     // ---- 策略资产 ------------------------------------------------------------
     fn render_library(&mut self, ui: &mut egui::Ui) {
-        let versions: Vec<(usize, usize, usize, bool, bool)> = {
+        let versions: Vec<(usize, usize, usize, u64, u64, bool, bool)> = {
             let p = self.workspace.current();
             p.versions
                 .iter()
@@ -3078,18 +4253,27 @@ impl ResearchApp {
                         v.id,
                         v.req_id,
                         v.design_id,
+                        v.data_revision,
+                        v.pool_revision,
                         self.workspace.version_fresh(v.id),
                         p.active_version == Some(v.id),
                     )
                 })
                 .collect()
         };
-        page_header(
+        if page_header_ex(
             ui,
             "资源 / 可复用的策略",
             "策略资产",
             "当前项目的策略版本与上游引用。",
-        );
+            None,
+            Some("打开编辑器"),
+        ) {
+            let from = self.session.route;
+            self.session
+                .navigate(Route::Develop, self.session.scroll_of(from));
+            return;
+        }
         if versions.is_empty() {
             if empty_panel(
                 ui,
@@ -3103,60 +4287,77 @@ impl ResearchApp {
             }
             return;
         }
-        panel(
-            ui,
-            "版本库",
-            Some(("当前项目", TagKind::Neutral)),
-            |ui| {
-                for (id, req, design, fresh, active) in versions {
-                    ui.horizontal(|ui| {
-                        ui.label(mono(format!("v{id}"), 12.0, theme::TEXT));
-                        ui.add_space(6.0);
-                        ui.label(mono(format!("R{req} / D{design}"), 11.0, theme::MUTED));
-                        ui.add_space(8.0);
-                        theme::tag_ui(
-                            ui,
-                            if active {
-                                "当前选择"
-                            } else if fresh {
-                                "可用于研究"
-                            } else {
-                                "上游已过期"
-                            },
-                            if active {
-                                TagKind::Accent
-                            } else if fresh {
-                                TagKind::Neutral
-                            } else {
-                                TagKind::Warn
-                            },
+        panel(ui, "版本库", None, |ui| {
+            for (id, req, design, data_rev, pool_rev, fresh, active) in &versions {
+                let variant = self
+                    .workspace
+                    .current()
+                    .versions
+                    .get(id - 1)
+                    .map(|v| {
+                        if crate::workspace::code_preset_variant(&v.source) == Some(2) {
+                            "资金约束修复"
+                        } else {
+                            "原始示例"
+                        }
+                    })
+                    .unwrap_or("原始示例");
+                let state = if *active {
+                    "当前选择"
+                } else if *fresh {
+                    "可用于研究"
+                } else {
+                    "上游已过期"
+                };
+                let kind = if *active || *fresh {
+                    TagKind::Accent
+                } else {
+                    TagKind::Warn
+                };
+                let w = ui.available_width();
+                let row = ui.allocate_ui_with_layout(
+                    egui::vec2(w, 52.0),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        let r = ui.max_rect();
+                        ui.painter().rect(
+                            r,
+                            CornerRadius::same(7),
+                            theme::WHITE_03,
+                            Stroke::new(1.0, theme::BORDER_STRONG),
+                            egui::StrokeKind::Inside,
                         );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(theme::ghost_button("查看")).clicked() {
-                                self.view_source = self
-                                    .workspace
-                                    .current()
-                                    .versions
-                                    .get(id - 1)
-                                    .map(|v| (v.id, v.source.clone()));
-                            }
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            ui.label(lbl(format!("v{id} · {variant}"), 12.0, theme::TEXT));
+                            ui.add_space(5.0);
+                            ui.label(mono(
+                                format!(
+                                    "R{req} / D{design} / SYN-202601-r{data_rev} / U{pool_rev}"
+                                ),
+                                10.0,
+                                theme::MUTED,
+                            ));
                         });
-                    });
-                    ui.add_space(6.0);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_space(12.0);
+                            theme::tag_ui(ui, state, kind);
+                        });
+                    },
+                );
+                if row.response.interact(Sense::click()).clicked() {
+                    self.workspace.current_mut().active_version = Some(*id);
                 }
-                ui.add_space(4.0);
-                if ui.add(theme::primary_button("打开编辑器")).clicked() {
-                    let from = self.session.route;
-                    self.session
-                        .navigate(Route::Develop, self.session.scroll_of(from));
-                }
-            },
-        );
+                ui.add_space(6.0);
+            }
+        });
     }
 
     // ---- 浮层 ----------------------------------------------------------------
     fn render_windows(&mut self, ctx: &egui::Context) {
         // 运行记录（任务动作、依据和产物；不展示模型内部推理）
+        let mut fail_next_click = false;
+        let mut retry_click: Option<(&'static str, DemoAction)> = None;
         egui::Window::new("运行记录与任务控制")
             .open(&mut self.show_logs)
             .default_width(520.0)
@@ -3175,21 +4376,172 @@ impl ResearchApp {
                             ui.label(mono(l, 11.0, theme::TEXT2));
                         }
                     });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(theme::small_default_button("下次任务模拟失败"))
+                        .clicked()
+                    {
+                        fail_next_click = true;
+                    }
+                    if let Some((label, action)) = self.demo_retry {
+                        ui.add_space(8.0);
+                        if ui.add(theme::small_default_button("重试上次任务")).clicked() {
+                            retry_click = Some((label, action));
+                        }
+                    }
+                });
             });
+        if fail_next_click {
+            self.fail_next = true;
+            self.ai_notice = Some("下次后台任务将模拟失败，可随后重试".into());
+        }
+        if let Some((label, action)) = retry_click {
+            self.show_logs = false;
+            self.start_demo_task(label, action);
+        }
 
-        // 版本只读查看
-        if let Some((id, src)) = self.view_source.clone() {
+        // 股票池样本详情（原型 data-stock modal）
+        if let Some(idx) = self.pool_stock_detail {
+            if let Some(row) = crate::demo_sim::FIXTURE.get(idx) {
+                let amount = self.workspace.current().pool_amount;
+                let pass = row.amount >= amount;
+                let mut open = true;
+                egui::Window::new(format!("{} · {}", row.symbol, row.name))
+                    .open(&mut open)
+                    .default_width(360.0)
+                    .collapsible(false)
+                    .show(ctx, |ui| {
+                        egui::Grid::new("pool_stock_kv")
+                            .num_columns(2)
+                            .spacing([12.0, 8.0])
+                            .show(ui, |ui| {
+                                ui.label(field("市场"));
+                                ui.label(lbl(row.market, 12.0, theme::TEXT));
+                                ui.end_row();
+                                ui.label(field("成交额"));
+                                ui.label(lbl(format!("{} 万元", row.amount as i64), 12.0, theme::TEXT));
+                                ui.end_row();
+                                ui.label(field("示例信号"));
+                                ui.label(lbl(
+                                    if row.signal { "正向" } else { "无信号" },
+                                    12.0,
+                                    theme::TEXT,
+                                ));
+                                ui.end_row();
+                                ui.label(field("流动性条件"));
+                                ui.label(lbl(
+                                    if pass {
+                                        "满足当前阈值"
+                                    } else {
+                                        "不满足当前阈值"
+                                    },
+                                    12.0,
+                                    theme::TEXT,
+                                ));
+                                ui.end_row();
+                            });
+                    });
+                if !open {
+                    self.pool_stock_detail = None;
+                }
+            } else {
+                self.pool_stock_detail = None;
+            }
+        }
+
+        // 版本只读查看（原型 eventSource：当前事件行前加 ▶）
+        if let Some((id, src, highlight)) = self.view_source.clone() {
             let mut open = true;
-            let mut closed = !open;
-            egui::Window::new(format!("只读策略 v{id}"))
+            let title = match highlight {
+                Some(n) => format!("冻结源码 v{id} · 第 {n} 行"),
+                None => format!("只读策略 v{id}"),
+            };
+            egui::Window::new(title)
                 .open(&mut open)
                 .default_width(560.0)
+                .default_height(420.0)
                 .show(ctx, |ui| {
-                    ui.label(mono(&src, 11.0, theme::TEXT2));
+                    let body = src
+                        .lines()
+                        .enumerate()
+                        .map(|(i, l)| {
+                            let n = i as u32 + 1;
+                            let mark = if highlight == Some(n) { "▶ " } else { "  " };
+                            format!("{mark}{n:>2}  {l}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    ui.label(mono(body, 11.0, theme::TEXT2));
                 });
-            closed = closed || !open;
-            if closed {
+            if !open {
                 self.view_source = None;
+            }
+        }
+
+        // 计划导出二次确认（原型 exportPlan dialog）
+        if self.plan_export_confirm {
+            let mut open = true;
+            egui::Window::new("确认导出演示计划")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(420.0)
+                .show(ctx, |ui| {
+                    ui.label(lbl(
+                        "导出内容标注为演示计划，不构成交易指令；正式策略验证仍为证据不足。",
+                        12.0,
+                        theme::TEXT2,
+                    ));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(theme::primary_button("确认导出")).clicked() {
+                            self.plan_export_confirm = false;
+                            self.do_ai_plan_export();
+                        }
+                        ui.add_space(8.0);
+                        if ui.add(theme::ghost_button("取消")).clicked() {
+                            self.plan_export_confirm = false;
+                        }
+                    });
+                });
+            if !open {
+                self.plan_export_confirm = false;
+            }
+        }
+
+        // 需求只读查看（原型 data-req）
+        if let Some(id) = self.view_req {
+            let req = self
+                .workspace
+                .current()
+                .reqs
+                .get(id.saturating_sub(1))
+                .cloned();
+            let mut open = true;
+            egui::Window::new(format!("只读需求 R{id}"))
+                .open(&mut open)
+                .default_width(520.0)
+                .show(ctx, |ui| {
+                    if let Some(r) = req {
+                        ui.label(field("研究目标与处理逻辑"));
+                        ui.label(lbl(&r.text, 12.0, theme::TEXT2));
+                        ui.add_space(10.0);
+                        ui.label(field("验收标准"));
+                        ui.label(lbl(&r.acceptance, 12.0, theme::TEXT2));
+                        ui.add_space(10.0);
+                        kv(
+                            ui,
+                            &[
+                                ("投入比例", format!("{:.0}%", r.allocation * 100.0)),
+                                ("最低成交额", format!("{} 万元", r.min_amount)),
+                            ],
+                        );
+                    } else {
+                        ui.label(note("该需求版本不存在。"));
+                    }
+                });
+            if !open {
+                self.view_req = None;
             }
         }
 
@@ -3219,7 +4571,13 @@ impl ResearchApp {
                             } else {
                                 let id = self.workspace.add_project(name);
                                 let n = self.workspace.current().messages.len();
-                                self.chat_cards.push((id, n - 1, Route::Requirements));
+                                self.push_artifact(
+                                    id,
+                                    n - 1,
+                                    Route::Requirements,
+                                    crate::nav::WELCOME_CARD_TITLE,
+                                    crate::nav::WELCOME_CARD_DESC,
+                                );
                                 self.tell(
                                     format!("已新建项目：会话、需求与版本与原项目互不串扰。"),
                                     None,
@@ -3336,37 +4694,121 @@ impl ResearchApp {
         // 实验任务终态后如需回填收益，由后续协调器指标读取承载（当前诚实留空）
     }
 
-    /// 对话发送：意图路由 → 预设回复 → 路由跳转（Unknown 停留并诚实解释）。
+    /// 对话发送：意图路由 → 执行对应动作（对齐原型 submitChat，不只跳转）。
     fn do_ai_send_text(&mut self, text: String) {
         if text.trim().is_empty() {
             return;
         }
         let intent = ai::route(&text);
-        let reply = ai::reply(&text);
-        let (pid, assistant_index) = {
+        {
             let p = self.workspace.current_mut();
             p.messages.push(crate::workspace::ChatMessage {
                 role: crate::workspace::Role::User,
-                text,
+                text: text.clone(),
             });
+        }
+        match intent {
+            ai::Intent::DraftRequirement => self.apply_requirement_draft(&text),
+            ai::Intent::GenerateDesign => {
+                self.start_demo_task("生成策略设计", DemoAction::DesignDraft);
+            }
+            ai::Intent::GenerateCode => {
+                self.start_demo_task("生成策略代码", DemoAction::GenerateCode);
+            }
+            ai::Intent::RunExperiment => self.do_ai_run(),
+            ai::Intent::MakeReport => self.do_make_report(),
+            ai::Intent::PlanGenerate => self.do_ai_plan_generate(),
+            ai::Intent::PlanCheck => self.do_ai_plan_check(),
+            ai::Intent::PlanExport => self.plan_export_confirm = true,
+            ai::Intent::NewProject => {
+                self.new_project_open = true;
+                self.append_intent_reply(&text, intent);
+            }
+            _ => self.append_intent_reply(&text, intent),
+        }
+        self.chat_pin = true;
+    }
+
+    fn append_intent_reply(&mut self, text: &str, intent: ai::Intent) {
+        let reply = ai::reply(text);
+        let (pid, assistant_index) = {
+            let p = self.workspace.current_mut();
             p.messages.push(crate::workspace::ChatMessage {
                 role: crate::workspace::Role::Assistant,
                 text: reply,
             });
             (p.id, p.messages.len() - 1)
         };
-        if intent != ai::Intent::Unknown {
-            if let Some(route) = Route::from_intent(intent) {
-                self.chat_cards.push((pid, assistant_index, route));
-                let from = self.session.route;
-                self.session.navigate(route, self.session.scroll_of(from));
-            }
+        if let Some(route) = Route::from_intent(intent) {
+            let (title, desc) = if intent == ai::Intent::ExplainBoundary {
+                ("查看验证边界", "四类活动分别记录")
+            } else {
+                route.artifact_copy()
+            };
+            self.push_artifact(pid, assistant_index, route, title, desc);
+            let from = self.session.route;
+            self.session.navigate(route, self.session.scroll_of(from));
         }
-        self.chat_pin = true;
+    }
+
+    /// 原型 submitChat：芯片「生成需求草稿」保留默认文案；其它输入写入草稿。
+    fn apply_requirement_draft(&mut self, text: &str) {
+        let exact = matches!(text.trim(), "生成需求草稿" | "帮我生成需求");
+        if !exact {
+            self.ai_req_text = text.trim().to_string();
+        }
+        self.tell_card(
+            "需求草稿已整理到工作区。请补充研究范围、参数和验收标准，然后确认需求版本。",
+            Some(Route::Requirements),
+            Some("研究需求草稿"),
+            Some("可直接编辑与确认"),
+        );
+        let from = self.session.route;
+        self.session
+            .navigate(Route::Requirements, self.session.scroll_of(from));
+    }
+
+    /// 原型 generateDesign：只填草稿，不保存 D。
+    fn apply_design_draft_from_req(&mut self) {
+        let Some((id, text, alloc, min_amt)) = ({
+            let p = self.workspace.current();
+            p.active_req.and_then(|rid| {
+                p.reqs.get(rid - 1).map(|r| {
+                    (r.id, r.text.clone(), r.allocation * 100.0, r.min_amount)
+                })
+            })
+        }) else {
+            self.ai_notice = Some("请先确认需求文档".into());
+            return;
+        };
+        self.ai_design_alloc = alloc;
+        self.ai_design_min_amount = format!("{min_amt:.0}");
+        self.ai_design_note = format!(
+            "按需求 R{id}：{text}\n\n处理顺序：可见数据 → 股票池过滤 → 信号形成 → 仓位 → 模拟成交 → 指标。信号日与执行日分离。"
+        );
+        self.tell_card(
+            "设计草稿已生成。两张图共用六个处理节点，请检查参数和说明后保存设计版本。",
+            Some(Route::Design),
+            Some("设计草稿与处理图"),
+            Some("等待保存设计版本"),
+        );
+        let from = self.session.route;
+        self.session
+            .navigate(Route::Design, self.session.scroll_of(from));
     }
 
     /// 追加助手消息 + 运行记录（产物卡可选）。
     fn tell(&mut self, text: impl Into<String>, card: Option<Route>) {
+        self.tell_card(text, card, None, None);
+    }
+
+    fn tell_card(
+        &mut self,
+        text: impl Into<String>,
+        card: Option<Route>,
+        title: Option<&str>,
+        desc: Option<&str>,
+    ) {
         let text = text.into();
         let first_line = text.lines().next().unwrap_or_default().to_string();
         let (pid, idx) = {
@@ -3378,7 +4820,14 @@ impl ResearchApp {
             (p.id, p.messages.len() - 1)
         };
         if let Some(r) = card {
-            self.chat_cards.push((pid, idx, r));
+            let (dt, dd) = r.artifact_copy();
+            self.push_artifact(
+                pid,
+                idx,
+                r,
+                title.unwrap_or(dt),
+                desc.unwrap_or(dd),
+            );
         }
         self.chat_pin = true;
         self.record(&first_line);
@@ -3389,6 +4838,92 @@ impl ResearchApp {
         let ts = nautilus_research_domain::time::now_rfc3339();
         let hhmmss = ts.get(11..19).unwrap_or("").to_string();
         self.logs.push(format!("{hhmmss} · {text}"));
+    }
+
+    /// 启动离线演示任务（原型 `startTask`，约 850ms）。
+    fn start_demo_task(&mut self, label: &'static str, action: DemoAction) {
+        if self.demo_task.is_some() {
+            self.ai_notice = Some("当前任务正在执行，请等待或取消".into());
+            return;
+        }
+        self.demo_task_seq += 1;
+        let stamp = self.workspace.current().revision;
+        self.demo_retry = Some((label, action));
+        self.demo_task = Some(DemoTask {
+            id: self.demo_task_seq,
+            label,
+            action,
+            stamp,
+            started: std::time::Instant::now(),
+        });
+        self.record(&format!("{label} · 已启动"));
+    }
+
+    /// 取消离线演示任务。
+    fn cancel_demo_task(&mut self) {
+        if let Some(t) = self.demo_task.take() {
+            self.record(&format!("{} · 已取消", t.label));
+            self.tell("任务已取消，未提交新产物。已有版本和实验继续保留。", None);
+        }
+    }
+
+    /// 推进到期的离线演示任务。
+    fn poll_demo_task(&mut self) {
+        let Some(task) = self.demo_task.clone() else {
+            return;
+        };
+        if task.started.elapsed() < std::time::Duration::from_millis(850) {
+            return;
+        }
+        // 已被取消或被新任务替换
+        if self.demo_task.as_ref().map(|t| t.id) != Some(task.id) {
+            return;
+        }
+        self.demo_task = None;
+        if self.fail_next {
+            self.fail_next = false;
+            self.tell(
+                format!(
+                    "{}失败：已模拟计算服务不可用。没有提交新产物，可以重试。",
+                    task.label
+                ),
+                None,
+            );
+            self.record("失败模拟，无结果提交");
+            return;
+        }
+        if self.workspace.current().revision != task.stamp {
+            self.tell(
+                "输入版本已变化，本次任务未提交结果。请以当前版本重试。",
+                None,
+            );
+            return;
+        }
+        match task.action {
+            DemoAction::DesignDraft => {
+                self.apply_design_draft_from_req();
+                self.demo_retry = None;
+            }
+            DemoAction::GenerateCode => {
+                self.do_generate_code();
+                self.demo_retry = None;
+            }
+            DemoAction::UpdateData => {
+                let rev = self.workspace.update_demo_data();
+                self.record(&format!(
+                    "数据中心 · 已更新合成快照 SYN-202601-r{rev}；当前版本与结论已过期"
+                ));
+                self.tell_card(
+                    format!(
+                        "新合成快照 SYN-202601-r{rev} 已建立。当前版本和结论需要重新确认，历史实验不变。"
+                    ),
+                    Some(Route::Data),
+                    Some("数据快照已更新"),
+                    Some("原型更新，不连接行情服务"),
+                );
+                self.demo_retry = None;
+            }
+        }
     }
 
     // ---- 数据中心
@@ -3450,6 +4985,30 @@ impl ResearchApp {
             }
         };
         self.ai_experiment = Some(exp_id);
+        // 预置示例：离线 compute 已写入 demo，对齐原型主路径（不依赖数据中心）
+        if let Some(demo) = self
+            .workspace
+            .current()
+            .experiments
+            .iter()
+            .find(|e| e.id == exp_id)
+            .and_then(|e| e.demo.clone())
+        {
+            let tip = if demo.rejected > 0 {
+                "订单因资金不足被拒绝，可进入事件调试定位。"
+            } else {
+                "计算结果已保存，接下来检查验证证据。"
+            };
+            self.tell(
+                format!(
+                    "实验 E{exp_id} 完成：期末净值 {:.2}，收益 {:.2}%。{tip}",
+                    demo.final_nav, demo.return_pct
+                ),
+                Some(Route::Experiments),
+            );
+            self.record(&format!("运行实验 E{exp_id} · 合成演示完成"));
+            return;
+        }
         let Some(snapshot_id) = self.pick_snapshot().map(|(_, id)| id) else {
             self.ai_run
                 .on_submit_failed("尚无数据快照：请先在数据中心导入");
@@ -3520,12 +5079,29 @@ impl ResearchApp {
     // ---- 验证报告
     fn do_make_report(&mut self) {
         match self.workspace.make_report() {
-            Ok(vid) => self.tell(
-                format!(
-                    "验证报告已生成（v{vid}）：演示检查以实验证据为准；正式策略验证仍为证据不足——真实数据、样本外与参数稳健性未运行。"
-                ),
-                Some(Route::Validate),
-            ),
+            Ok(vid) => {
+                let (demo_pass, run_id) = self
+                    .workspace
+                    .current()
+                    .report
+                    .as_ref()
+                    .map(|r| (r.demo_pass(), r.run_id))
+                    .unwrap_or((false, 0));
+                let demo_label = if demo_pass { "通过" } else { "失败" };
+                let tail = if demo_pass {
+                    "可以继续演示计划生成与账户核对。"
+                } else {
+                    "请修复问题并运行新版本。"
+                };
+                self.tell_card(
+                    format!(
+                        "验证报告已生成：演示检查{demo_label}；正式策略验证仍为证据不足。真实数据、样本外与参数稳健性未运行。{tail}"
+                    ),
+                    Some(Route::Validate),
+                    Some(&format!("验证报告 · v{vid}")),
+                    Some(&format!("关联实验 E{run_id}")),
+                );
+            }
             Err(e) => self.ai_notice = Some(e),
         }
     }
@@ -3601,23 +5177,123 @@ impl ResearchApp {
             .confirm_requirement(&text, &acceptance, alloc, min_amount)
         {
             Ok(id) => {
-                self.tell(
-                    format!("需求 R{id} 已确认。下一步保存设计说明。旧实验保留，新研究将使用此需求版本。"),
+                let desc = format!("需求 R{id} · 等待设计");
+                self.tell_card(
+                    format!("需求 R{id} 已确认。下一步生成设计说明与两张处理图。旧实验保留，新研究将使用此需求版本。"),
                     Some(Route::Design),
+                    Some("生成策略设计"),
+                    Some(desc.as_str()),
                 );
             }
             Err(e) => self.ai_notice = Some(e),
         }
     }
 
+    /// 导出当前需求草稿为 Markdown（原型「下载文档」；写到工作区目录）。
+    fn export_requirement_draft(&mut self) {
+        let body = format!(
+            "# 研究需求\n\n{}\n\n## 验收标准\n\n{}\n\n- 目标投入比例：{:.0}%\n- 最低成交额：{} 万元\n",
+            self.ai_req_text,
+            self.ai_req_acceptance,
+            self.ai_req_alloc,
+            self.ai_req_min_amount
+        );
+        let dir = std::env::var_os("RESEARCH_WORKSPACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("requirement-draft.md");
+        match std::fs::write(&path, body) {
+            Ok(()) => self.record(&format!("已写出需求草稿 {}", path.display())),
+            Err(e) => self.ai_notice = Some(format!("写出需求草稿失败：{e}")),
+        }
+    }
+
+    fn export_design_draft(&mut self) {
+        let body = format!(
+            "# 策略设计草稿\n\n投入比例：{:.0}%\n最低成交额：{} 万元\n\n{}\n",
+            self.ai_design_alloc, self.ai_design_min_amount, self.ai_design_note
+        );
+        let dir = std::env::var_os("RESEARCH_WORKSPACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("design-draft.md");
+        match std::fs::write(&path, body) {
+            Ok(()) => self.record(&format!("已写出设计草稿 {}", path.display())),
+            Err(e) => self.ai_notice = Some(format!("写出设计草稿失败：{e}")),
+        }
+    }
+
+    /// 导出当前项目实验列表（原型「导出 JSON」；无逐步事件时仅任务级字段）。
+    fn export_experiments_json(&mut self) {
+        let rows: Vec<(usize, usize, u64, Option<String>, Option<String>)> = self
+            .workspace
+            .current()
+            .experiments
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    e.version_id,
+                    e.stamp,
+                    e.task_id.clone(),
+                    e.total_return.clone(),
+                )
+            })
+            .collect();
+        let n = rows.len();
+        let mut body = String::from("[\n");
+        for (i, (id, ver, stamp, task_id, ret)) in rows.into_iter().enumerate() {
+            if i > 0 {
+                body.push_str(",\n");
+            }
+            let task = task_id
+                .as_deref()
+                .map(|t| format!("\"{t}\""))
+                .unwrap_or_else(|| "null".into());
+            let ret_json = ret
+                .as_deref()
+                .map(|r| format!("\"{r}\""))
+                .unwrap_or_else(|| "null".into());
+            body.push_str(&format!(
+                "  {{\"id\":{id},\"version_id\":{ver},\"stamp\":{stamp},\"task_id\":{task},\"total_return\":{ret_json}}}"
+            ));
+        }
+        body.push_str("\n]\n");
+        let dir = std::env::var_os("RESEARCH_WORKSPACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("experiments.json");
+        match std::fs::write(&path, body) {
+            Ok(()) => {
+                self.record(&format!("已导出实验 JSON {}", path.display()));
+                self.tell(format!("已导出 {n} 条实验到 {}", path.display()), None);
+            }
+            Err(e) => self.ai_notice = Some(format!("导出实验 JSON 失败：{e}")),
+        }
+    }
+
     fn do_generate_design(&mut self) {
         let note_text = self.ai_design_note.clone();
-        match self.workspace.generate_design(note_text) {
+        let alloc = self.ai_design_alloc;
+        let min_amount = self
+            .ai_design_min_amount
+            .parse::<f64>()
+            .unwrap_or(f64::NAN);
+        match self
+            .workspace
+            .generate_design(note_text, alloc, min_amount)
+        {
             Ok(id) => {
                 let req = self.workspace.current().active_req.unwrap_or_default();
-                self.tell(
-                    format!("设计 D{id} 已保存，绑定 R{req}。处理图与代码将引用相同的节点和参数。"),
+                let desc = format!("设计 D{id} · 待生成代码");
+                self.tell_card(
+                    format!("设计 D{id} 已保存，绑定 R{req}。流程图、时序图与代码将引用相同的节点和参数。"),
                     Some(Route::Develop),
+                    Some("开始策略开发"),
+                    Some(desc.as_str()),
                 );
             }
             Err(e) => self.ai_notice = Some(e),
@@ -3642,12 +5318,116 @@ impl ResearchApp {
         }
     }
 
-    // ---- 计划桥（S20）
-    fn do_ai_plan_generate(&mut self) {
-        let Some(snapshot_id) = self.pick_snapshot().map(|(_, id)| id) else {
-            self.ai_notice = Some("尚无数据快照：请先在数据中心导入".into());
+    fn do_check_code(&mut self) {
+        let p = self.workspace.current();
+        let design_ok = p
+            .active_req
+            .zip(p.active_design)
+            .is_some_and(|(r, d)| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
+        if !design_ok {
+            self.ai_notice = Some("当前设计缺失或已过期，请重新保存设计".into());
             return;
+        }
+        match crate::workspace::code_preset_variant(&self.ai_code_source) {
+            Some(_) => {
+                self.ai_code_checked = Some(self.ai_code_source.clone());
+                self.ai_notice = None;
+                self.record("示例映射检查通过 · 未执行 Python");
+            }
+            None => {
+                self.ai_code_checked = None;
+                self.ai_notice = Some(
+                    "自定义源码已保留，但离线模拟器仅支持两份完整预置示例，不能执行此源码。"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    fn do_generate_code(&mut self) {
+        let p = self.workspace.current();
+        let design_ok = p
+            .active_req
+            .zip(p.active_design)
+            .is_some_and(|(r, d)| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
+        if !design_ok {
+            self.ai_notice = Some("请先保存与当前需求匹配的设计".into());
+            return;
+        }
+        self.ai_code_source = crate::workspace::DRAFT_CODE_ORIGINAL.into();
+        self.ai_code_checked = None;
+        self.show_code_diff = false;
+        self.tell(
+            "已生成可编辑的策略示例。先检查并保存 v1，再运行实验观察资金约束。此示例不在桌面中执行 Python。",
+            Some(Route::Develop),
+        );
+    }
+
+    fn export_strategy_source(&mut self) {
+        let dir = std::env::var_os("RESEARCH_WORKSPACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("策略示例.py");
+        match std::fs::write(&path, &self.ai_code_source) {
+            Ok(()) => self.record(&format!("已写出 {}", path.display())),
+            Err(e) => self.ai_notice = Some(format!("写出策略示例失败：{e}")),
+        }
+    }
+
+    // ---- 计划桥（S20）
+    fn rebuild_ai_plan_json(&self) -> String {
+        let cash: f64 = self.ai_plan_cash.trim().parse().unwrap_or(0.0);
+        let mut holdings = [0_i64; 3];
+        let mut sellable = [0_i64; 3];
+        for i in 0..3 {
+            holdings[i] = self.ai_plan_qty[i].trim().parse().unwrap_or(0);
+            sellable[i] = self.ai_plan_sell[i].trim().parse().unwrap_or(holdings[i]);
+        }
+        let market: f64 = (0..3)
+            .map(|i| PLAN_PRICES[i] * holdings[i] as f64)
+            .sum();
+        let total = cash + market;
+        let (alloc, min_amount) = {
+            let p = self.workspace.current();
+            p.active_design
+                .and_then(|id| p.designs.get(id - 1))
+                .map(|d| (d.allocation, d.min_amount))
+                .unwrap_or((1.0, 1000.0))
         };
+        let budget = total * alloc;
+        let has_signal = crate::demo_sim::DEFAULT_POOL.contains(&"SYN-A")
+            && crate::demo_sim::FIXTURE[0].amount >= min_amount;
+        let mut target = if has_signal {
+            ((budget / PLAN_PRICES[0] / 100.0).floor() * 100.0).max(0.0) as i64
+        } else {
+            0
+        };
+        if target > holdings[0] && target as f64 * PLAN_PRICES[0] + 5.0 > budget {
+            target = (target - 100).max(0);
+        }
+        let targets = [target, 0, 0];
+        let mut positions = Vec::new();
+        for i in 0..3 {
+            positions.push(serde_json::json!({
+                "instrument_id": PLAN_SYMS[i],
+                "price": PLAN_PRICES[i],
+                "quantity": holdings[i],
+                "sellable_quantity": sellable[i],
+                "target_quantity": targets[i],
+            }));
+        }
+        serde_json::json!({
+            "cash_cny": format!("{cash:.0}"),
+            "total_assets_cny": format!("{total:.2}"),
+            "positions": positions,
+        })
+        .to_string()
+    }
+
+    fn do_ai_plan_generate(&mut self) {
+        self.ai_plan_json = self.rebuild_ai_plan_json();
+        let snapshot = PLAN_SNAP_IDS[self.ai_plan_snapshot.min(1)].to_string();
         let (cash, total, rows) = match crate::bridge::parse_plan_rows(&self.ai_plan_json) {
             Ok(x) => x,
             Err(e) => {
@@ -3662,7 +5442,7 @@ impl ResearchApp {
         }
         match self
             .workspace
-            .make_plan(snapshot_id, date, cash, total, rows)
+            .make_plan(snapshot, date, cash, total, rows)
         {
             Ok(()) => {
                 self.ai_plan_issues = None;
@@ -3725,7 +5505,7 @@ impl ResearchApp {
             self.ai_notice = Some("当前版本不存在".into());
             return;
         };
-        let Ok((cash, _total, rows)) = crate::bridge::parse_plan_rows(&self.ai_plan_json) else {
+        let Ok((cash, _total, rows)) = crate::bridge::parse_plan_rows(&self.rebuild_ai_plan_json()) else {
             self.ai_notice = Some("持仓 JSON 已不可解析，无法确认导出".into());
             return;
         };
@@ -3778,6 +5558,38 @@ fn report_ready(w: &Workspace) -> bool {
     })
 }
 
+/// 协调器收益字段 → 百分比文案（`0.0625` 或 `6.25%`）。
+fn format_return_pct(raw: &str) -> String {
+    let t = raw.trim().trim_end_matches('%');
+    match t.parse::<f64>() {
+        Ok(v) => {
+            let pct = if raw.contains('%') {
+                v
+            } else if v.abs() <= 2.0 {
+                v * 100.0
+            } else {
+                v
+            };
+            format!("{pct:.2}%")
+        }
+        Err(_) => raw.to_string(),
+    }
+}
+
+/// 以初始 10,000 元把收益折成期末净值。
+fn nav_from_return(raw: &str) -> Option<f64> {
+    let t = raw.trim().trim_end_matches('%');
+    let v = t.parse::<f64>().ok()?;
+    let ratio = if raw.contains('%') {
+        v / 100.0
+    } else if v.abs() <= 2.0 {
+        v
+    } else {
+        v / 100.0
+    };
+    Some(10_000.0 * (1.0 + ratio))
+}
+
 // ================================================================ 绘制辅助
 
 /// `allocate_ui` 期望尺寸：极端窄窗（首帧守卫之外的双保险）下把负宽/高钳 0——
@@ -3789,20 +5601,37 @@ fn sz(w: f32, h: f32) -> egui::Vec2 {
 /// 正文文字。
 fn lbl(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
     egui::RichText::new(text.into())
-        .font(FontId::proportional(size))
+        .font(FontId::proportional(theme::fs(size)))
         .color(color)
 }
 
 /// 等宽文字（数字与代码）。
 fn mono(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
     egui::RichText::new(text.into())
-        .font(FontId::monospace(size))
+        .font(FontId::monospace(theme::fs(size)))
         .color(color)
 }
 
 /// 表单字段标签。
 fn field(text: impl Into<String>) -> egui::RichText {
     lbl(text, 12.0, theme::TEXT2)
+}
+
+fn field_label(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.label(field(text));
+    ui.add_space(7.0);
+}
+
+fn line_edit(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(text)
+        .margin(Margin::same(10))
+        .font(FontId::proportional(theme::fs(13.0)))
+}
+
+fn area_edit(text: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::multiline(text)
+        .margin(Margin::same(10))
+        .font(FontId::proportional(theme::fs(13.0)))
 }
 
 /// 说明文字。
@@ -3815,35 +5644,99 @@ fn concepts(text: impl Into<String>) -> egui::RichText {
     lbl(text, 11.0, theme::MUTED)
 }
 
-/// tab 小按钮（选中 = 主描边）。
+/// tab 小按钮（原型 `small` / 选中 `small primary`）。
 fn tab_button(text: &str, active: bool) -> egui::Button<'_> {
-    let t = lbl(
-        text,
-        10.0,
-        if active {
-            theme::ACCENT_TEXT
-        } else {
-            theme::MUTED
-        },
-    );
-    egui::Button::new(t)
-        .fill(theme::GLASS)
-        .stroke(if active {
-            Stroke::new(1.0, Color32::from_rgba_premultiplied(8, 26, 15, 102))
-        } else {
-            Stroke::new(1.0, theme::BORDER_STRONG)
-        })
-        .corner_radius(CornerRadius::same(7))
+    if active {
+        theme::small_primary_button(text.to_string())
+    } else {
+        theme::small_default_button(text.to_string())
+    }
+}
+
+/// 原型 `.grid2`：舒适档两列顶对齐；窄窗（≤1200）或内容区过窄时单列堆叠。
+/// 用 `horizontal_top` + 固定列宽，避免 `columns` 在嵌套面板里错位。
+fn two_field_row(
+    ui: &mut egui::Ui,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    let win_w = ui.ctx().content_rect().width();
+    let gap = 14.0;
+    let avail = ui.available_width();
+    let stacked = layout::plan_for_width(win_w) != LayoutPlan::Comfortable || avail < 360.0;
+    if stacked {
+        left(ui);
+        ui.add_space(16.0);
+        right(ui);
+        return;
+    }
+    let col_w = ((avail - gap) * 0.5).max(120.0);
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(col_w, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_min_width(col_w);
+                ui.set_max_width(col_w);
+                left(ui);
+            },
+        );
+        ui.add_space(gap);
+        ui.allocate_ui_with_layout(
+            egui::vec2(col_w, 0.0),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_min_width(col_w);
+                ui.set_max_width(col_w);
+                right(ui);
+            },
+        );
+    });
 }
 
 /// 页头：eyebrow + 标题 + 副标题。
 fn page_header(ui: &mut egui::Ui, eyebrow: &str, title: &str, subtitle: &str) {
-    ui.label(mono(eyebrow, 9.0, theme::FAINT));
-    ui.add_space(6.0);
-    ui.label(lbl(title, 24.0, theme::TEXT));
-    ui.add_space(8.0);
-    ui.label(lbl(subtitle, 11.0, theme::MUTED));
+    let _ = page_header_ex(ui, eyebrow, title, subtitle, None, None);
+}
+
+/// 页头（可选右侧徽章 / 主按钮，原型 `.page-title` 右上 action）。
+fn page_header_ex(
+    ui: &mut egui::Ui,
+    eyebrow: &str,
+    title: &str,
+    subtitle: &str,
+    badge: Option<(&str, TagKind)>,
+    action: Option<&str>,
+) -> bool {
+    let mut clicked = false;
+    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+        if let Some(label) = action {
+            if ui.add(theme::primary_button(label)).clicked() {
+                clicked = true;
+            }
+            ui.add_space(8.0);
+        }
+        if let Some((t, k)) = badge {
+            theme::tag_ui(ui, t, k);
+            ui.add_space(8.0);
+        }
+        ui.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.set_width(ui.available_width());
+            theme::eyebrow_label(ui, eyebrow);
+            ui.add_space(10.0);
+            // 原型 h1：24px、letter-spacing -0.8、字重约 580
+            ui.label(
+                egui::RichText::new(title)
+                    .font(FontId::proportional(theme::fs(24.0)))
+                    .extra_letter_spacing(-0.8)
+                    .color(theme::TEXT),
+            );
+            ui.add_space(8.0);
+            ui.label(lbl(subtitle, 11.0, theme::MUTED));
+        });
+    });
     ui.add_space(20.0);
+    clicked
 }
 
 /// 玻璃面板：标题头（含徽章）+ 内边距内容。
@@ -3853,7 +5746,7 @@ fn panel(
     badge: Option<(&str, TagKind)>,
     body: impl FnOnce(&mut egui::Ui),
 ) {
-    Frame::NONE
+    let shown = Frame::NONE
         .fill(theme::GLASS)
         .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
         .stroke(Stroke::new(1.0, theme::BORDER))
@@ -3886,22 +5779,385 @@ fn panel(
             );
             Frame::NONE.inner_margin(Margin::same(19)).show(ui, body);
         });
+    theme::paint_drop_shadow(ui.painter(), shown.response.rect, theme::CARD_ROUNDING as f32);
+    theme::paint_inset_top(ui.painter(), shown.response.rect, 12.0);
     ui.add_space(12.0);
+}
+
+/// 玻璃面板：内容区无内边距（原型研究路径 `.journey-row` 撑满 panel）。
+fn panel_flush(
+    ui: &mut egui::Ui,
+    title: &str,
+    badge: Option<(&str, TagKind)>,
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let shown = Frame::NONE
+        .fill(theme::GLASS)
+        .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let head = Frame::NONE
+                .inner_margin(Margin {
+                    left: 19,
+                    right: 19,
+                    top: 14,
+                    bottom: 14,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(lbl(title, 12.0, theme::TEXT2));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if let Some((t, k)) = badge {
+                                theme::tag_ui(ui, t, k);
+                            }
+                        });
+                    });
+                });
+            let hr = head.response.rect;
+            ui.painter().line_segment(
+                [
+                    Pos2::new(hr.left(), hr.bottom()),
+                    Pos2::new(hr.right(), hr.bottom()),
+                ],
+                Stroke::new(1.0, theme::BORDER),
+            );
+            body(ui);
+        });
+    theme::paint_drop_shadow(ui.painter(), shown.response.rect, theme::CARD_ROUNDING as f32);
+    theme::paint_inset_top(ui.painter(), shown.response.rect, 12.0);
+    ui.add_space(15.0);
+}
+
+/// 玻璃面板：标题在左、右侧自定义操作（原型 `.panel-head` 流程图/时序图按钮）。
+fn panel_with_right(
+    ui: &mut egui::Ui,
+    title: &str,
+    right: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui),
+) {
+    let shown = Frame::NONE
+        .fill(theme::GLASS)
+        .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
+        .stroke(Stroke::new(1.0, theme::BORDER))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let head = Frame::NONE
+                .inner_margin(Margin {
+                    left: 19,
+                    right: 19,
+                    top: 14,
+                    bottom: 14,
+                })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(lbl(title, 12.0, theme::TEXT2));
+                        ui.with_layout(Layout::right_to_left(Align::Center), right);
+                    });
+                });
+            let hr = head.response.rect;
+            ui.painter().line_segment(
+                [
+                    Pos2::new(hr.left(), hr.bottom()),
+                    Pos2::new(hr.right(), hr.bottom()),
+                ],
+                Stroke::new(1.0, theme::BORDER),
+            );
+            Frame::NONE.inner_margin(Margin::same(19)).show(ui, body);
+        });
+    theme::paint_drop_shadow(ui.painter(), shown.response.rect, theme::CARD_ROUNDING as f32);
+    theme::paint_inset_top(ui.painter(), shown.response.rect, 12.0);
+    ui.add_space(12.0);
+}
+
+/// 原型 `.metric-grid`：等宽列、暗玻璃底、三段纵向文字（避免非法预乘白底）。
+fn metric_grid(ui: &mut egui::Ui, items: &[(&str, String, String)], slim_first_only: bool) {
+    let n = if slim_first_only {
+        1.min(items.len())
+    } else {
+        items.len()
+    };
+    if n == 0 {
+        return;
+    }
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.columns(n, |cols| {
+            for (i, (top, value, bottom)) in items.iter().take(n).enumerate() {
+                Frame::NONE
+                    .fill(theme::WHITE_03)
+                    .corner_radius(CornerRadius::same(10))
+                    .stroke(Stroke::new(1.0, theme::BORDER))
+                    .inner_margin(Margin::same(17))
+                    .show(&mut cols[i], |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.vertical(|ui| {
+                            ui.label(lbl(*top, 10.0, theme::MUTED));
+                            ui.add_space(10.0);
+                            // 原型 `.metric strong`：mono 23、letter-spacing -0.7
+                            ui.label(
+                                egui::RichText::new(value.clone())
+                                    .font(FontId::monospace(theme::fs(23.0)))
+                                    .extra_letter_spacing(-0.7)
+                                    .color(theme::TEXT),
+                            );
+                            ui.add_space(5.0);
+                            ui.label(lbl(bottom.clone(), 10.0, theme::MUTED));
+                        });
+                    });
+            }
+        });
+    });
+}
+
+/// 原型 `flowSvg`：660×240 视图盒等比落到可用宽度，2×3 节点 + 水平箭头 + 跨日折线。
+fn paint_flow_diagram(ui: &mut egui::Ui, selected: usize) -> Option<usize> {
+    let w = ui.available_width().max(1.0);
+    let scale = (w / 660.0).clamp(0.55, 1.35);
+    let h = 240.0 * scale;
+    let (rect, resp) = ui.allocate_exact_size(sz(w, h), Sense::click());
+    let painter = ui.painter();
+    let mut hit = None;
+    let mut boxes = [egui::Rect::from_min_max(Pos2::ZERO, Pos2::ZERO); 6];
+    for i in 0..6 {
+        let nx = 25.0 + (i % 3) as f32 * 218.0;
+        let ny = if i < 3 { 28.0 } else { 150.0 };
+        let r = egui::Rect::from_min_size(
+            Pos2::new(rect.left() + nx * scale, rect.top() + ny * scale),
+            egui::vec2(173.0 * scale, 62.0 * scale),
+        );
+        boxes[i] = r;
+        let sel = i == selected;
+        painter.rect(
+            r,
+            CornerRadius::same(9),
+            Color32::from_rgb(0x14, 0x18, 0x16),
+            Stroke::new(
+                1.0,
+                if sel {
+                    theme::ACCENT
+                } else {
+                    Color32::from_rgb(0x24, 0x3B, 0x2E)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let (_, name, sub, _, _) = NODES[i];
+        painter.text(
+            r.min + egui::vec2(12.0 * scale, 14.0 * scale),
+            egui::Align2::LEFT_TOP,
+            format!("0{}　{name}", i + 1),
+            FontId::proportional((11.0 * scale).max(9.0)),
+            theme::TEXT,
+        );
+        painter.text(
+            r.min + egui::vec2(12.0 * scale, 34.0 * scale),
+            egui::Align2::LEFT_TOP,
+            sub,
+            FontId::proportional((9.0 * scale).max(8.0)),
+            Color32::from_rgb(0x6B, 0x7F, 0x74),
+        );
+        if i % 3 < 2 {
+            let y = r.center().y;
+            let x1 = r.right();
+            let x2 = r.right() + 36.0 * scale;
+            paint_seq_arrow(&painter, x1, x2, y, scale);
+        }
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if r.contains(pos) {
+                    hit = Some(i);
+                }
+            }
+        }
+    }
+    let a = boxes[2].center();
+    let b = boxes[3].center();
+    let mid_y = (boxes[2].bottom() + boxes[3].top()) * 0.5;
+    let stroke = Stroke::new(1.0, theme::ACCENT);
+    painter.line_segment(
+        [Pos2::new(a.x, boxes[2].bottom()), Pos2::new(a.x, mid_y)],
+        stroke,
+    );
+    painter.line_segment([Pos2::new(a.x, mid_y), Pos2::new(b.x, mid_y)], stroke);
+    painter.line_segment(
+        [Pos2::new(b.x, mid_y), Pos2::new(b.x, boxes[3].top())],
+        stroke,
+    );
+    painter.text(
+        Pos2::new((a.x + b.x) * 0.5, mid_y - 10.0 * scale),
+        egui::Align2::CENTER_BOTTOM,
+        "跨交易日 · 信号与执行分离",
+        FontId::proportional((9.0 * scale).max(8.0)),
+        theme::MUTED,
+    );
+    hit
+}
+
+/// 原型 `seqhead`：实心绿三角箭头（fill `#22c55e`），水平消息线接生命线。
+fn paint_seq_arrow(painter: &egui::Painter, x1: f32, x2: f32, y: f32, scale: f32) {
+    let head_w = 7.0 * scale;
+    let head_h = 3.5 * scale;
+    let tip = x2.max(x1 + head_w + 1.0);
+    let shaft = tip - head_w;
+    painter.line_segment(
+        [Pos2::new(x1, y), Pos2::new(shaft, y)],
+        Stroke::new(1.25, theme::ACCENT),
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(tip, y),
+            Pos2::new(shaft, y - head_h),
+            Pos2::new(shaft, y + head_h),
+        ],
+        theme::ACCENT,
+        Stroke::NONE,
+    ));
+}
+
+/// 原型 `sequenceSvg`：viewBox 660×350。
+/// 六列节点头 + `#2f5240` 虚线生命线 + 信号日淡绿色带 + 执行日琥珀标题 + 五条消息。
+fn paint_sequence_diagram(ui: &mut egui::Ui, selected: usize) -> Option<usize> {
+    let w = ui.available_width().max(1.0);
+    let scale = (w / 660.0).clamp(0.72, 1.6);
+    let h = 350.0 * scale;
+    ui.set_min_height(h);
+    let (rect, resp) = ui.allocate_exact_size(sz(w, h), Sense::click());
+    let painter = ui.painter();
+    let sx = |x: f32| rect.left() + x * scale;
+    let sy = |y: f32| rect.top() + y * scale;
+    let mut hit = None;
+    let node_fill = Color32::from_rgb(0x14, 0x18, 0x16);
+    let node_hover = Color32::from_rgb(0x16, 0x24, 0x1B);
+    let node_stroke = Color32::from_rgb(0x24, 0x3B, 0x2E);
+    let life = Color32::from_rgb(0x2F, 0x52, 0x40);
+    let diagram_text = Color32::from_rgb(0xB8, 0xCF, 0xC0);
+    let pointer = resp.hover_pos();
+    let mut headers = [egui::Rect::from_min_max(Pos2::ZERO, Pos2::ZERO); 6];
+    for i in 0..6 {
+        let hdr = egui::Rect::from_min_size(
+            Pos2::new(sx(8.0 + i as f32 * 109.0), sy(10.0)),
+            egui::vec2(98.0 * scale, 34.0 * scale),
+        );
+        headers[i] = hdr;
+        let hovering = pointer.is_some_and(|p| hdr.contains(p));
+        painter.rect(
+            hdr,
+            CornerRadius::same((5.0 * scale).round() as u8),
+            if hovering { node_hover } else { node_fill },
+            Stroke::new(
+                1.0,
+                if i == selected {
+                    theme::ACCENT
+                } else if hovering {
+                    theme::ACCENT_TEXT
+                } else {
+                    node_stroke
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            Pos2::new(hdr.center().x, sy(32.0)),
+            egui::Align2::CENTER_BOTTOM,
+            NODES[i].1,
+            FontId::proportional((11.0 * scale).clamp(9.0, 13.0)),
+            diagram_text,
+        );
+        let lx = sx(57.0 + i as f32 * 109.0);
+        let mut y = sy(44.0);
+        let y_end = sy(333.0);
+        let on = 3.0 * scale;
+        let gap = 5.0 * scale;
+        let dash = Stroke::new(1.0, life);
+        while y < y_end {
+            let y2 = (y + on).min(y_end);
+            painter.line_segment([Pos2::new(lx, y), Pos2::new(lx, y2)], dash);
+            y += on + gap;
+        }
+    }
+    let band = egui::Rect::from_min_size(
+        Pos2::new(sx(5.0), sy(57.0)),
+        egui::vec2(650.0 * scale, 115.0 * scale),
+    );
+    painter.rect(
+        band,
+        CornerRadius::same((6.0 * scale).round() as u8),
+        Color32::from_rgba_unmultiplied(34, 197, 94, 8),
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(34, 197, 94, 38)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        Pos2::new(sx(16.0), sy(75.0)),
+        egui::Align2::LEFT_BOTTOM,
+        "2026-01-05 · 收盘形成信号",
+        FontId::proportional((10.0 * scale).clamp(9.0, 12.0)),
+        diagram_text,
+    );
+    painter.text(
+        Pos2::new(sx(16.0), sy(192.0)),
+        egui::Align2::LEFT_BOTTOM,
+        "2026-01-06 · 开盘执行（此时才读取开盘价）",
+        FontId::proportional((10.0 * scale).clamp(9.0, 12.0)),
+        theme::AMBER,
+    );
+    const MSGS: [&str; 5] = [
+        "① 可见行情",
+        "② 入选样本",
+        "③ 目标比例",
+        "④ 资金约束",
+        "⑤ 成交回报",
+    ];
+    for i in 0..5 {
+        let yv = if i < 2 {
+            103.0 + i as f32 * 43.0
+        } else {
+            217.0 + (i as f32 - 2.0) * 43.0
+        };
+        let x1 = sx(57.0 + i as f32 * 109.0);
+        let x2 = sx(57.0 + (i as f32 + 1.0) * 109.0 - 4.0);
+        paint_seq_arrow(&painter, x1, x2, sy(yv), scale);
+        painter.text(
+            Pos2::new(sx(60.0 + i as f32 * 109.0), sy(yv - 8.0)),
+            egui::Align2::LEFT_BOTTOM,
+            MSGS[i],
+            FontId::proportional((10.0 * scale).clamp(9.0, 12.0)),
+            diagram_text,
+        );
+    }
+    if resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            for (i, hdr) in headers.iter().enumerate() {
+                let col = egui::Rect::from_min_max(
+                    Pos2::new(hdr.left(), rect.top()),
+                    Pos2::new(hdr.right(), rect.bottom()),
+                );
+                if col.contains(pos) {
+                    hit = Some(i);
+                    break;
+                }
+            }
+        }
+    }
+    hit
 }
 
 /// 空态面板（可选主按钮；返回按钮是否被点击）。
 fn empty_panel(ui: &mut egui::Ui, title: &str, desc: &str, action: Option<&str>) -> bool {
     let mut clicked = false;
-    Frame::NONE
+    let shown = Frame::NONE
         .fill(theme::GLASS)
         .corner_radius(CornerRadius::same(theme::CARD_ROUNDING))
         .stroke(Stroke::new(1.0, theme::BORDER))
-        .inner_margin(Margin::same(22))
+        .inner_margin(Margin {
+            left: 22,
+            right: 22,
+            top: 42,
+            bottom: 42,
+        })
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
-                // 原型 .empty .icon：30px flow 图标（#3d5c4a 深绿）
                 let (icon_rect, _) =
                     ui.allocate_exact_size(egui::Vec2::splat(30.0), Sense::hover());
                 icons::paint_icon(
@@ -3910,19 +6166,20 @@ fn empty_panel(ui: &mut egui::Ui, title: &str, desc: &str, action: Option<&str>)
                     icons::IconKind::Flow,
                     Color32::from_rgb(0x3D, 0x5C, 0x4A),
                 );
-                ui.add_space(10.0);
+                ui.add_space(15.0);
                 ui.label(lbl(title, 15.0, theme::TEXT));
-                ui.add_space(8.0);
+                ui.add_space(12.0);
                 ui.label(lbl(desc, 12.0, theme::MUTED));
                 if let Some(a) = action {
-                    ui.add_space(14.0);
+                    ui.add_space(19.0);
                     if ui.add(theme::primary_button(a)).clicked() {
                         clicked = true;
                     }
                 }
-                ui.add_space(8.0);
             });
         });
+    theme::paint_drop_shadow(ui.painter(), shown.response.rect, theme::CARD_ROUNDING as f32);
+    theme::paint_inset_top(ui.painter(), shown.response.rect, 12.0);
     ui.add_space(12.0);
     clicked
 }
@@ -3974,6 +6231,146 @@ fn fmt_metric(m: &nautilus_research_domain::metrics::NullableMetric) -> String {
     m.value.clone().unwrap_or_else(|| "—".into())
 }
 
+/// 原型 `equityChart()`：640×240 SVG 等比落到可用宽——淡网格、绿渐变面积、圆点、三日期轴。
+fn paint_equity_chart(
+    ui: &mut egui::Ui,
+    drawable: &[&(String, Vec<crate::bridge::EquityPoint>)],
+) {
+    let w = ui.available_width().max(1.0);
+    let scale = (w / 640.0).clamp(0.65, 1.35);
+    let h = 240.0 * scale;
+    let (rect, resp) = ui.allocate_exact_size(sz(w, h), Sense::hover());
+    let painter = ui.painter();
+    let mx = |x: f32| rect.left() + x * scale;
+    let my = |y: f32| rect.top() + y * scale;
+
+    let all: Vec<f64> = drawable
+        .iter()
+        .flat_map(|(_, pts)| pts.iter().map(|p| p.value))
+        .collect();
+    let low = all.iter().copied().fold(10_000.0_f64, f64::min) - 100.0;
+    let high = all.iter().copied().fold(10_100.0_f64, f64::max) + 100.0;
+    let span = (high - low).max(1.0);
+    let y_of = |v: f64| my(194.0 - ((v - low) / span) as f32 * 160.0);
+
+    let grid = Color32::from_rgba_unmultiplied(255, 255, 255, 18);
+    for i in 0..4 {
+        let val = low + span * i as f64 / 3.0;
+        let yy = y_of(val);
+        painter.line_segment(
+            [Pos2::new(mx(60.0), yy), Pos2::new(mx(610.0), yy)],
+            Stroke::new(1.0, grid),
+        );
+        painter.text(
+            Pos2::new(mx(4.0), yy),
+            egui::Align2::LEFT_CENTER,
+            format!("{:.0}", val),
+            FontId::proportional((10.0 * scale).max(8.5)),
+            theme::FAINT,
+        );
+    }
+
+    let x_at = |j: usize, n: usize| -> f32 {
+        if n <= 1 {
+            mx(70.0)
+        } else {
+            mx(70.0 + j as f32 * 530.0 / (n as f32 - 1.0))
+        }
+    };
+
+    let mut hover_tip: Option<String> = None;
+    let pointer = resp.hover_pos();
+
+    for (si, (label, pts)) in drawable.iter().enumerate() {
+        if pts.is_empty() {
+            continue;
+        }
+        let latest = si + 1 == drawable.len();
+        let color = if latest {
+            theme::ACCENT_TEXT
+        } else {
+            Color32::from_rgb(0x4B, 0x55, 0x63)
+        };
+        let n = pts.len();
+        let xs: Vec<f32> = (0..n).map(|j| x_at(j, n)).collect();
+        let ys: Vec<f32> = pts.iter().map(|p| y_of(p.value)).collect();
+
+        if latest && n >= 2 {
+            let base_y = my(199.0);
+            let top_c = Color32::from_rgba_unmultiplied(34, 197, 94, 41);
+            let bot_c = Color32::from_rgba_unmultiplied(34, 197, 94, 0);
+            let mut mesh = egui::Mesh::default();
+            for j in 0..n - 1 {
+                let i0 = mesh.vertices.len() as u32;
+                mesh.colored_vertex(Pos2::new(xs[j], ys[j]), top_c);
+                mesh.colored_vertex(Pos2::new(xs[j + 1], ys[j + 1]), top_c);
+                mesh.colored_vertex(Pos2::new(xs[j + 1], base_y), bot_c);
+                mesh.colored_vertex(Pos2::new(xs[j], base_y), bot_c);
+                mesh.add_triangle(i0, i0 + 1, i0 + 2);
+                mesh.add_triangle(i0, i0 + 2, i0 + 3);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+
+        let line: Vec<Pos2> = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| Pos2::new(*x, *y))
+            .collect();
+        painter.add(egui::Shape::line(
+            line,
+            Stroke::new(2.5 * scale.max(0.85), color),
+        ));
+        for j in 0..n {
+            let c = Pos2::new(xs[j], ys[j]);
+            painter.circle_filled(c, 4.0 * scale.max(0.85), color);
+            if let Some(pos) = pointer {
+                if c.distance(pos) < 10.0 * scale.max(0.9) {
+                    hover_tip = Some(format!(
+                        "{label} · {} · 净值 {:.2}",
+                        pts[j].date, pts[j].value
+                    ));
+                }
+            }
+        }
+    }
+
+    // X 轴：优先用最近序列日期，缺省对齐原型「信号日 / 执行日 / 期末」
+    let axis_suffix = ["信号日", "执行日", "期末"];
+    if let Some((_, pts)) = drawable.last() {
+        let n = pts.len();
+        for (j, p) in pts.iter().enumerate() {
+            let raw = if p.date.len() >= 5 {
+                &p.date[p.date.len().saturating_sub(5)..]
+            } else {
+                p.date.as_str()
+            };
+            let suffix = axis_suffix.get(j).copied().unwrap_or("");
+            let text = if suffix.is_empty() {
+                raw.to_string()
+            } else {
+                format!("{raw} {suffix}")
+            };
+            let tx = if n == 3 {
+                mx([60.0_f32, 302.0, 545.0][j])
+            } else {
+                x_at(j, n)
+            };
+            painter.text(
+                Pos2::new(tx, my(226.0)),
+                egui::Align2::LEFT_CENTER,
+                text,
+                FontId::proportional((10.0 * scale).max(8.5)),
+                theme::FAINT,
+            );
+        }
+    }
+
+    if let Some(tip) = hover_tip {
+        resp.on_hover_text(tip);
+    }
+}
+
 /// 文本截断（对话区任务条等窄场景）。
 fn ellipsis(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -4006,7 +6403,7 @@ mod tests {
             .unwrap();
         assert_eq!(next_step(&w).1, Route::Design);
 
-        w.generate_design("EMA 双均线").unwrap();
+        w.generate_design_from_req("EMA 双均线").unwrap();
         assert_eq!(next_step(&w).1, Route::Develop);
 
         w.save_version("fn strategy() {}").unwrap();

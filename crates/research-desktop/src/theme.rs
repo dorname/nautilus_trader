@@ -7,7 +7,29 @@
 //! 原型的 backdrop-filter 真实模糊为 CSS 能力，egui 即时模式无对应原语——
 //! 以半透明面板色 + 顶部高光描边近似玻璃质感，设计文档视觉验收保留该口径。
 
-use egui::{Color32, CornerRadius, FontId, Frame, Margin, Mesh, Pos2, Style, Vec2, Visuals};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Frame, Margin, Mesh, Painter, Pos2, Stroke, Style, Vec2,
+    Visuals,
+};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// 当前界面字号倍率（相对 1440×900 原型）。按钮与 `lbl` 读取此值。
+static TYPE_SCALE_BITS: AtomicU32 = AtomicU32::new(0x3f800000); // 1.0
+
+/// 写入字号倍率（窗口缩放与 Ctrl+滚轮）。
+pub fn set_type_scale(scale: f32) {
+    TYPE_SCALE_BITS.store(scale.clamp(0.85, 1.35).to_bits(), Ordering::Relaxed);
+}
+
+/// 当前字号倍率。
+pub fn type_scale() -> f32 {
+    f32::from_bits(TYPE_SCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// 按当前倍率缩放原型 px。
+pub fn fs(px: f32) -> f32 {
+    px * type_scale()
+}
 
 /// 纯黑基底（窗口底色，--bg）。
 pub const BASE: Color32 = Color32::from_rgb(0x0A, 0x0A, 0x0A);
@@ -21,6 +43,14 @@ pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0x4A, 0xDE, 0x80);
 pub const ACCENT_CYAN: Color32 = Color32::from_rgb(0x67, 0xE8, 0xF9);
 /// 辅助青·基档（设计文档「纯黑科技 v3」辅助青；环境柔光与图表第二序列）。
 pub const ACCENT_CYAN_BASE: Color32 = Color32::from_rgb(0x06, 0xB6, 0xD4);
+/// 导航激活底（原型 --accent-soft：rgba(34,197,94,.08)，α≈20）。
+pub const ACCENT_SOFT: Color32 = Color32::from_rgba_premultiplied(2, 15, 7, 20);
+/// 导航激活描边（原型 --accent-border：rgba(34,197,94,.24)，α≈61）。
+pub const ACCENT_BORDER: Color32 = Color32::from_rgba_premultiplied(8, 47, 22, 61);
+/// 研究路径步号描边（原型 .step-num：rgba(34,197,94,.25)，α≈64）。
+pub const ACCENT_STEP_STROKE: Color32 = Color32::from_rgba_premultiplied(8, 49, 23, 64);
+/// 品牌 mark 字色（原型 .brand-mark color:#03130a）。
+pub const BRAND_INK: Color32 = Color32::from_rgb(0x03, 0x13, 0x0A);
 /// 警告琥珀（--amber-text）。
 pub const AMBER: Color32 = Color32::from_rgb(0xFB, 0xBF, 0x24);
 /// 错误红（--red-text）。
@@ -54,9 +84,24 @@ pub const GLASS_STRONG: Color32 = Color32::from_rgba_premultiplied(0x1E, 0x22, 0
 pub const INPUT_BG: Color32 = Color32::from_rgba_premultiplied(0x00, 0x00, 0x00, 0x59);
 /// 主卡片底（原型 .main rgba(15,15,17,.5)）。
 pub const MAIN_BG: Color32 = Color32::from_rgba_premultiplied(0x08, 0x08, 0x09, 0x80);
+/// 指标卡 / 行悬停浅白罩（原型 rgba(255,255,255,.03) → 预乘 (8,8,8,8)）。
+/// 不可写成 (250,250,250,8)：预乘非法，egui 会画成近白底，浅色正文被吃掉。
+pub const WHITE_03: Color32 = Color32::from_rgba_premultiplied(8, 8, 8, 8);
+/// 对话栏底（原型 .chat rgba(20,20,22,.35)）。
+pub const CHAT_BG: Color32 = Color32::from_rgba_premultiplied(7, 7, 8, 89);
+/// 输入框描边（原型 .compose-box border rgba(34,197,94,.3)）。
+pub const COMPOSE_STROKE: Color32 = Color32::from_rgba_premultiplied(10, 59, 28, 77);
+/// 产物卡渐变起点（artifact-card 130°：rgba(34,197,94,.1)）。
+pub const ARTIFACT_FROM: Color32 = Color32::from_rgba_premultiplied(3, 20, 9, 26);
+/// 产物卡渐变终点（rgba(255,255,255,.02)）。
+pub const ARTIFACT_TO: Color32 = Color32::from_rgba_premultiplied(5, 5, 5, 5);
 
 /// 面板内子卡片圆角（原型 --radius 14px）。
 pub const CARD_ROUNDING: u8 = 14;
+/// 策略源码编辑区底色（原型 `.code`：`#0a0c0a`）。
+pub const CODE_BG: Color32 = Color32::from_rgb(0x0A, 0x0C, 0x0A);
+/// 策略源码文字色（原型 `.code`：`#d4e8da`）。
+pub const CODE_FG: Color32 = Color32::from_rgb(0xD4, 0xE8, 0xDA);
 
 /// 文字对比度（WCAG 相对亮度比，纯函数供 UT 断言）。
 pub fn contrast_ratio(a: Color32, b: Color32) -> f64 {
@@ -103,6 +148,14 @@ pub fn apply(style: &mut Style) {
     v.widgets.active.corner_radius = CornerRadius::same(7);
     v.selection.bg_fill = ACCENT;
     v.selection.stroke = egui::Stroke::new(1.0, BASE);
+    // 原型 `button{padding:8px 12px;font-size:12px;border-radius:7px}`
+    style.spacing.button_padding = Vec2::new(12.0, 8.0);
+    v.widgets.inactive.bg_fill = WHITE_03;
+    v.widgets.inactive.weak_bg_fill = WHITE_03;
+    v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER_STRONG);
+    v.widgets.hovered.bg_fill = Color32::from_rgba_premultiplied(15, 15, 15, 15);
+    v.widgets.hovered.weak_bg_fill = Color32::from_rgba_premultiplied(15, 15, 15, 15);
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 46));
 }
 
 /// 玻璃卡片容器（悬浮圆角 + 描边 + 顶部高光近似）。
@@ -113,27 +166,304 @@ pub fn glass_card(fill: Color32, radius: u8) -> Frame {
         .stroke(egui::Stroke::new(1.0, BORDER))
 }
 
-/// 主按钮（原型 button.primary：绿底黑字）。
+/// 原型卡片外阴影 `0 8px 32px rgba(0,0,0,.4)` 的多层近似（须画在 fill 之前）。
+pub fn paint_drop_shadow(painter: &Painter, rect: egui::Rect, radius: f32) {
+    if !rect.is_positive() {
+        return;
+    }
+    let layers = [(14.0_f32, 28_u8), (8.0, 36), (3.0, 48)];
+    for (dy, a) in layers {
+        let r = rect.translate(Vec2::new(0.0, dy * 0.35)).expand(dy * 0.15);
+        painter.rect_filled(
+            r,
+            CornerRadius::same(radius as u8),
+            Color32::from_black_alpha(a),
+        );
+    }
+}
+
+/// 原型 inset 顶高光 `0 1px 0 rgba(255,255,255,.05)`。
+pub fn paint_inset_top(painter: &Painter, rect: egui::Rect, pad_x: f32) {
+    if !rect.is_positive() {
+        return;
+    }
+    painter.hline(
+        (rect.left() + pad_x)..=(rect.right() - pad_x),
+        rect.top() + 1.0,
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
+    );
+}
+
+/// 对话 compose 外阴影 `0 10px 32px rgba(0,0,0,.45)`。
+pub fn paint_compose_shadow(painter: &Painter, rect: egui::Rect) {
+    if !rect.is_positive() {
+        return;
+    }
+    for (dy, a) in [(16.0_f32, 32_u8), (10.0, 48), (4.0, 56)] {
+        let r = rect.translate(Vec2::new(0.0, dy * 0.4)).expand(2.0);
+        painter.rect_filled(r, CornerRadius::same(12), Color32::from_black_alpha(a));
+    }
+}
+
+/// 产物卡 130° 渐变底（原型 `.artifact-card`）。
+pub fn paint_artifact_bg(painter: &Painter, rect: egui::Rect) {
+    if !rect.is_positive() {
+        return;
+    }
+    painter.add(egui::Shape::mesh(rounded_gradient_rect_alpha(
+        rect,
+        9.0,
+        Color32::from_rgba_unmultiplied(34, 197, 94, 26),
+        Color32::from_rgba_unmultiplied(255, 255, 255, 5),
+        130.0,
+    )));
+}
+
+/// 顶栏「演示环境」徽章：独立辉光绿点 + 文案（原型 `.tag.purple > .dot`）。
+pub fn tag_live_ui(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    Frame::NONE
+        .fill(Color32::from_rgba_premultiplied(7, 23, 13, 26))
+        .stroke(egui::Stroke::new(
+            1.0,
+            Color32::from_rgba_premultiplied(8, 24, 14, 71),
+        ))
+        .corner_radius(CornerRadius::same(5))
+        .inner_margin(Margin::symmetric(7, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let (dr, _) = ui.allocate_exact_size(Vec2::splat(6.0), egui::Sense::hover());
+                let c = dr.center();
+                ui.painter().circle_filled(
+                    c,
+                    5.0,
+                    Color32::from_rgba_unmultiplied(34, 197, 94, 70),
+                );
+                ui.painter().circle_filled(c, 3.0, ACCENT);
+                ui.label(
+                    egui::RichText::new(text)
+                        .font(FontId::monospace(fs(10.0)))
+                        .color(ACCENT_TEXT),
+                );
+            });
+        })
+        .response
+}
+
+/// 原型 .brand-mark：29×29、圆角 9、145° 线性渐变 #4ade80→#16a34a、外圈辉光、字色 #03130a。
+pub fn paint_brand_mark(painter: &Painter, rect: egui::Rect) {
+    painter.circle_filled(
+        rect.center(),
+        21.0,
+        Color32::from_rgba_unmultiplied(34, 197, 94, 89),
+    );
+    painter.add(egui::Shape::mesh(rounded_gradient_rect(
+        rect,
+        9.0,
+        ACCENT_TEXT,
+        ACCENT_STRONG,
+    )));
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        "研",
+        FontId::proportional(fs(19.0)),
+        BRAND_INK,
+    );
+}
+
+/// 圆角矩形上的 CSS 145° 线性渐变（扇形三角剖分）。
+fn rounded_gradient_rect(rect: egui::Rect, radius: f32, from: Color32, to: Color32) -> Mesh {
+    rounded_gradient_rect_deg(rect, radius, from, to, 145.0, false)
+}
+
+/// 带角度的圆角渐变；`alpha` 为真时保留预乘/非预乘通道插值。
+fn rounded_gradient_rect_alpha(
+    rect: egui::Rect,
+    radius: f32,
+    from: Color32,
+    to: Color32,
+    deg: f32,
+) -> Mesh {
+    rounded_gradient_rect_deg(rect, radius, from, to, deg, true)
+}
+
+fn rounded_gradient_rect_deg(
+    rect: egui::Rect,
+    radius: f32,
+    from: Color32,
+    to: Color32,
+    deg: f32,
+    with_alpha: bool,
+) -> Mesh {
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
+    let segs = 6_usize;
+    let pi = std::f32::consts::PI;
+    let half = std::f32::consts::FRAC_PI_2;
+    let corners = [
+        (rect.right() - r, rect.top() + r, -half, 0.0),
+        (rect.right() - r, rect.bottom() - r, 0.0, half),
+        (rect.left() + r, rect.bottom() - r, half, pi),
+        (rect.left() + r, rect.top() + r, pi, pi + half),
+    ];
+    let mut pts = Vec::with_capacity(4 * (segs + 1));
+    for (cx, cy, a0, a1) in corners {
+        for i in 0..=segs {
+            let t = i as f32 / segs as f32;
+            let a = a0 + (a1 - a0) * t;
+            pts.push(Pos2::new(cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    let rad = deg.to_radians();
+    let dir = Vec2::new(rad.sin(), -rad.cos());
+    let dmin = pts
+        .iter()
+        .map(|q| q.to_vec2().dot(dir))
+        .fold(f32::MAX, f32::min);
+    let dmax = pts
+        .iter()
+        .map(|q| q.to_vec2().dot(dir))
+        .fold(f32::MIN, f32::max);
+    let span = (dmax - dmin).max(1e-6);
+    let color_at = |p: Pos2| -> Color32 {
+        let t = ((p.to_vec2().dot(dir) - dmin) / span).clamp(0.0, 1.0);
+        if with_alpha {
+            lerp_rgba(from, to, t)
+        } else {
+            lerp_opaque(from, to, t)
+        }
+    };
+    let mut mesh = Mesh::default();
+    let center = rect.center();
+    mesh.colored_vertex(center, color_at(center));
+    for p in &pts {
+        mesh.colored_vertex(*p, color_at(*p));
+    }
+    let n = pts.len() as u32;
+    for i in 0..n {
+        mesh.add_triangle(0, 1 + i, 1 + ((i + 1) % n));
+    }
+    mesh
+}
+
+fn lerp_opaque(a: Color32, b: Color32, t: f32) -> Color32 {
+    let u = 1.0 - t;
+    Color32::from_rgb(
+        (a.r() as f32 * u + b.r() as f32 * t) as u8,
+        (a.g() as f32 * u + b.g() as f32 * t) as u8,
+        (a.b() as f32 * u + b.b() as f32 * t) as u8,
+    )
+}
+
+fn lerp_rgba(a: Color32, b: Color32, t: f32) -> Color32 {
+    let u = 1.0 - t;
+    Color32::from_rgba_unmultiplied(
+        (a.r() as f32 * u + b.r() as f32 * t) as u8,
+        (a.g() as f32 * u + b.g() as f32 * t) as u8,
+        (a.b() as f32 * u + b.b() as f32 * t) as u8,
+        (a.a() as f32 * u + b.a() as f32 * t) as u8,
+    )
+}
+
+/// 主按钮（原型 `button.primary`：绿底、字色 `#000`、字重 600、padding 8×12、圆角 7）。
 pub fn primary_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(
         egui::RichText::new(text)
-            .font(FontId::proportional(12.0))
+            .font(FontId::proportional(fs(12.0)))
             .color(BASE),
     )
     .fill(ACCENT)
+    .stroke(Stroke::NONE)
     .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(32.0)))
 }
 
-/// 幽灵按钮（原型 button.ghost：弱文字、弱描边）。
+/// 幽灵按钮（原型 `button.ghost`：保留 3% 白底、无描边、muted 字）。
 pub fn ghost_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(
         egui::RichText::new(text)
-            .font(FontId::proportional(12.0))
+            .font(FontId::proportional(fs(12.0)))
             .color(MUTED),
     )
-    .fill(Color32::TRANSPARENT)
-    .stroke(egui::Stroke::new(1.0, BORDER_STRONG))
+    .fill(WHITE_03)
+    .stroke(Stroke::NONE)
     .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(32.0)))
+}
+
+/// 默认按钮（原型无 class 的 `button`：3% 白底 + `--border-strong`）。
+pub fn default_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .font(FontId::proportional(fs(12.0)))
+            .color(TEXT2),
+    )
+    .fill(WHITE_03)
+    .stroke(Stroke::new(1.0, BORDER_STRONG))
+    .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(32.0)))
+}
+
+/// 小幽灵按钮（原型 `button.ghost.small`：11px、padding 5×8）。
+pub fn small_ghost_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .font(FontId::proportional(fs(11.0)))
+            .color(MUTED),
+    )
+    .fill(WHITE_03)
+    .stroke(Stroke::NONE)
+    .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(24.0)))
+}
+
+/// 小默认按钮（原型 `button.small`：11px、padding 5×8、强描边）。
+pub fn small_default_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .font(FontId::proportional(fs(11.0)))
+            .color(TEXT2),
+    )
+    .fill(WHITE_03)
+    .stroke(Stroke::new(1.0, BORDER_STRONG))
+    .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(24.0)))
+}
+
+/// 小主按钮（原型 `button.small.primary`）。
+pub fn small_primary_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .font(FontId::proportional(fs(11.0)))
+            .color(BASE),
+    )
+    .fill(ACCENT)
+    .stroke(Stroke::NONE)
+    .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(24.0)))
+}
+
+/// 对话建议 chip（原型 `.suggestions button`：继承全局 button 描边、10px、padding 5×8）。
+pub fn chip_button(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(text)
+            .font(FontId::proportional(fs(10.0)))
+            .color(MUTED),
+    )
+    .fill(WHITE_03)
+    .stroke(Stroke::new(1.0, BORDER_STRONG))
+    .corner_radius(CornerRadius::same(7))
+    .wrap_mode(egui::TextWrapMode::Extend)
+    .min_size(Vec2::new(0.0, fs(22.0)))
 }
 
 /// 徽章类型（原型 .tag 系列色）。
@@ -181,18 +511,29 @@ pub fn tag_ui(ui: &mut egui::Ui, text: &str, kind: TagKind) -> egui::Response {
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(text)
-                    .font(FontId::monospace(10.0))
+                    .font(FontId::monospace(fs(10.0)))
                     .color(fg),
             );
         })
         .response
 }
 
-/// 分组标题（原型 .section-label：mono 小号、微弱色）。
+/// 分组标题（原型 .section-label：mono、letter-spacing .12em、微弱色）。
 pub fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .font(FontId::monospace(10.0))
+            .extra_letter_spacing(1.2)
+            .color(FAINT),
+    );
+}
+
+/// 页眉 eyebrow（原型 `.eyebrow`：mono 9、letter-spacing .12em）。
+pub fn eyebrow_label(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .font(FontId::monospace(fs(9.0)))
+            .extra_letter_spacing(1.08)
             .color(FAINT),
     );
 }
@@ -276,12 +617,16 @@ pub fn setup_fonts(ctx: &egui::Context) -> usize {
     1
 }
 
-/// 把一份 CJK 字体数据注册为默认/等宽两族的回退（egui 逐字符回退）。
-fn install_cjk(ctx: &egui::Context, data: egui::FontData) {
+/// 把一份 CJK 字体数据注册为默认族首位（中文 UI 用同一套度量，避免
+/// `.strong()` / Ubuntu 回退导致按钮内文字垂直错位）。
+fn install_cjk(ctx: &egui::Context, mut data: egui::FontData) {
+    data.tweak.y_offset_factor = 0.06;
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert("cjk".into(), data.into());
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts.families.entry(family).or_default().push("cjk".into());
+        let list = fonts.families.entry(family).or_default();
+        list.retain(|n| n != "cjk");
+        list.insert(0, "cjk".into());
     }
     ctx.set_fonts(fonts);
 }
@@ -307,6 +652,12 @@ mod tests {
         // 语义色（原型 --cyan-text 亮档 + 设计文档辅助青基档/--amber-text/--red-text）
         assert_eq!(ACCENT_CYAN, Color32::from_rgb(0x67, 0xE8, 0xF9));
         assert_eq!(ACCENT_CYAN_BASE, Color32::from_rgb(0x06, 0xB6, 0xD4));
+        assert_eq!(BRAND_INK, Color32::from_rgb(0x03, 0x13, 0x0A));
+        assert_eq!(ACCENT_SOFT, Color32::from_rgba_premultiplied(2, 15, 7, 20));
+        assert_eq!(
+            ACCENT_BORDER,
+            Color32::from_rgba_premultiplied(8, 47, 22, 61)
+        );
         assert_eq!(AMBER, Color32::from_rgb(0xFB, 0xBF, 0x24));
         assert_eq!(RED, Color32::from_rgb(0xF8, 0x71, 0x71));
         // 文字四层级（--text/--text2/--muted/--faint）
@@ -315,6 +666,9 @@ mod tests {
         assert_eq!(MUTED, Color32::from_rgb(0xA1, 0xA1, 0xAA));
         assert_eq!(FAINT, Color32::from_rgb(0x71, 0x71, 0x7A));
         assert_eq!(TEXT_DIM, MUTED);
+        let mut style = Style::default();
+        apply(&mut style);
+        assert_eq!(style.spacing.button_padding, Vec2::new(12.0, 8.0));
         // 玻璃三层互异且均为半透明
         assert_ne!(GLASS, GLASS_SOFT);
         assert_ne!(GLASS_SOFT, GLASS_STRONG);

@@ -40,7 +40,7 @@ pub struct DesignVersion {
     pub min_amount: f64,
 }
 
-/// 代码版本 v（不可变；冻结 R/D 引用与保存时的修订计数）。
+/// 代码版本 v（不可变；冻结 R/D/数据/股票池引用与修订计数）。
 #[derive(Debug, Clone)]
 pub struct CodeVersion {
     pub id: usize,
@@ -49,11 +49,17 @@ pub struct CodeVersion {
     pub req_id: usize,
     /// 冻结的设计版本 ID。
     pub design_id: usize,
+    /// 冻结的数据快照修订（`SYN-202601-r{n}`）。
+    pub data_revision: u64,
+    /// 冻结的股票池修订（`U{n}`）。
+    pub pool_revision: u64,
+    /// 冻结的股票池成员。
+    pub pool: Vec<String>,
     /// 冻结戳：保存时的项目修订计数（上游过期判定基准）。
     pub stamp: u64,
 }
 
-/// 实验 E（冻结版本引用；执行由协调器承载，此处仅留证据）。
+/// 实验 E（冻结版本引用；预置示例附带离线合成事件；协调器任务可选）。
 #[derive(Debug, Clone)]
 pub struct Experiment {
     pub id: usize,
@@ -63,8 +69,10 @@ pub struct Experiment {
     pub stamp: u64,
     /// 协调器任务 ID（执行引用；取消无产物时为 None）。
     pub task_id: Option<String>,
-    /// 期末总收益（比较用；未完成/取消为 None）。
+    /// 期末总收益（比较用；未完成/取消为 None；比率字符串如 `0.0625`）。
     pub total_return: Option<String>,
+    /// 离线合成演示结果（预置示例；对齐原型 `compute`）。
+    pub demo: Option<crate::demo_sim::DemoRun>,
 }
 
 /// 验证报告（证据边界：演示检查可过，正式验证恒「证据不足」）。
@@ -117,8 +125,49 @@ pub struct Project {
     pub experiments: Vec<Experiment>,
     pub report: Option<Report>,
     pub plan: Option<PlanDraft>,
-    /// 上游修订计数（需求确认/设计保存/版本保存时递增；过期判定基准）。
+    /// 合成数据快照修订（原型 `dataRevision`，自 1 起）。
+    pub data_revision: u64,
+    /// 股票池修订（原型 `poolRevision`，自 1 起）。
+    pub pool_revision: u64,
+    /// 当前股票池成员代码。
+    pub pool: Vec<String>,
+    /// 股票池最低成交额（万元；原型 `poolAmount`）。
+    pub pool_amount: f64,
+    /// 上游修订计数（需求/设计/数据/池/版本变更时递增；过期判定基准）。
     pub revision: u64,
+}
+
+/// 欢迎正文（原型 createProject 首条 assistant.text，含换行与第二段）。
+pub const WELCOME_TEXT: &str = "你好，我们从研究目标开始。\n\n我会把需求、设计、代码与验证证据整理在同一个项目中。你可以随时修改左侧产物，或在这里告诉我下一步想做什么。";
+
+/// 需求草稿默认正文（原型 createProject `reqText`）。
+pub const DRAFT_REQ_TEXT: &str = "研究 A 股日线量价信号：收盘后筛选流动性充足的股票，下一交易日执行。检查信号时点、仓位和资金约束，比较修复前后的表现，最后生成供人工核对的交易计划。";
+/// 需求草稿默认验收标准（原型 `acceptance`）。
+pub const DRAFT_ACCEPTANCE: &str = "信号不使用未来数据；定位资金不足的订单拒绝；修复前后实验可比较；计划须核对账户和可卖数量。";
+/// 需求草稿默认投入比例 %（原型 `allocation`）。
+pub const DRAFT_ALLOC_PCT: f64 = 100.0;
+/// 需求草稿默认最低成交额（万元，原型 `minAmount`）。
+pub const DRAFT_MIN_AMOUNT_WAN: &str = "1000";
+
+/// 设计说明草稿（原型 `designNote`）。
+pub const DRAFT_DESIGN_NOTE: &str = "收盘形成信号，下一交易日执行。按流动性过滤股票池，计算目标持仓，在成交阶段检查费用与资金。";
+
+/// 策略示例·原始（原型 `source(false)`）。
+pub const DRAFT_CODE_ORIGINAL: &str = "# 合成样本策略示意；本页不执行 Python\ndef generate_targets(history, parameters):\n    visible = history.at_signal_close()\n    universe = visible.filter_amount(parameters[\"min_amount\"])\n    signal = universe.select_positive_signal()\n    # 信号不读取下一交易日价格\n    def on_next_open(cash, open_price):\n        quantity = int(cash * parameters[\"allocation\"] / signal.close / 100) * 100\n        quantity = max(0, quantity)\n        return simulate_order(signal.symbol, quantity, fee=5)\n    return signal, on_next_open";
+
+/// 策略示例·资金约束修复（原型 `source(true)`）。
+pub const DRAFT_CODE_FIXED: &str = "# 合成样本策略示意；本页不执行 Python\ndef generate_targets(history, parameters):\n    visible = history.at_signal_close()\n    universe = visible.filter_amount(parameters[\"min_amount\"])\n    signal = universe.select_positive_signal()\n    # 信号不读取下一交易日价格\n    def on_next_open(cash, open_price):\n        quantity = int((cash * parameters[\"allocation\"] - 5) / open_price / 100) * 100\n        quantity = max(0, quantity)\n        return simulate_order(signal.symbol, quantity, fee=5)\n    return signal, on_next_open";
+
+/// 离线模拟器仅识别两份预置示例（原型 `variant()`）。
+pub fn code_preset_variant(src: &str) -> Option<u8> {
+    let t = src.trim();
+    if t == DRAFT_CODE_ORIGINAL.trim() {
+        Some(1)
+    } else if t == DRAFT_CODE_FIXED.trim() {
+        Some(2)
+    } else {
+        None
+    }
 }
 
 impl Project {
@@ -129,9 +178,7 @@ impl Project {
             name: name.into(),
             messages: vec![ChatMessage {
                 role: Role::Assistant,
-                text:
-                    "你好，我们从研究目标开始。我会把需求、设计、代码与验证证据整理在同一个项目中。"
-                        .into(),
+                text: WELCOME_TEXT.into(),
             }],
             reqs: Vec::new(),
             active_req: None,
@@ -142,6 +189,13 @@ impl Project {
             experiments: Vec::new(),
             report: None,
             plan: None,
+            data_revision: 1,
+            pool_revision: 1,
+            pool: crate::demo_sim::DEFAULT_POOL
+                .iter()
+                .map(|s| (*s).into())
+                .collect(),
+            pool_amount: 1000.0,
             revision: 0,
         }
     }
@@ -239,26 +293,47 @@ impl Workspace {
         Ok(id)
     }
 
-    /// 生成设计（S18：绑定当前需求版本；无需求版本则拒绝）。
-    pub fn generate_design(&mut self, note: impl Into<String>) -> Result<usize, String> {
-        let (req_id, allocation, min_amount) = {
-            let p = self.current();
-            let req_id = p.active_req.ok_or("请先确认需求文档")?;
-            let req = &p.reqs[req_id - 1];
-            (req.id, req.allocation, req.min_amount)
-        };
+    /// 保存设计版本（S18：绑定当前需求；`allocation_pct` 为 0～100）。
+    pub fn generate_design(
+        &mut self,
+        note: impl Into<String>,
+        allocation_pct: f64,
+        min_amount: f64,
+    ) -> Result<usize, String> {
+        let note = note.into();
+        if note.trim().is_empty() {
+            return Err("请填写设计说明".into());
+        }
+        if !(0.0..=100.0).contains(&allocation_pct) {
+            return Err("投入比例须为 0～100%".into());
+        }
+        if !min_amount.is_finite() || min_amount < 0.0 {
+            return Err("成交额须为非负数".into());
+        }
+        let req_id = self.current().active_req.ok_or("请先确认需求文档")?;
         let p = self.current_mut();
         let id = p.designs.len() + 1;
         p.designs.push(DesignVersion {
             id,
             req_id,
-            note: note.into(),
-            allocation,
+            note,
+            allocation: allocation_pct / 100.0,
             min_amount,
         });
         p.active_design = Some(id);
         p.revision += 1;
         Ok(id)
+    }
+
+    /// 测试/快捷路径：设计参数默认取自当前需求。
+    pub fn generate_design_from_req(&mut self, note: impl Into<String>) -> Result<usize, String> {
+        let (alloc_pct, min_amount) = {
+            let p = self.current();
+            let req_id = p.active_req.ok_or("请先确认需求文档")?;
+            let req = &p.reqs[req_id - 1];
+            (req.allocation * 100.0, req.min_amount)
+        };
+        self.generate_design(note, alloc_pct, min_amount)
     }
 
     /// 保存代码版本（S18：不可变；冻结当前 R/D 引用与修订计数；幂等）。
@@ -281,15 +356,65 @@ impl Workspace {
         }
         let id = p.versions.len() + 1;
         p.revision += 1;
+        let data_revision = p.data_revision;
+        let pool_revision = p.pool_revision;
+        let pool = p.pool.clone();
         p.versions.push(CodeVersion {
             id,
             source,
             req_id,
             design_id,
+            data_revision,
+            pool_revision,
+            pool,
             stamp: p.revision,
         });
         p.active_version = Some(id);
+        p.report = None;
+        if let Some(t) = &mut p.plan {
+            t.checked = false;
+        }
         Ok(id)
+    }
+
+    /// 模拟更新合成数据快照（原型 `updateData`：dataRevision++ 并使版本过期）。
+    pub fn update_demo_data(&mut self) -> u64 {
+        let p = self.current_mut();
+        p.data_revision += 1;
+        p.revision += 1;
+        p.report = None;
+        if let Some(t) = &mut p.plan {
+            t.checked = false;
+        }
+        p.data_revision
+    }
+
+    /// 保存股票池规则（原型 `savePool`）。
+    pub fn save_demo_pool(
+        &mut self,
+        amount: f64,
+        market: &str,
+    ) -> Result<(u64, Vec<String>), String> {
+        if !amount.is_finite() || amount < 0.0 {
+            return Err("最低成交额须为非负数".into());
+        }
+        let members: Vec<String> = crate::demo_sim::FIXTURE
+            .iter()
+            .filter(|s| {
+                s.amount >= amount && (market == "全部" || s.market == market)
+            })
+            .map(|s| s.symbol.to_string())
+            .collect();
+        let p = self.current_mut();
+        p.pool_amount = amount;
+        p.pool = members.clone();
+        p.pool_revision += 1;
+        p.revision += 1;
+        p.report = None;
+        if let Some(t) = &mut p.plan {
+            t.checked = false;
+        }
+        Ok((p.pool_revision, members))
     }
 
     /// 版本是否新鲜（S18：上游更新后旧版本不可新运行，历史实验不变）。
@@ -303,12 +428,16 @@ impl Workspace {
         refs_match && p.revision == v.stamp
     }
 
-    /// 运行实验（S18：过期拒绝；冻结版本与修订戳；task_id 由 GUI 回填）。
+    /// 运行实验（S18：过期拒绝；冻结版本与修订戳；预置示例同步离线 `compute`）。
     pub fn run_experiment(&mut self, task_id: Option<String>) -> Result<usize, String> {
         let version_id = self.current().active_version.ok_or("请先保存版本")?;
         if !self.version_fresh(version_id) {
             return Err("版本未保存或上游已过期，请保存当前版本后再运行".into());
         }
+        let demo = self.compute_demo_for_version(version_id);
+        let total_return = demo
+            .as_ref()
+            .map(|d| format!("{:.6}", d.return_pct / 100.0));
         let p = self.current_mut();
         let id = p.experiments.len() + 1;
         p.experiments.push(Experiment {
@@ -316,9 +445,44 @@ impl Workspace {
             version_id,
             stamp: p.revision,
             task_id,
-            total_return: None,
+            total_return,
+            demo,
         });
+        p.report = None;
         Ok(id)
+    }
+
+    /// 预置示例 → 离线合成运行（非预置返回 None）。
+    pub fn compute_demo_for_version(&self, version_id: usize) -> Option<crate::demo_sim::DemoRun> {
+        let p = self.current();
+        let v = p.versions.get(version_id - 1)?;
+        let variant = code_preset_variant(&v.source)?;
+        let d = p.designs.get(v.design_id - 1)?;
+        let inputs = crate::demo_sim::DemoInputs {
+            variant,
+            allocation: d.allocation,
+            min_amount: d.min_amount,
+            data_id: format!("SYN-202601-r{}", v.data_revision.max(1)),
+            pool_id: format!("U{}", v.pool_revision.max(1)),
+            pool: v.pool.clone(),
+        };
+        Some(crate::demo_sim::compute(&inputs))
+    }
+
+    /// 最近两次实验的首个事件分歧（有 demo 事件时）。
+    pub fn first_event_divergence(
+        &self,
+    ) -> Option<(usize, usize, crate::demo_sim::DemoEvent, Option<crate::demo_sim::DemoEvent>)>
+    {
+        let p = self.current();
+        if p.experiments.len() < 2 {
+            return None;
+        }
+        let a = p.experiments[p.experiments.len() - 2].clone();
+        let b = p.experiments[p.experiments.len() - 1].clone();
+        let (da, db) = (a.demo.as_ref()?, b.demo.as_ref()?);
+        let (e, f) = crate::demo_sim::first_divergence(da, db)?;
+        Some((a.id, b.id, e.clone(), f.cloned()))
     }
 
     /// 回填任务引用（协调器提交成功后；提交失败的实验保留为无任务证据）。
@@ -428,33 +592,70 @@ impl Workspace {
     }
 
     /// 生成验证报告（S19：无实验拒绝；正式验证恒「证据不足」）。
+    /// 有离线合成 `demo` 时检查项对齐原型 `makeReport`。
     pub fn make_report(&mut self) -> Result<usize, String> {
         let version_id = self.current().active_version.ok_or("当前版本不存在")?;
         if !self.version_fresh(version_id) {
             return Err("当前版本已过期或不存在".into());
         }
-        let run_id = self
+        let run = self
             .current()
             .experiments
             .iter()
             .filter(|e| e.version_id == version_id)
             .max_by_key(|e| e.id)
-            .map(|e| e.id)
+            .cloned()
             .ok_or("当前版本尚无实验，不能生成验证结论")?;
-        let has_result = self
-            .current()
-            .experiments
-            .iter()
-            .any(|e| e.id == run_id && (e.task_id.is_some() || e.total_return.is_some()));
-        let (req_id, design_id) = {
+        let run_id = run.id;
+        let has_result = run.task_id.is_some() || run.total_return.is_some() || run.demo.is_some();
+        let (req_id, design_id, data_rev, pool_rev) = {
             let v = &self.current().versions[version_id - 1];
-            (v.req_id, v.design_id)
+            (v.req_id, v.design_id, v.data_revision, v.pool_revision)
         };
         let fresh = self.version_fresh(version_id);
-        let report = Report {
-            version_id,
-            run_id,
-            checks: vec![
+        let data_id = format!("SYN-202601-r{}", data_rev.max(1));
+        let pool_id = format!("U{}", pool_rev.max(1));
+        let checks = if let Some(demo) = &run.demo {
+            let signal_ok = demo
+                .events
+                .iter()
+                .filter(|e| e.node == "signal")
+                .all(|e| e.date == "2026-01-05");
+            let cash_ok = demo.rejected == 0 && demo.cash >= 0.0;
+            let cash_detail = if demo.rejected > 0 {
+                format!("存在 {} 笔资金不足拒绝", demo.rejected)
+            } else {
+                format!("现金 {:.2}；无资金不足拒绝", demo.cash)
+            };
+            vec![
+                (
+                    "版本与冻结输入一致".into(),
+                    fresh,
+                    format!("R{req_id} / D{design_id} / {data_id} / {pool_id}"),
+                ),
+                (
+                    "信号早于执行时点".into(),
+                    signal_ok,
+                    "信号日 01-05；执行日 01-06".into(),
+                ),
+                (
+                    "资金约束与拒绝检查".into(),
+                    cash_ok,
+                    cash_detail,
+                ),
+                (
+                    "样本范围已披露".into(),
+                    true,
+                    "3 个合成标的、3 个日期，不代表真实市场".into(),
+                ),
+                (
+                    "正式策略验证".into(),
+                    false,
+                    "证据不足：真实数据、样本外与参数稳健性未运行".into(),
+                ),
+            ]
+        } else {
+            vec![
                 (
                     "版本与冻结输入一致".into(),
                     fresh,
@@ -474,7 +675,12 @@ impl Workspace {
                     false,
                     "证据不足：真实数据、样本外与参数稳健性未运行".into(),
                 ),
-            ],
+            ]
+        };
+        let report = Report {
+            version_id,
+            run_id,
+            checks,
         };
         let p = self.current_mut();
         p.report = Some(report);
@@ -643,7 +849,7 @@ mod tests {
         let mut w = Workspace::new();
         w.confirm_requirement("量价选股", "夏普>0", 30.0, 1_000_000.0)
             .unwrap();
-        w.generate_design("EMA 双均线").unwrap();
+        w.generate_design_from_req("EMA 双均线").unwrap();
         w.save_version("fn strategy() {}").unwrap();
         w
     }
@@ -685,6 +891,33 @@ mod tests {
     }
 
     #[test]
+    fn data_pool_freeze_and_staleness() {
+        let mut w = chained();
+        let v1 = w.current().active_version.unwrap();
+        assert_eq!(w.current().versions[0].data_revision, 1);
+        assert_eq!(w.current().versions[0].pool_revision, 1);
+        assert_eq!(w.current().versions[0].pool, vec!["SYN-A", "SYN-B"]);
+        // 模拟更新数据 → 版本过期
+        assert_eq!(w.update_demo_data(), 2);
+        assert!(!w.version_fresh(v1));
+        // 恢复修订后保存池（排除 SYN-B：成交额门槛 2000）
+        w.current_mut().revision = w.current().versions[0].stamp;
+        w.current_mut().data_revision = 1;
+        assert!(w.version_fresh(v1));
+        let (prev, members) = w.save_demo_pool(2000.0, "全部").unwrap();
+        assert_eq!(prev, 2);
+        assert_eq!(members, vec!["SYN-A"]);
+        assert!(!w.version_fresh(v1));
+        // 重新保存版本冻结新池
+        let v2 = w
+            .save_version("fn strategy_after_pool() {}")
+            .unwrap();
+        assert_eq!(w.current().versions[v2 - 1].pool, vec!["SYN-A"]);
+        assert_eq!(w.current().versions[v2 - 1].pool_revision, 2);
+        assert_eq!(w.current().versions[v2 - 1].data_revision, 1);
+    }
+
+    #[test]
     fn freeze_and_staleness() {
         let mut w = chained();
         let v1 = w.current().active_version.unwrap();
@@ -711,6 +944,7 @@ mod tests {
             stamp: 3,
             task_id: Some("T0".into()),
             total_return: Some("0.0625".into()),
+            demo: None,
         });
         w.confirm_requirement("量价 v3", "夏普>0.6", 50.0, 100.0)
             .unwrap();
@@ -759,6 +993,38 @@ mod tests {
     }
 
     #[test]
+    fn preset_run_fills_demo_and_report_checks() {
+        let mut w = Workspace::new();
+        w.confirm_requirement(DRAFT_REQ_TEXT, DRAFT_ACCEPTANCE, DRAFT_ALLOC_PCT, 1000.0)
+            .unwrap();
+        w.generate_design_from_req(DRAFT_DESIGN_NOTE).unwrap();
+        // 原始示例：资金不足拒绝 → 演示检查中「资金约束」失败
+        w.save_version(DRAFT_CODE_ORIGINAL).unwrap();
+        let e1 = w.run_experiment(None).unwrap();
+        assert!(w.current().experiments[0].demo.is_some());
+        assert_eq!(w.current().experiments[0].demo.as_ref().unwrap().rejected, 1);
+        let _ = w.make_report().unwrap();
+        let report = w.current().report.as_ref().unwrap();
+        assert!(report.checks.iter().any(|(n, _, _)| n == "信号早于执行时点"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .any(|(n, ok, _)| n == "资金约束与拒绝检查" && !*ok)
+        );
+        assert!(!report.demo_pass());
+
+        // 修复版：无拒绝 → 演示检查通过
+        w.save_version(DRAFT_CODE_FIXED).unwrap();
+        let e2 = w.run_experiment(None).unwrap();
+        assert_eq!(e2, 2);
+        assert_eq!(w.current().experiments[1].demo.as_ref().unwrap().rejected, 0);
+        let _ = w.make_report().unwrap();
+        assert!(w.current().report.as_ref().unwrap().demo_pass());
+        let _ = e1;
+    }
+
+    #[test]
     fn compare_attribution() {
         let mut w = chained();
         let e1 = w.run_experiment(Some("T1".into())).unwrap();
@@ -772,7 +1038,7 @@ mod tests {
         // 上游更新后新版本实验：跨输入 → 列差异，不归因代码
         w.confirm_requirement("量价 v2", "夏普>0.5", 40.0, 100.0)
             .unwrap();
-        w.generate_design("EMA 双均线 v2").unwrap();
+        w.generate_design_from_req("EMA 双均线 v2").unwrap();
         w.save_version("fn strategy_v2() {}").unwrap();
         let e3 = w.run_experiment(Some("T3".into())).unwrap();
         let (same, diffs) = w.compare_experiments(e1, e3).unwrap();
