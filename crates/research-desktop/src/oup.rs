@@ -51,6 +51,10 @@ pub struct OupClient {
     stdin: ChildStdin,
     /// 响应接收端（读线程 → GUI 主线程）。
     rx: mpsc::Receiver<Value>,
+    /// 通知接收端（读线程 → 事件循环）。
+    notification_rx: mpsc::Receiver<Value>,
+    /// 通知发送端（call 方法转发通知 → 事件循环）。
+    notification_tx: mpsc::Sender<Value>,
     /// 请求计数器（生成唯一 ID）。
     counter: u64,
     /// 读线程句柄（drop 时等待退出）。
@@ -152,6 +156,7 @@ impl OupClient {
         let stdout = child.stdout.take().ok_or(OupError::ProcessExited)?;
 
         let (tx, rx) = mpsc::channel();
+        let (notification_tx, notification_rx) = mpsc::channel();
 
         // 读线程：阻塞读 stdout，解析 JSON-RPC 响应，发送到 channel
         let reader_handle = std::thread::spawn(move || {
@@ -160,6 +165,7 @@ impl OupClient {
                 match line {
                     Ok(text) => {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            // 所有消息都发到 rx（call 方法会区分响应和通知）
                             if tx.send(value).is_err() {
                                 break; // GUI 已退出
                             }
@@ -174,6 +180,8 @@ impl OupClient {
             child,
             stdin,
             rx,
+            notification_rx,
+            notification_tx,
             counter: 0,
             reader_handle: Some(reader_handle),
         })
@@ -196,24 +204,31 @@ impl OupClient {
         self.stdin.write_all(line.as_bytes())?;
         self.stdin.flush()?;
 
-        // 阻塞等待匹配 ID 的响应（跳过 notification）
+        // 阻塞等待匹配 ID 的响应（notification 转发到 notification channel）
         loop {
             let msg = self.rx.recv().map_err(|_| OupError::ProcessExited)?;
-            // 只处理带 id 的响应（跳过 notification）
+            // 只处理带 id 的响应（notification 转发到 notification channel）
             if msg.get("id").and_then(|v| v.as_str()) == Some(id.as_str()) {
                 let response: RpcResponse = serde_json::from_value(msg)?;
                 if let Some(err) = response.error {
                     return Err(OupError::Rpc(err.code, err.message));
                 }
                 return Ok(response.result.unwrap_or(Value::Null));
+            } else if msg.get("method").is_some() {
+                // notification 转发到 notification channel（不丢弃）
+                let _ = self.notification_tx.send(msg);
             }
-            // notification 丢弃（由上层事件循环处理）
         }
     }
 
     /// 非阻塞尝试接收一条消息（响应或 notification）。
     pub fn try_recv(&self) -> Option<Value> {
         self.rx.try_recv().ok()
+    }
+
+    /// 非阻塞尝试接收一条通知。
+    pub fn try_recv_notification(&self) -> Option<Value> {
+        self.notification_rx.try_recv().ok()
     }
 
     /// 打开 session（OUP session/open）。
@@ -259,17 +274,42 @@ impl OupClient {
         self.turn_start_with_id(session_id, &turn_id, prompt)
     }
 
-    /// 启动 turn 并指定 turn_id。
+    /// 启动 turn 并指定 turn_id（发送请求但不等待响应，turn/completed 由 turn_wait_completed 处理）。
     pub fn turn_start_with_id(&mut self, session_id: &str, turn_id: &str, prompt: &str) -> OupResult<Value> {
-        self.call(
-            "turn/start",
-            serde_json::json!({
+        self.counter += 1;
+        let id = format!("{ID_PREFIX}-{}", self.counter);
+
+        let request = RpcRequest {
+            jsonrpc: "2.0",
+            id: id.clone(),
+            method: "turn/start",
+            params: serde_json::json!({
                 "session_id": session_id,
                 "kind": "user",
                 "turn_id": turn_id,
                 "input": [{"kind": "text", "text": prompt}],
             }),
-        )
+        };
+
+        let mut line = serde_json::to_string(&request)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes())?;
+        self.stdin.flush()?;
+
+        // 等待 turn/start 的响应（确认 turn 已启动），notification 转发到 notification channel
+        loop {
+            let msg = self.rx.recv().map_err(|_| OupError::ProcessExited)?;
+            if msg.get("id").and_then(|v| v.as_str()) == Some(id.as_str()) {
+                let response: RpcResponse = serde_json::from_value(msg)?;
+                if let Some(err) = response.error {
+                    return Err(OupError::Rpc(err.code, err.message));
+                }
+                return Ok(response.result.unwrap_or(Value::Null));
+            } else if msg.get("method").is_some() {
+                // notification 转发到 notification channel
+                let _ = self.notification_tx.send(msg);
+            }
+        }
     }
 
     /// 列出 agents（OUP agent/list）。
@@ -280,6 +320,49 @@ impl OupClient {
                 "session_id": session_id,
             }),
         )
+    }
+
+    /// 等待 turn 完成（阻塞直到收到 turn/completed 或 turn/error）。
+    ///
+    /// 返回 completed_result。超时或进程退出返回 Err(ProcessExited)。
+    /// 注意：这是阻塞调用，CPU 红线：仅在用户主动提交时调用，不用于轮询。
+    pub fn turn_wait_completed(&mut self, session_id: &str, turn_id: &str, timeout_secs: u64) -> OupResult<Value> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+
+        loop {
+            if start.elapsed() > timeout {
+                return Err(OupError::ProcessExited);
+            }
+
+            // 阻塞接收通知（带超时）
+            let msg = match self.notification_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(m) => m,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(OupError::ProcessExited),
+            };
+
+            // 检查是否为 turn/completed 或 turn/error 通知
+            if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
+                if method == "turn/completed" || method == "turn/error" {
+                    if let Some(params) = msg.get("params") {
+                        if params.get("turn_id").and_then(|t| t.as_str()) == Some(turn_id)
+                            && params.get("session_id").and_then(|s| s.as_str()) == Some(session_id)
+                        {
+                            if method == "turn/error" {
+                                let error_msg = params
+                                    .get("error")
+                                    .and_then(|e| e.as_str())
+                                    .unwrap_or("unknown error");
+                                return Err(OupError::Rpc(-32000, error_msg.to_string()));
+                            }
+                            return Ok(params.clone());
+                        }
+                    }
+                }
+            }
+            // 其他消息（响应、其他通知）丢弃
+        }
     }
 
     /// 关闭子进程。

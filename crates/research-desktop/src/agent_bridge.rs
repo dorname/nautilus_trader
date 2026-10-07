@@ -156,6 +156,34 @@ impl AgentBridge {
         Ok(turn_id)
     }
 
+    /// 提交对话并等待完成（真实 LLM 调用）。
+    ///
+    /// 返回 (turn_id, completed_result)。阻塞直到 turn/completed 或超时。
+    /// CPU 红线：仅在用户主动提交时调用，不用于轮询。
+    pub fn submit_and_wait(&mut self, prompt: &str, timeout_secs: u64) -> AgentResult<(String, Value)> {
+        if self.state == AgentSessionState::TurnActive {
+            return Err(AgentError::TurnAlreadyActive);
+        }
+
+        let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
+
+        // 启动 turn
+        let start_result = client.turn_start(&self.config.session_id, prompt)?;
+        let turn_id = start_result
+            .get("turn_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        self.state = AgentSessionState::TurnActive;
+
+        // 等待完成
+        let completed = client.turn_wait_completed(&self.config.session_id, &turn_id, timeout_secs)?;
+
+        self.state = AgentSessionState::Connected;
+        Ok((turn_id, completed))
+    }
+
     /// 轮询任务列表（task/list），用于 UI 任务卡片状态更新。
     pub fn poll_tasks(&mut self) -> AgentResult<Value> {
         let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
