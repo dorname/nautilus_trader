@@ -5,7 +5,22 @@
 
 use nautilus_research_desktop::agent_bridge::AgentSessionConfig;
 use nautilus_research_desktop::oup::OupConfig;
-use nautilus_research_desktop::swarm_bridge::{SwarmBridge, s19_experiment_contracts};
+use nautilus_research_desktop::swarm_bridge::{
+    SwarmBridge, SwarmDispatchState, SubtaskState, s19_experiment_contracts,
+};
+
+/// 轮询等真实终态（turn/completed 事件流口径），超时 panic。
+fn wait_terminal(swarm: &mut SwarmBridge, timeout_secs: u64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    while swarm.is_active() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{timeout_secs}s 内未达终态"
+        );
+        swarm.poll_all().expect("poll_all");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
 
 fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     let nanos = std::time::SystemTime::now()
@@ -61,6 +76,17 @@ fn st_m4_01_experiment_dispatch() {
     assert_eq!(turn_ids.len(), 1);
     assert!(swarm.is_active());
 
+    // 等真实终态（issue #12 修复口径）：Succeeded 且 output 非空；
+    // 实验 prompt 为重量级产出，LLM 尾延迟时段放宽到 300s
+    wait_terminal(&mut swarm, 300);
+    assert_eq!(swarm.state(), SwarmDispatchState::Completed);
+    let r = &swarm.results()[0];
+    assert_eq!(r.state, SubtaskState::Succeeded, "error: {:?}", r.error);
+    assert!(
+        r.output.as_deref().is_some_and(|s| !s.trim().is_empty()),
+        "实验 output 应非空"
+    );
+
     swarm.disconnect_all();
 }
 
@@ -78,6 +104,17 @@ fn st_m4_02_experiment_version_freeze() {
 
     assert!(swarm.is_active());
     assert_eq!(swarm.results()[0].contract_id, "experiment");
+
+    // 等真实终态，冻结版本引用的实验同样需产出非空文本
+    wait_terminal(&mut swarm, 300);
+    assert_eq!(swarm.state(), SwarmDispatchState::Completed);
+    assert!(
+        swarm.results()[0]
+            .output
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty()),
+        "实验 output 应非空"
+    );
 
     swarm.disconnect_all();
 }

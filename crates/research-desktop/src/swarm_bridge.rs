@@ -10,9 +10,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent_bridge::{AgentBridge, AgentError};
+use crate::oup::TurnTerminal;
 
 /// 最大并发派发数（CPU 保护）。
 pub const MAX_PARALLEL_DISPATCH: usize = 3;
+
+/// Pipeline 单 stage 超时（秒）：真实 LLM 尾延迟实测可达 150s+（moonshot
+/// 拥塞时段 m3 回归触发 300s 超时），Pipeline 串行语义下放宽到 600s 吸收波动。
+pub const PIPELINE_STAGE_TIMEOUT_SECS: u64 = 600;
 
 /// Swarm 派发拓扑。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +65,33 @@ pub struct SubtaskResult {
     pub output: Option<String>,
     /// 错误信息（失败时）。
     pub error: Option<String>,
+    /// 本子任务的 turn ID（客户端生成的 UUID；未派发为空串）。
+    pub turn_id: String,
+    /// 实际发送给 agent 的最终 prompt（Pipeline 注入后口径，供注入断言）。
+    pub final_prompt: String,
+}
+
+/// 派发终态归约（纯函数，UT-S17-18 判定矩阵）：
+/// - 空集或含 Queued/Running → `None`（不得判终态）；
+/// - 含 Failed/Cancelled → `Some(Failed)`（失败不得吞为成功）；
+/// - 全 Succeeded → `Some(Completed)`。
+pub fn reduce_dispatch_terminal(states: &[SubtaskState]) -> Option<SwarmDispatchState> {
+    if states.is_empty() {
+        return None;
+    }
+    if states
+        .iter()
+        .any(|s| matches!(s, SubtaskState::Queued | SubtaskState::Running))
+    {
+        return None;
+    }
+    if states
+        .iter()
+        .any(|s| matches!(s, SubtaskState::Failed | SubtaskState::Cancelled))
+    {
+        return Some(SwarmDispatchState::Failed);
+    }
+    Some(SwarmDispatchState::Completed)
 }
 
 /// Swarm 派发状态。
@@ -187,13 +219,15 @@ impl SwarmBridge {
             agent.connect()?;
 
             let turn_id = agent.submit_prompt(&contract.prompt)?;
-            turn_ids.push(turn_id);
+            turn_ids.push(turn_id.clone());
 
             self.results.push(SubtaskResult {
                 contract_id: contract.contract_id.clone(),
                 state: SubtaskState::Running,
                 output: None,
                 error: None,
+                turn_id,
+                final_prompt: contract.prompt.clone(),
             });
 
             self.agents.push(agent);
@@ -209,8 +243,13 @@ impl SwarmBridge {
 
     /// 派发管道子任务（Pipeline 拓扑）。
     ///
-    /// 前一个 sub-agent 的输出作为后一个的输入（prompt 中插入 {pipeline_input} 占位符）。
-    /// 串行执行，任一失败则终止。
+    /// 串行执行（issue #11 修复）：每个 stage 以 `submit_and_wait` 阻塞等待真实
+    /// turn/completed，上游 stage 的 assistant_persisted 产物注入下游 prompt 的
+    /// `{pipeline_input}` 占位符（RD-011：原实现 `previous_output` 恒空、两 stage
+    /// 并行起跑且注入为空，为缺陷）。
+    ///
+    /// 任一 stage 失败或无文本产物即终止：下游不再派发并标记 Cancelled，总体 Failed。
+    /// 每个 stage 完成后断开其 agent 连接（CPU 红线：同一时间仅一个 stage 活跃）。
     pub fn dispatch_pipeline(
         &mut self,
         base_config: &crate::agent_bridge::AgentSessionConfig,
@@ -224,13 +263,30 @@ impl SwarmBridge {
         }
 
         let mut turn_ids = Vec::new();
-        let _total = contracts.len();
+        let total = contracts.len();
         self.results.clear();
+        self.state = SwarmDispatchState::Active {
+            dispatched: 0,
+            total,
+        };
 
-        // Pipeline：串行派发（不等待完成，异步通知由事件循环处理）
-        let previous_output = String::new();
+        let mut previous_output: Option<String> = None;
+        let mut failed = false;
 
         for (i, contract) in contracts.iter().enumerate() {
+            if failed {
+                // 上游失败：下游不再派发（不得标成功）
+                self.results.push(SubtaskResult {
+                    contract_id: contract.contract_id.clone(),
+                    state: SubtaskState::Cancelled,
+                    output: None,
+                    error: Some("上游 stage 失败，未派发".into()),
+                    turn_id: String::new(),
+                    final_prompt: String::new(),
+                });
+                continue;
+            }
+
             let mut agent_config = base_config.clone();
             agent_config.session_id = format!("{}-{}", base_config.session_id, contract.contract_id);
             agent_config.oup.data_dir = format!("{}-agent-{}", base_config.oup.data_dir, i);
@@ -251,77 +307,126 @@ impl SwarmBridge {
             let mut agent = AgentBridge::new(agent_config);
             agent.connect()?;
 
-            // Pipeline：将前一个输出注入当前 prompt
-            let prompt = if i > 0 && !previous_output.is_empty() {
-                contract.prompt.replace("{pipeline_input}", &previous_output)
+            // Pipeline 注入：上游产物替换占位符（首 stage 无上游，原样下发）
+            let prompt = if i > 0 {
+                let upstream = previous_output.clone().unwrap_or_default();
+                contract.prompt.replace("{pipeline_input}", &upstream)
             } else {
                 contract.prompt.clone()
             };
 
-            let turn_id = agent.submit_prompt(&prompt)?;
-            turn_ids.push(turn_id);
+            self.state = SwarmDispatchState::Active {
+                dispatched: i + 1,
+                total,
+            };
 
-            self.results.push(SubtaskResult {
-                contract_id: contract.contract_id.clone(),
-                state: SubtaskState::Running,
-                output: None,
-                error: None,
-            });
+            match agent.submit_and_wait(&prompt, PIPELINE_STAGE_TIMEOUT_SECS) {
+                Ok((turn_id, outcome)) => {
+                    turn_ids.push(turn_id.clone());
+                    match outcome.assistant_text {
+                        Some(text) if !text.trim().is_empty() => {
+                            self.results.push(SubtaskResult {
+                                contract_id: contract.contract_id.clone(),
+                                state: SubtaskState::Succeeded,
+                                output: Some(text.clone()),
+                                error: None,
+                                turn_id,
+                                final_prompt: prompt,
+                            });
+                            previous_output = Some(text);
+                        }
+                        _ => {
+                            failed = true;
+                            self.results.push(SubtaskResult {
+                                contract_id: contract.contract_id.clone(),
+                                state: SubtaskState::Failed,
+                                output: None,
+                                error: Some("stage 无文本产物（assistant_persisted 为空）".into()),
+                                turn_id,
+                                final_prompt: prompt,
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    failed = true;
+                    self.results.push(SubtaskResult {
+                        contract_id: contract.contract_id.clone(),
+                        state: SubtaskState::Failed,
+                        output: None,
+                        error: Some(e.to_string()),
+                        turn_id: String::new(),
+                        final_prompt: prompt,
+                    });
+                }
+            }
 
+            // stage 收尾即释放进程，再保留下线 agent 维持索引对齐
+            agent.disconnect();
             self.agents.push(agent);
         }
 
-        self.state = SwarmDispatchState::Active {
-            dispatched: _total,
-            total: _total,
+        self.state = if failed {
+            SwarmDispatchState::Failed
+        } else {
+            SwarmDispatchState::Completed
         };
 
         Ok(turn_ids)
     }
 
-    /// 轮询所有 agent 的任务状态。
+    /// 轮询所有 agent 的子任务终态。
+    ///
+    /// 终态口径（issue #12 修复）：以 turn 事件流（turn/completed / turn/error）为准，
+    /// 经 [`AgentBridge::poll_turn_outcome`] 非阻塞泵取；task/list 快照仅作观测返回，
+    /// 不参与终态判定（RD-012：空列表不得冒充成功，失败不得吞为成功）。
     pub fn poll_all(&mut self) -> SwarmResult<Vec<Value>> {
         if !self.is_active() {
             return Err(SwarmError::NoActiveDispatch);
         }
 
-        let mut all_tasks = Vec::new();
-        let mut all_terminal = true;
+        let mut snapshots = Vec::new();
 
-        for agent in &mut self.agents {
-            match agent.poll_tasks() {
-                Ok(tasks) => {
-                    // 检查是否有非终态任务
-                    if let Some(arr) = tasks.get("tasks").and_then(|t| t.as_array()) {
-                        for task in arr {
-                            if let Some(state) = task.get("state").and_then(|s| s.as_str()) {
-                                if state != "succeeded" && state != "failed" && state != "cancelled" {
-                                    all_terminal = false;
-                                }
-                            }
+        for i in 0..self.agents.len() {
+            // 只对 Running 子任务泵终态事件（agents 与 results 按下标一一对应）
+            if matches!(
+                self.results.get(i).map(|r| &r.state),
+                Some(SubtaskState::Running)
+            ) {
+                match self.agents[i].poll_turn_outcome() {
+                    Ok(Some(TurnTerminal::Completed(outcome))) => {
+                        if let Some(r) = self.results.get_mut(i) {
+                            r.state = SubtaskState::Succeeded;
+                            r.output = outcome.assistant_text;
                         }
                     }
-                    all_tasks.push(tasks);
+                    Ok(Some(TurnTerminal::Failed(err))) => {
+                        if let Some(r) = self.results.get_mut(i) {
+                            r.state = SubtaskState::Failed;
+                            r.error = Some(err);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        // 记录错误但继续轮询其他 agent；本子任务保持 Running
+                        eprintln!("poll error: {e}");
+                    }
                 }
-                Err(e) => {
-                    all_terminal = false;
-                    // 记录错误但继续轮询其他 agent
-                    eprintln!("poll error: {e}");
-                }
+            }
+
+            // task/list 快照仅作观测（对齐 m2_05 的返回口径），不参与终态判定
+            match self.agents[i].poll_tasks() {
+                Ok(tasks) => snapshots.push(tasks),
+                Err(e) => eprintln!("poll error: {e}"),
             }
         }
 
-        if all_terminal {
-            self.state = SwarmDispatchState::Completed;
-            // 更新结果状态
-            for result in &mut self.results {
-                if result.state == SubtaskState::Running {
-                    result.state = SubtaskState::Succeeded;
-                }
-            }
+        let states: Vec<SubtaskState> = self.results.iter().map(|r| r.state.clone()).collect();
+        if let Some(terminal) = reduce_dispatch_terminal(&states) {
+            self.state = terminal;
         }
 
-        Ok(all_tasks)
+        Ok(snapshots)
     }
 
     /// 取消所有活跃子任务。

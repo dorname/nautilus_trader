@@ -87,6 +87,16 @@ pub struct TurnOutcome {
     pub assistant_text: Option<String>,
 }
 
+/// turn 终态（非阻塞轮询口径，对齐 issue #12 修复）：
+/// 判定依据为 `turn/completed` / `turn/error` 事件流，禁止以 task/list 空列表冒充成功。
+#[derive(Debug, Clone)]
+pub enum TurnTerminal {
+    /// `turn/completed`：含通知参数与持久化回复文本。
+    Completed(TurnOutcome),
+    /// `turn/error`：错误描述文本。
+    Failed(String),
+}
+
 /// JSON-RPC 错误。
 #[derive(Debug, Deserialize)]
 pub struct RpcError {
@@ -242,6 +252,42 @@ impl OupClient {
     /// 非阻塞尝试接收一条通知。
     pub fn try_recv_notification(&self) -> Option<Value> {
         self.notification_rx.try_recv().ok()
+    }
+
+    /// 非阻塞泵一次本 turn 的事件流：排空两个通道的当前积压消息，
+    /// 返回已到达的终态（未到达返回 `Ok(None)`）。
+    ///
+    /// `assistant_text` 由调用方跨调用持有：本 turn 的 `assistant_persisted`
+    /// 文本可能早于终态通知到达，逐次累积进该参数，终态时随 [`TurnOutcome`] 带出。
+    pub fn poll_turn_once(
+        &mut self,
+        session_id: &str,
+        turn_id: &str,
+        assistant_text: &mut Option<String>,
+    ) -> OupResult<Option<TurnTerminal>> {
+        // 只处理当前已到达的消息，绝不等待（CPU 红线：轮询方自行控制节奏）
+        let mut backlog: Vec<Value> = Vec::new();
+        while let Ok(msg) = self.notification_rx.try_recv() {
+            backlog.push(msg);
+        }
+        while let Ok(msg) = self.rx.try_recv() {
+            backlog.push(msg);
+        }
+        for msg in backlog {
+            if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+                *assistant_text = Some(text);
+            }
+            if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
+                return Ok(Some(match outcome {
+                    Ok(completed) => TurnTerminal::Completed(TurnOutcome {
+                        completed,
+                        assistant_text: assistant_text.clone(),
+                    }),
+                    Err(e) => TurnTerminal::Failed(e.to_string()),
+                }));
+            }
+        }
+        Ok(None)
     }
 
     /// 打开 session（OUP session/open）。

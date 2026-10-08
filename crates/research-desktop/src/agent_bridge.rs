@@ -8,7 +8,7 @@
 
 use serde_json::Value;
 
-use crate::oup::{OupClient, OupConfig, OupError, TurnOutcome};
+use crate::oup::{OupClient, OupConfig, OupError, TurnOutcome, TurnTerminal};
 
 /// 真实 LLM 调用默认超时（秒），对齐 wire-real-llm-oup 提案。
 pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 120;
@@ -100,6 +100,10 @@ pub struct AgentBridge {
     state: AgentSessionState,
     /// 最后一次错误信息（用于 UI 展示）。
     last_error: Option<String>,
+    /// 活跃 turn ID（submit_prompt 之后由 poll_turn_outcome 追踪终态）。
+    active_turn_id: Option<String>,
+    /// 跨轮询累积的 assistant_persisted 文本（可能早于终态通知到达）。
+    pending_assistant_text: Option<String>,
 }
 
 /// Agent 操作结果。
@@ -142,6 +146,8 @@ impl AgentBridge {
             config,
             state: AgentSessionState::Disconnected,
             last_error: None,
+            active_turn_id: None,
+            pending_assistant_text: None,
         }
     }
 
@@ -201,8 +207,42 @@ impl AgentBridge {
             .unwrap_or("unknown")
             .to_string();
 
+        self.active_turn_id = Some(turn_id.clone());
+        self.pending_assistant_text = None;
         self.state = AgentSessionState::TurnActive;
         Ok(turn_id)
+    }
+
+    /// 非阻塞轮询活跃 turn 的终态（issue #12 修复：以 turn/completed / turn/error 为准）。
+    ///
+    /// - 无活跃 turn 时返回 `Ok(None)`；
+    /// - 终态到达后状态回落 `Connected`，并清除 turn 追踪字段；
+    /// - `assistant_persisted` 文本跨调用累积，终态时随 [`TurnTerminal::Completed`] 带出。
+    pub fn poll_turn_outcome(&mut self) -> AgentResult<Option<TurnTerminal>> {
+        if self.state != AgentSessionState::TurnActive {
+            return Ok(None);
+        }
+        let turn_id = match self.active_turn_id.clone() {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+        let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
+
+        let mut text = self.pending_assistant_text.take();
+        let terminal = client.poll_turn_once(&self.config.session_id, &turn_id, &mut text)?;
+
+        match terminal {
+            Some(t) => {
+                self.state = AgentSessionState::Connected;
+                self.active_turn_id = None;
+                self.pending_assistant_text = None;
+                Ok(Some(t))
+            }
+            None => {
+                self.pending_assistant_text = text;
+                Ok(None)
+            }
+        }
     }
 
     /// 提交对话并等待完成（真实 LLM 调用）。
@@ -226,6 +266,8 @@ impl AgentBridge {
             .to_string();
 
         self.state = AgentSessionState::TurnActive;
+        self.active_turn_id = Some(turn_id.clone());
+        self.pending_assistant_text = None;
 
         // 等待完成（同时泵 rx + notification_rx，避免 turn/completed 饿死）
         let outcome = match client.turn_wait_completed(&self.config.session_id, &turn_id, timeout_secs)
@@ -233,11 +275,15 @@ impl AgentBridge {
             Ok(v) => v,
             Err(e) => {
                 self.state = AgentSessionState::Connected;
+                self.active_turn_id = None;
+                self.pending_assistant_text = None;
                 return Err(AgentError::Oup(e));
             }
         };
 
         self.state = AgentSessionState::Connected;
+        self.active_turn_id = None;
+        self.pending_assistant_text = None;
         Ok((turn_id, outcome))
     }
 
@@ -264,6 +310,8 @@ impl AgentBridge {
     pub fn complete_turn(&mut self) {
         if self.state == AgentSessionState::TurnActive {
             self.state = AgentSessionState::Connected;
+            self.active_turn_id = None;
+            self.pending_assistant_text = None;
         }
     }
 
