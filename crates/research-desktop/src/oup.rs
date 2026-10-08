@@ -77,6 +77,16 @@ pub struct RpcResponse {
     pub error: Option<RpcError>,
 }
 
+/// turn 终态结果：`turn/completed` 参数 + 本 turn 持久化的助手回复文本。
+#[derive(Debug, Clone)]
+pub struct TurnOutcome {
+    /// `turn/completed` 通知参数（含 tokens_in/out、session_result、cursor 等）。
+    pub completed: Value,
+    /// `assistant_persisted` 投影的回复文本（RD-018：只取持久化产物，
+    /// 禁止拼接 message/delta）；模型未产出文本时为 None。
+    pub assistant_text: Option<String>,
+}
+
 /// JSON-RPC 错误。
 #[derive(Debug, Deserialize)]
 pub struct RpcError {
@@ -334,10 +344,14 @@ impl OupClient {
     /// 期间转发的通知进 `notification_rx`，但 turn/start accepted 之后到达的
     /// `turn/completed` 仍停在 `rx` 上——只读 notification 通道会饿死并误报退出。
     ///
+    /// 等待期间捕获本 turn 的 `assistant_persisted` 投影文本（RD-018：
+    /// 回复只取持久化产物，不拼接 message/delta）。
+    ///
     /// 超时返回 [`OupError::Timeout`]；读端断开返回 [`OupError::ProcessExited`]。
-    pub fn turn_wait_completed(&mut self, session_id: &str, turn_id: &str, timeout_secs: u64) -> OupResult<Value> {
+    pub fn turn_wait_completed(&mut self, session_id: &str, turn_id: &str, timeout_secs: u64) -> OupResult<TurnOutcome> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(timeout_secs);
+        let mut assistant_text: Option<String> = None;
 
         loop {
             if start.elapsed() > timeout {
@@ -345,22 +359,31 @@ impl OupClient {
             }
 
             // 先排空已转发的通知，再试 rx（accepted 后事件留在 rx）
-            if let Some(outcome) = Self::match_turn_terminal(
-                self.notification_rx.try_recv().ok(),
-                session_id,
-                turn_id,
-            )? {
-                return outcome;
+            if let Ok(msg) = self.notification_rx.try_recv() {
+                if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+                    assistant_text = Some(text);
+                }
+                if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
+                    return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                }
             }
-            if let Some(outcome) = Self::match_turn_terminal(self.rx.try_recv().ok(), session_id, turn_id)? {
-                return outcome;
+            if let Ok(msg) = self.rx.try_recv() {
+                if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+                    assistant_text = Some(text);
+                }
+                if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
+                    return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                }
             }
 
             // 短阻塞：优先等 notification；超时后回环再泵 rx，避免空转打满 CPU
             match self.notification_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                 Ok(msg) => {
+                    if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+                        assistant_text = Some(text);
+                    }
                     if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
-                        return outcome;
+                        return outcome.map(|completed| TurnOutcome { completed, assistant_text });
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -368,10 +391,13 @@ impl OupClient {
                     // notification 发送端已丢弃时仍可能只剩 rx 上的终态事件
                     match self.rx.try_recv() {
                         Ok(msg) => {
+                            if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+                                assistant_text = Some(text);
+                            }
                             if let Some(outcome) =
                                 Self::match_turn_terminal(Some(msg), session_id, turn_id)?
                             {
-                                return outcome;
+                                return outcome.map(|completed| TurnOutcome { completed, assistant_text });
                             }
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
@@ -382,6 +408,25 @@ impl OupClient {
                 }
             }
         }
+    }
+
+    /// 若 `msg` 是本 turn 的 `assistant_persisted` 投影，返回持久化回复文本。
+    fn match_assistant_persisted(msg: &Value, session_id: &str, turn_id: &str) -> Option<String> {
+        if msg.get("method").and_then(|m| m.as_str()) != Some("projection/envelope") {
+            return None;
+        }
+        let params = msg.get("params")?;
+        if params.get("turn_id").and_then(|t| t.as_str()) != Some(turn_id) {
+            return None;
+        }
+        if params.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+            return None;
+        }
+        let payload = params.get("payload")?;
+        if payload.get("type").and_then(|t| t.as_str()) != Some("assistant_persisted") {
+            return None;
+        }
+        payload.get("data")?.get("text")?.as_str().map(ToString::to_string)
     }
 
     /// 若 `msg` 是匹配的 turn 终态通知，返回 `Some(Ok/Err)`；无关消息返回 `Ok(None)`。
@@ -467,5 +512,56 @@ mod tests {
     fn error_display() {
         let e = OupError::Rpc(-32600, "invalid request".into());
         assert!(format!("{e}").contains("-32600"));
+    }
+
+    /// UT-oup-04：assistant_persisted 投影提取回复文本（RD-018 口径）。
+    #[test]
+    fn assistant_persisted_extracts_text() {
+        let msg = serde_json::json!({
+            "method": "projection/envelope",
+            "params": {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "payload": {
+                    "type": "assistant_persisted",
+                    "data": { "text": "ok", "assistant_segment_id": "t1:assistant:1" }
+                }
+            }
+        });
+        assert_eq!(
+            OupClient::match_assistant_persisted(&msg, "s1", "t1"),
+            Some("ok".to_string())
+        );
+    }
+
+    /// UT-oup-05：user_message 投影 / turn_id 不匹配 / 非 envelope 均不提取。
+    #[test]
+    fn assistant_persisted_rejects_non_matching() {
+        let user_msg = serde_json::json!({
+            "method": "projection/envelope",
+            "params": {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "payload": { "type": "user_message", "data": { "text": "hi" } }
+            }
+        });
+        assert_eq!(OupClient::match_assistant_persisted(&user_msg, "s1", "t1"), None);
+
+        let msg = serde_json::json!({
+            "method": "projection/envelope",
+            "params": {
+                "session_id": "s1",
+                "turn_id": "t1",
+                "payload": { "type": "assistant_persisted", "data": { "text": "ok" } }
+            }
+        });
+        assert_eq!(OupClient::match_assistant_persisted(&msg, "s1", "t2"), None);
+        assert_eq!(OupClient::match_assistant_persisted(&msg, "s2", "t1"), None);
+
+        let delta = serde_json::json!({
+            "method": "message/delta",
+            "params": { "session_id": "s1", "turn_id": "t1", "text": "o" }
+        });
+        assert_eq!(OupClient::match_assistant_persisted(&delta, "s1", "t1"), None);
     }
 }

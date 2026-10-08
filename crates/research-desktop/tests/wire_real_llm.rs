@@ -5,10 +5,12 @@
 //! 2. 必须返回合法 turn_id（UUID 格式）
 //! 3. 禁止 demo_task（代码中无 DemoTask/DemoAction 路径）
 //!
-//! 注意：本测试调用真实 LLM（moonshot-coding），会产生 API 调用。
+//! 注意：ST 用例调用真实 LLM（moonshot-coding），会产生 API 调用。
+//! 用例 ID 对齐 logos/resources/test/core-S17-test-cases.md（wire-real-llm-oup delta）。
 
 use nautilus_research_desktop::agent_bridge::{AgentBridge, AgentSessionConfig};
 use nautilus_research_desktop::oup::OupConfig;
+use nautilus_research_testkit::case;
 
 fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     let nanos = std::time::SystemTime::now()
@@ -50,71 +52,101 @@ fn is_valid_uuid(s: &str) -> bool {
     uuid::Uuid::parse_str(s).is_ok()
 }
 
-/// ST-wire-01：真实 LLM 调用返回 turn/completed + 合法 turn_id。
+/// ST-S17-17：真实 LLM turn 全生命周期——turn/completed + 合法 turn_id + 非空回复。
 #[test]
-fn st_wire_01_real_llm_turn_completed() {
-    let config = temp_agent_config("turn-completed");
-    let mut bridge = AgentBridge::new(config);
+fn st_s17_17_real_llm_turn_completed() {
+    case("ST-S17-17", || {
+        let config = temp_agent_config("turn-completed");
+        let mut bridge = AgentBridge::new(config);
 
-    bridge.connect().expect("connect to octos serve");
+        bridge.connect().expect("connect to octos serve");
 
-    // 提交真实 LLM 调用（简短 prompt 控制成本）
-    let result = bridge
-        .submit_and_wait("回复 ok", 120)
-        .expect("submit_and_wait should succeed");
+        // 提交真实 LLM 调用（简短 prompt 控制成本，超时对齐提案 120s）
+        let (turn_id, outcome) = bridge
+            .submit_and_wait("回复 ok", 120)
+            .expect("submit_and_wait should succeed");
 
-    let (turn_id, completed) = result;
+        // 验证 turn_id 是合法 UUID
+        assert!(
+            is_valid_uuid(&turn_id),
+            "turn_id should be valid UUID, got: {turn_id}"
+        );
 
-    // 验证 turn_id 是合法 UUID
-    assert!(
-        is_valid_uuid(&turn_id),
-        "turn_id should be valid UUID, got: {turn_id}"
-    );
+        // 验证结果是 turn/completed（包含 session_result 或 tokens）
+        assert!(
+            outcome.completed.get("session_result").is_some()
+                || outcome.completed.get("tokens_in").is_some(),
+            "result should be turn/completed with session_result or tokens, got: {:?}",
+            outcome.completed
+        );
 
-    // 验证结果是 turn/completed（包含 session_result 或 tokens）
-    assert!(
-        completed.get("session_result").is_some() || completed.get("tokens_in").is_some(),
-        "result should be turn/completed with session_result or tokens, got: {completed:?}"
-    );
+        // 验证 assistant_persisted 提取到非空回复文本
+        let reply = outcome.assistant_text.unwrap_or_default();
+        assert!(
+            !reply.trim().is_empty(),
+            "assistant_persisted reply should be non-empty"
+        );
 
-    bridge.disconnect();
+        bridge.disconnect();
+    });
 }
 
-/// ST-wire-02：验证代码中无 demo_task 路径。
+/// ST-S17-18：同会话连续两次真实 turn，turn_id 均为合法 UUID 且互不相同。
 #[test]
-fn st_wire_02_no_demo_task() {
-    // 代码审查：确认无 DemoTask / DemoAction
-    // 注意：这个测试是编译期断言，如果 demo_task 存在会编译失败
-    // 实际验证通过 grep 在 CI 中执行
+fn st_s17_18_turn_id_unique() {
+    case("ST-S17-18", || {
+        let config = temp_agent_config("unique");
+        let mut bridge = AgentBridge::new(config);
 
-    // 如果以下代码能编译，说明 AgentBridge 不依赖 demo_task
-    let config = temp_agent_config("no-demo");
-    let bridge = AgentBridge::new(config);
-    assert!(!bridge.is_connected());
+        bridge.connect().expect("connect");
+
+        // 第一次调用（真实 LLM，超时对齐提案 120s）
+        let (turn_id_1, out_1) = bridge.submit_and_wait("回复 1", 120).expect("first call");
+
+        // 第二次调用
+        let (turn_id_2, out_2) = bridge.submit_and_wait("回复 2", 120).expect("second call");
+
+        // 两个 turn_id 均为合法 UUID 且互不相同；两次均为 turn/completed
+        assert_ne!(turn_id_1, turn_id_2, "turn_ids should be unique");
+        assert!(is_valid_uuid(&turn_id_1));
+        assert!(is_valid_uuid(&turn_id_2));
+        for (i, out) in [&out_1, &out_2].iter().enumerate() {
+            assert!(
+                out.completed.get("session_result").is_some()
+                    || out.completed.get("tokens_in").is_some(),
+                "call {} should be turn/completed, got: {:?}",
+                i + 1,
+                out.completed
+            );
+        }
+
+        bridge.disconnect();
+    });
 }
 
-/// ST-wire-03：turn_id 唯一性验证。
+/// UT-S17-17：源码静态检查——crates/research-desktop/src 不得存在 DemoTask / DemoAction。
 #[test]
-fn st_wire_03_turn_id_unique() {
-    let config = temp_agent_config("unique");
-    let mut bridge = AgentBridge::new(config);
+fn ut_s17_17_no_demo_task_path() {
+    case("UT-S17-17", || {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        for entry in std::fs::read_dir(&src).expect("read src dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read source file");
+            for (line_no, line) in text.lines().enumerate() {
+                if line.contains("DemoTask") || line.contains("DemoAction") {
+                    hits.push(format!("{}:{}: {}", path.display(), line_no + 1, line.trim()));
+                }
+            }
+        }
+        assert!(hits.is_empty(), "demo_task 路径残留：\n{}", hits.join("\n"));
 
-    bridge.connect().expect("connect");
-
-    // 第一次调用（真实 LLM，超时对齐提案 120s）
-    let (turn_id_1, _) = bridge
-        .submit_and_wait("回复 1", 120)
-        .expect("first call");
-
-    // 第二次调用
-    let (turn_id_2, _) = bridge
-        .submit_and_wait("回复 2", 120)
-        .expect("second call");
-
-    // 验证两个 turn_id 不同
-    assert_ne!(turn_id_1, turn_id_2, "turn_ids should be unique");
-    assert!(is_valid_uuid(&turn_id_1));
-    assert!(is_valid_uuid(&turn_id_2));
-
-    bridge.disconnect();
+        // 编译期断言：AgentBridge 可独立构造，不依赖 demo_task
+        let config = temp_agent_config("no-demo");
+        let bridge = AgentBridge::new(config);
+        assert!(!bridge.is_connected());
+    });
 }

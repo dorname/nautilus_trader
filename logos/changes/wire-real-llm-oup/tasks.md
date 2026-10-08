@@ -14,18 +14,20 @@
 - [x] 返回 turn_id 和完成状态
 
 ## [delta] 修改 app.rs：移除 demo_task
-- [ ] 移除 `DemoTask` struct 和 `DemoAction` enum
-- [ ] 移除 `start_demo_task` / `poll_demo_task` / `cancel_demo_task` 方法
-- [ ] 替换 demo 路径为真实 OUP 调用（AgentBridge::submit_and_wait）
+- [x] 移除 `DemoTask` struct 和 `DemoAction` enum
+- [x] 移除 `start_demo_task` / `poll_demo_task` / `cancel_demo_task` 方法
+- [x] 替换 demo 路径为真实 OUP 调用（AgentBridge::submit_and_wait）
 
 ## [delta] 编写验收测试
-- [ ] 编写 `wire_real_llm.rs`：验证 turn/completed + 合法 turn_id
-- [ ] 断言无 DemoTask / DemoAction 代码路径
-- [ ] 测试规格 delta：`deltas/test/core-S17-test-cases.md`（新增 ST-S17-17 / ST-S17-18 / UT-S17-17）
+- [x] 编写 `wire_real_llm.rs`：验证 turn/completed + 合法 turn_id
+- [x] 断言无 DemoTask / DemoAction 代码路径
+- [x] 测试规格 delta：`deltas/test/core-S17-test-cases.md`（新增 ST-S17-17 / ST-S17-18 / UT-S17-17）
 
 ## [delta] 合规化
-- [ ] 运行 `cargo test -p nautilus-research-desktop --test wire_real_llm`
-- [ ] 运行 OpenLogos verify 生成 test-results.jsonl
-- [ ] 用户确认后合并
+- [x] 运行 `cargo test -p nautilus-research-desktop --test wire_real_llm`
+- [x] 运行 OpenLogos verify 生成 test-results.jsonl
+- [x] 用户确认后合并
 
 ## [code] 代码实现
+- [x] app.rs：AgentWorker 后台线程接线（start/poll/cancel_agent_task + apply_agent_result）
+- [x] 全量离线测试通过；ST-S17-17 / ST-S17-18 真实 LLM 验收通过

@@ -83,27 +83,40 @@ enum PageKey {
     Run,
 }
 
-/// 离线演示任务动作（对齐原型 `startTask`，约 850ms 后提交）。
+/// 真实 LLM 任务类别（决定完成后结果落到哪个产物）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DemoAction {
-    /// 从需求生成设计草稿（不保存 D）。
-    DesignDraft,
-    /// 生成策略代码草稿。
-    GenerateCode,
-    /// 模拟更新数据快照。
-    UpdateData,
+enum AgentTaskKind {
+    /// 从需求生成设计草稿（结果写入设计说明，不保存 D）。
+    Design,
+    /// 生成策略代码草稿（结果写入代码编辑器）。
+    Code,
 }
 
-/// 进行中的离线演示任务。
+/// 进行中的真实 LLM 任务（AgentWorker 后台线程执行，帧循环轮询结果）。
 #[derive(Debug, Clone)]
-struct DemoTask {
-    /// 任务序号（取消时与当前任务比对，避免过期完成）。
+struct AgentTask {
+    /// 任务序号（取消/替换后丢弃过期结果）。
     id: u64,
-    label: &'static str,
-    action: DemoAction,
-    /// 启动时的项目修订计数（输入变化则丢弃结果）。
-    stamp: u64,
+    label: String,
+    kind: AgentTaskKind,
     started: std::time::Instant,
+}
+
+/// 去掉模型回复可能携带的 Markdown 代码围栏（```lang ... ```）。
+fn strip_code_fence(text: &str) -> String {
+    let t = text.trim();
+    if !t.starts_with("```") {
+        return t.to_string();
+    }
+    let lines: Vec<&str> = t.lines().collect();
+    // 去掉首行围栏（可能带语言标记）与末行围栏
+    let body = &lines[1..];
+    let body = if body.last().is_some_and(|l| l.trim() == "```") {
+        &body[..body.len() - 1]
+    } else {
+        body
+    };
+    body.join("\n")
 }
 
 /// 净值比较面板缓存（RD-005：键 = 最近两次实验任务 ID 对，（次新, 最新）；
@@ -195,13 +208,13 @@ pub struct ResearchApp {
     pub show_logs: bool,
     /// 运行记录（任务动作、依据和产物；不含模型内部推理）。
     pub logs: Vec<String>,
-    /// 离线演示任务（设计生成 / 代码生成 / 数据更新）。
-    demo_task: Option<DemoTask>,
-    /// 可重试的上次离线任务。
-    demo_retry: Option<( &'static str, DemoAction)>,
-    /// 下次离线任务模拟失败（运行记录控制）。
-    fail_next: bool,
-    demo_task_seq: u64,
+    /// 真实 LLM 后台 worker（惰性启动；octos serve 子进程由 worker 线程持有）。
+    agent_worker: Option<crate::agent_bridge::AgentWorker>,
+    /// 进行中的真实 LLM 任务（设计生成 / 代码生成）。
+    agent_task: Option<AgentTask>,
+    /// 可重试的上次 LLM 任务（label, kind, prompt）。
+    agent_retry: Option<(String, AgentTaskKind, String)>,
+    agent_task_seq: u64,
     /// 对话产物卡（项目 ID, 消息序号 → 目标路由 + 原型 title/desc）。
     pub chat_cards: Vec<ArtifactCard>,
     /// 新建项目浮层。
@@ -304,10 +317,10 @@ impl ResearchApp {
             focus: false,
             show_logs: false,
             logs: Vec::new(),
-            demo_task: None,
-            demo_retry: None,
-            fail_next: false,
-            demo_task_seq: 0,
+            agent_worker: None,
+            agent_task: None,
+            agent_retry: None,
+            agent_task_seq: 0,
             // 欢迎消息挂需求草稿产物卡（与原型 createProject 首条一致）
             chat_cards: vec![ArtifactCard {
                 project_id: 1,
@@ -513,7 +526,7 @@ impl ResearchApp {
         ] {
             self.poll(key);
         }
-        self.poll_demo_task();
+        self.poll_agent_task();
         // 调试自动播放：约 700ms 推进一事件
         if self.debug_playing {
             let due = self
@@ -528,7 +541,7 @@ impl ResearchApp {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         // 按需重绘：有活跃任务时 ~20fps 驱动 spinner（帧内仍 poll）；否则事件驱动
-        if self.active_task_count() > 0 || self.demo_task.is_some() {
+        if self.active_task_count() > 0 || self.agent_task.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50).max(POLL_INTERVAL / 10));
         }
@@ -1128,8 +1141,8 @@ impl ResearchApp {
             // 消息流填中间）。
             const CHAT_INPUT_H: f32 = 178.0;
             let task_bar_h = if self.active_task().is_some()
-                || self.demo_task.is_some()
-                || self.demo_retry.is_some()
+                || self.agent_task.is_some()
+                || self.agent_retry.is_some()
             {
                 40.0
             } else {
@@ -1188,13 +1201,19 @@ impl ResearchApp {
                     .layout(Layout::top_down(Align::Min)),
             );
             let ui = &mut band_ui;
-            // 任务条（协调器 / 离线演示 / 可重试）
+            // 任务条（协调器 / 真实 LLM / 可重试）
             let coord = self
                 .active_task()
                 .map(|(id, label, key)| (id.to_string(), label, key));
-            let demo_label = self.demo_task.as_ref().map(|t| t.label);
-            let retry = self.demo_retry.filter(|_| self.demo_task.is_none() && coord.is_none());
-            if coord.is_some() || demo_label.is_some() || retry.is_some() {
+            let agent_label = self
+                .agent_task
+                .as_ref()
+                .map(|t| format!("{} · {}s", t.label, t.started.elapsed().as_secs()));
+            let retry = self
+                .agent_retry
+                .clone()
+                .filter(|_| self.agent_task.is_none() && coord.is_none());
+            if coord.is_some() || agent_label.is_some() || retry.is_some() {
                 ui.allocate_ui(sz(w, 40.0), |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -1233,7 +1252,7 @@ impl ResearchApp {
                                             self.do_cancel(task_id, key);
                                         }
                                     });
-                                } else if let Some(label) = demo_label {
+                                } else if let Some(label) = agent_label {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 8.0;
                                         let (sr, _) = ui.allocate_exact_size(
@@ -1255,14 +1274,14 @@ impl ResearchApp {
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.add(theme::ghost_button("取消")).clicked() {
-                                            self.cancel_demo_task();
+                                            self.cancel_agent_task();
                                         }
                                     });
-                                } else if let Some((label, action)) = retry {
+                                } else if let Some((label, kind, prompt)) = retry {
                                     ui.label(mono("任务未完成 · 可重试", 11.0, theme::MUTED));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.add(theme::ghost_button("重试")).clicked() {
-                                            self.start_demo_task(label, action);
+                                            self.start_agent_task(&label, kind, prompt);
                                         }
                                     });
                                 }
@@ -2149,7 +2168,7 @@ impl ResearchApp {
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::default_button("从需求生成设计")).clicked() {
-                    self.start_demo_task("生成策略设计", DemoAction::DesignDraft);
+                    self.do_generate_design_llm();
                 }
                 ui.add_space(8.0);
                 if ui.add(theme::ghost_button("下载设计")).clicked() {
@@ -2403,7 +2422,7 @@ impl ResearchApp {
                         }
                         ui.add_space(8.0);
                         if ui.add(theme::ghost_button("生成初始代码")).clicked() {
-                            self.start_demo_task("生成策略代码", DemoAction::GenerateCode);
+                            self.do_generate_code_llm();
                         }
                     });
                 });
@@ -3899,7 +3918,7 @@ impl ResearchApp {
             None,
             Some("模拟更新快照"),
         ) {
-            self.start_demo_task("模拟更新数据快照", DemoAction::UpdateData);
+            self.do_update_demo_data();
         }
 
         // 演示主路径（对齐原型 dataView）
@@ -4356,14 +4375,13 @@ impl ResearchApp {
     // ---- 浮层 ----------------------------------------------------------------
     fn render_windows(&mut self, ctx: &egui::Context) {
         // 运行记录（任务动作、依据和产物；不展示模型内部推理）
-        let mut fail_next_click = false;
-        let mut retry_click: Option<(&'static str, DemoAction)> = None;
+        let mut retry_click: Option<(String, AgentTaskKind, String)> = None;
         egui::Window::new("运行记录与任务控制")
             .open(&mut self.show_logs)
             .default_width(520.0)
             .show(ctx, |ui| {
                 ui.label(note(
-                    "只记录任务动作、依据和产物，不展示模型内部推理。所有任务均为离线演示。",
+                    "只记录任务动作、依据和产物，不展示模型内部推理。任务由真实 LLM（octos）执行。",
                 ));
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical()
@@ -4377,28 +4395,15 @@ impl ResearchApp {
                         }
                     });
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(theme::small_default_button("下次任务模拟失败"))
-                        .clicked()
-                    {
-                        fail_next_click = true;
+                if let Some((label, kind, prompt)) = self.agent_retry.clone() {
+                    if ui.add(theme::small_default_button("重试上次任务")).clicked() {
+                        retry_click = Some((label, kind, prompt));
                     }
-                    if let Some((label, action)) = self.demo_retry {
-                        ui.add_space(8.0);
-                        if ui.add(theme::small_default_button("重试上次任务")).clicked() {
-                            retry_click = Some((label, action));
-                        }
-                    }
-                });
+                }
             });
-        if fail_next_click {
-            self.fail_next = true;
-            self.ai_notice = Some("下次后台任务将模拟失败，可随后重试".into());
-        }
-        if let Some((label, action)) = retry_click {
+        if let Some((label, kind, prompt)) = retry_click {
             self.show_logs = false;
-            self.start_demo_task(label, action);
+            self.start_agent_task(&label, kind, prompt);
         }
 
         // 股票池样本详情（原型 data-stock modal）
@@ -4710,10 +4715,10 @@ impl ResearchApp {
         match intent {
             ai::Intent::DraftRequirement => self.apply_requirement_draft(&text),
             ai::Intent::GenerateDesign => {
-                self.start_demo_task("生成策略设计", DemoAction::DesignDraft);
+                self.do_generate_design_llm();
             }
             ai::Intent::GenerateCode => {
-                self.start_demo_task("生成策略代码", DemoAction::GenerateCode);
+                self.do_generate_code_llm();
             }
             ai::Intent::RunExperiment => self.do_ai_run(),
             ai::Intent::MakeReport => self.do_make_report(),
@@ -4768,35 +4773,6 @@ impl ResearchApp {
             .navigate(Route::Requirements, self.session.scroll_of(from));
     }
 
-    /// 原型 generateDesign：只填草稿，不保存 D。
-    fn apply_design_draft_from_req(&mut self) {
-        let Some((id, text, alloc, min_amt)) = ({
-            let p = self.workspace.current();
-            p.active_req.and_then(|rid| {
-                p.reqs.get(rid - 1).map(|r| {
-                    (r.id, r.text.clone(), r.allocation * 100.0, r.min_amount)
-                })
-            })
-        }) else {
-            self.ai_notice = Some("请先确认需求文档".into());
-            return;
-        };
-        self.ai_design_alloc = alloc;
-        self.ai_design_min_amount = format!("{min_amt:.0}");
-        self.ai_design_note = format!(
-            "按需求 R{id}：{text}\n\n处理顺序：可见数据 → 股票池过滤 → 信号形成 → 仓位 → 模拟成交 → 指标。信号日与执行日分离。"
-        );
-        self.tell_card(
-            "设计草稿已生成。两张图共用六个处理节点，请检查参数和说明后保存设计版本。",
-            Some(Route::Design),
-            Some("设计草稿与处理图"),
-            Some("等待保存设计版本"),
-        );
-        let from = self.session.route;
-        self.session
-            .navigate(Route::Design, self.session.scroll_of(from));
-    }
-
     /// 追加助手消息 + 运行记录（产物卡可选）。
     fn tell(&mut self, text: impl Into<String>, card: Option<Route>) {
         self.tell_card(text, card, None, None);
@@ -4840,90 +4816,208 @@ impl ResearchApp {
         self.logs.push(format!("{hhmmss} · {text}"));
     }
 
-    /// 启动离线演示任务（原型 `startTask`，约 850ms）。
-    fn start_demo_task(&mut self, label: &'static str, action: DemoAction) {
-        if self.demo_task.is_some() {
+    /// octos agent 数据目录（隔离实例，避免与主 octos 进程锁冲突）。
+    fn agent_data_dir() -> std::path::PathBuf {
+        std::env::var_os("RESEARCH_WORKSPACE")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("research-workspace"))
+            .join("octos-agent")
+    }
+
+    /// 设计任务 prompt（含前置校验；未确认需求时提示并返回 None）。
+    fn design_prompt(&mut self) -> Option<String> {
+        let Some((id, text, alloc, min_amt)) = ({
+            let p = self.workspace.current();
+            p.active_req.and_then(|rid| {
+                p.reqs
+                    .get(rid - 1)
+                    .map(|r| (r.id, r.text.clone(), r.allocation * 100.0, r.min_amount))
+            })
+        }) else {
+            self.ai_notice = Some("请先确认需求文档".into());
+            return None;
+        };
+        self.ai_design_alloc = alloc;
+        self.ai_design_min_amount = format!("{min_amt:.0}");
+        Some(format!(
+            "你是一名量化交易策略设计助手。请根据以下研究需求生成策略设计说明（中文），\
+             覆盖处理顺序（可见数据 → 股票池过滤 → 信号形成 → 仓位 → 模拟成交 → 指标）与参数约束，\
+             只输出设计说明正文，不要输出代码。\n\n需求 R{id}：{text}"
+        ))
+    }
+
+    /// 代码任务 prompt（含前置校验；需求/设计未匹配时提示并返回 None）。
+    fn code_prompt(&mut self) -> Option<String> {
+        let p = self.workspace.current();
+        let design_ok = p
+            .active_req
+            .zip(p.active_design)
+            .is_some_and(|(r, d)| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
+        if !design_ok {
+            self.ai_notice = Some("请先保存与当前需求匹配的设计".into());
+            return None;
+        }
+        let note = p
+            .active_design
+            .and_then(|d| p.designs.get(d - 1))
+            .map(|x| x.note.clone())
+            .unwrap_or_default();
+        Some(format!(
+            "你是一名量化交易策略工程师。请根据以下设计说明生成一个可读的 Python 策略示例\
+             （含信号计算与目标仓位逻辑，使用合成数据占位，不依赖外部行情接口），\
+             只输出 Python 代码，不要输出解释文字。\n\n设计说明：\n{note}"
+        ))
+    }
+
+    /// 从需求生成设计（真实 LLM，经 AgentWorker 后台线程）。
+    fn do_generate_design_llm(&mut self) {
+        let Some(prompt) = self.design_prompt() else {
+            return;
+        };
+        self.start_agent_task("生成策略设计", AgentTaskKind::Design, prompt);
+    }
+
+    /// 生成策略代码（真实 LLM，经 AgentWorker 后台线程）。
+    fn do_generate_code_llm(&mut self) {
+        let Some(prompt) = self.code_prompt() else {
+            return;
+        };
+        self.start_agent_task("生成策略代码", AgentTaskKind::Code, prompt);
+    }
+
+    /// 更新合成数据快照（本地操作，不经 LLM）。
+    fn do_update_demo_data(&mut self) {
+        let rev = self.workspace.update_demo_data();
+        self.record(&format!(
+            "数据中心 · 已更新合成快照 SYN-202601-r{rev}；当前版本与结论已过期"
+        ));
+        self.tell_card(
+            format!(
+                "新合成快照 SYN-202601-r{rev} 已建立。当前版本和结论需要重新确认，历史实验不变。"
+            ),
+            Some(Route::Data),
+            Some("数据快照已更新"),
+            Some("原型更新，不连接行情服务"),
+        );
+    }
+
+    /// 启动真实 LLM 任务（惰性创建 AgentWorker，避免无头测试拉起 octos）。
+    fn start_agent_task(&mut self, label: &str, kind: AgentTaskKind, prompt: String) {
+        if self.agent_task.is_some() {
             self.ai_notice = Some("当前任务正在执行，请等待或取消".into());
             return;
         }
-        self.demo_task_seq += 1;
-        let stamp = self.workspace.current().revision;
-        self.demo_retry = Some((label, action));
-        self.demo_task = Some(DemoTask {
-            id: self.demo_task_seq,
-            label,
-            action,
-            stamp,
+        if self.agent_worker.is_none() {
+            let project_id = self.workspace.current().id.to_string();
+            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+                &Self::agent_data_dir(),
+                &project_id,
+            );
+            self.agent_worker = Some(crate::agent_bridge::AgentWorker::spawn(config));
+        }
+        self.agent_task_seq += 1;
+        let id = self.agent_task_seq;
+        let worker = self.agent_worker.as_ref().expect("worker 已在上方建立");
+        if let Err(e) = worker.submit(id, prompt.clone()) {
+            self.ai_notice = Some(format!("任务提交失败：{e}"));
+            self.record(&format!("{label} · 提交失败"));
+            return;
+        }
+        self.agent_retry = Some((label.to_string(), kind, prompt));
+        self.agent_task = Some(AgentTask {
+            id,
+            label: label.to_string(),
+            kind,
             started: std::time::Instant::now(),
         });
-        self.record(&format!("{label} · 已启动"));
+        self.record(&format!("{label} · 已启动（真实 LLM）"));
     }
 
-    /// 取消离线演示任务。
-    fn cancel_demo_task(&mut self) {
-        if let Some(t) = self.demo_task.take() {
-            self.record(&format!("{} · 已取消", t.label));
-            self.tell("任务已取消，未提交新产物。已有版本和实验继续保留。", None);
+    /// 取消本地等待：放弃本次任务结果。真实 turn 已在 octos 侧执行，不在中途打断；
+    /// 若结果稍后返回，按过期任务丢弃（RD 语义：不伪造中断）。
+    fn cancel_agent_task(&mut self) {
+        if let Some(t) = self.agent_task.take() {
+            self.record(&format!("{} · 已取消（本地放弃，模型侧执行不中断）", t.label));
+            self.tell(
+                "任务已取消，未提交新产物。已有版本和实验继续保留。模型调用可能在后台完成，其结果将被丢弃。",
+                None,
+            );
         }
     }
 
-    /// 推进到期的离线演示任务。
-    fn poll_demo_task(&mut self) {
-        let Some(task) = self.demo_task.clone() else {
+    /// 轮询 AgentWorker 结果（帧循环调用，非阻塞）。
+    fn poll_agent_task(&mut self) {
+        let Some(worker) = &self.agent_worker else {
             return;
         };
-        if task.started.elapsed() < std::time::Duration::from_millis(850) {
-            return;
+        let mut responses = Vec::new();
+        while let Some(resp) = worker.try_recv() {
+            responses.push(resp);
         }
-        // 已被取消或被新任务替换
-        if self.demo_task.as_ref().map(|t| t.id) != Some(task.id) {
-            return;
+        for resp in responses {
+            if self.agent_task.as_ref().map(|t| t.id) != Some(resp.id) {
+                // 已取消或被替换的任务：丢弃过期结果
+                self.record("过期任务结果已丢弃");
+                continue;
+            }
+            let task = self.agent_task.take().expect("上方已比对为当前任务");
+            match resp.result {
+                Ok(turn) => {
+                    self.apply_agent_result(&task, turn);
+                    self.agent_retry = None;
+                }
+                Err(e) => {
+                    self.tell(
+                        format!("{}失败：{e}。没有提交新产物，可以重试。", task.label),
+                        None,
+                    );
+                    self.record(&format!("{} · 失败", task.label));
+                }
+            }
         }
-        self.demo_task = None;
-        if self.fail_next {
-            self.fail_next = false;
+    }
+
+    /// 任务成功：把模型回复落到对应产物（设计说明 / 代码编辑器）。
+    fn apply_agent_result(&mut self, task: &AgentTask, turn: crate::agent_bridge::WorkerTurn) {
+        let reply = turn.reply.unwrap_or_default();
+        if reply.trim().is_empty() {
             self.tell(
-                format!(
-                    "{}失败：已模拟计算服务不可用。没有提交新产物，可以重试。",
-                    task.label
-                ),
+                format!("{}失败：模型未返回文本。没有提交新产物，可以重试。", task.label),
                 None,
             );
-            self.record("失败模拟，无结果提交");
+            self.record(&format!("{} · 空回复", task.label));
             return;
         }
-        if self.workspace.current().revision != task.stamp {
-            self.tell(
-                "输入版本已变化，本次任务未提交结果。请以当前版本重试。",
-                None,
-            );
-            return;
-        }
-        match task.action {
-            DemoAction::DesignDraft => {
-                self.apply_design_draft_from_req();
-                self.demo_retry = None;
-            }
-            DemoAction::GenerateCode => {
-                self.do_generate_code();
-                self.demo_retry = None;
-            }
-            DemoAction::UpdateData => {
-                let rev = self.workspace.update_demo_data();
-                self.record(&format!(
-                    "数据中心 · 已更新合成快照 SYN-202601-r{rev}；当前版本与结论已过期"
-                ));
+        let tokens = match (turn.tokens_in, turn.tokens_out) {
+            (Some(i), Some(o)) => format!("（tokens {i}/{o}）"),
+            _ => String::new(),
+        };
+        match task.kind {
+            AgentTaskKind::Design => {
+                self.ai_design_note = reply;
                 self.tell_card(
-                    format!(
-                        "新合成快照 SYN-202601-r{rev} 已建立。当前版本和结论需要重新确认，历史实验不变。"
-                    ),
-                    Some(Route::Data),
-                    Some("数据快照已更新"),
-                    Some("原型更新，不连接行情服务"),
+                    format!("设计草稿已由模型生成{tokens}。请检查参数和说明后保存设计版本。"),
+                    Some(Route::Design),
+                    Some("设计草稿与处理图"),
+                    Some("等待保存设计版本"),
                 );
-                self.demo_retry = None;
+                let from = self.session.route;
+                self.session
+                    .navigate(Route::Design, self.session.scroll_of(from));
+            }
+            AgentTaskKind::Code => {
+                self.ai_code_source = strip_code_fence(&reply);
+                self.ai_code_checked = None;
+                self.show_code_diff = false;
+                self.tell(
+                    format!(
+                        "策略代码已由模型生成{tokens}。先检查并保存 v1，再运行实验观察资金约束。此代码不在桌面中直接执行。"
+                    ),
+                    Some(Route::Develop),
+                );
             }
         }
+        self.record(&format!("{} · 完成{tokens}", task.label));
     }
 
     // ---- 数据中心
@@ -5342,25 +5436,6 @@ impl ResearchApp {
                 );
             }
         }
-    }
-
-    fn do_generate_code(&mut self) {
-        let p = self.workspace.current();
-        let design_ok = p
-            .active_req
-            .zip(p.active_design)
-            .is_some_and(|(r, d)| p.designs.get(d - 1).is_some_and(|x| x.req_id == r));
-        if !design_ok {
-            self.ai_notice = Some("请先保存与当前需求匹配的设计".into());
-            return;
-        }
-        self.ai_code_source = crate::workspace::DRAFT_CODE_ORIGINAL.into();
-        self.ai_code_checked = None;
-        self.show_code_diff = false;
-        self.tell(
-            "已生成可编辑的策略示例。先检查并保存 v1，再运行实验观察资金约束。此示例不在桌面中执行 Python。",
-            Some(Route::Develop),
-        );
     }
 
     fn export_strategy_source(&mut self) {
@@ -6429,5 +6504,22 @@ mod tests {
         assert_eq!(label, "确认导出交易清单");
         assert!(reason.contains("证据不足"));
         let _ = e1;
+    }
+
+    /// UT-app-strip-fence：模型回复的 Markdown 代码围栏剥离。
+    #[test]
+    fn strip_code_fence_handles_fenced_and_plain() {
+        // 带语言标记围栏
+        let fenced = "```python\ndef f():\n    return 1\n```";
+        assert_eq!(strip_code_fence(fenced), "def f():\n    return 1");
+        // 无语言标记围栏
+        let bare = "```\ncode\n```";
+        assert_eq!(strip_code_fence(bare), "code");
+        // 无围栏原文
+        let plain = "def g():\n    return 2";
+        assert_eq!(strip_code_fence(plain), plain);
+        // 缺失末行围栏：只去首行
+        let open = "```python\nx = 1";
+        assert_eq!(strip_code_fence(open), "x = 1");
     }
 }
