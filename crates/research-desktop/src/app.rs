@@ -90,6 +90,9 @@ enum AgentTaskKind {
     Design,
     /// 生成策略代码草稿（结果写入代码编辑器）。
     Code,
+    /// 整理实验参数（S19，issue #15：LLM 只整理 JSON 表单参数，校验通过后
+    /// 填入运行表单等用户二次确认；实验数值只来自协调器任务）。
+    ExperimentParams,
 }
 
 /// 进行中的真实 LLM 任务（AgentWorker 后台线程执行，帧循环轮询结果）。
@@ -100,6 +103,18 @@ struct AgentTask {
     label: String,
     kind: AgentTaskKind,
     started: std::time::Instant,
+}
+
+/// 进行中的多 Agent 分析派发（SwarmWorker 后台线程执行，帧循环轮询进度）。
+#[derive(Debug, Clone)]
+struct SwarmTask {
+    /// 派发序号（取消/替换后丢弃过期事件）。
+    id: u64,
+    /// 关联的需求版本 ID（产物摘要挂载点）。
+    req_id: usize,
+    started: std::time::Instant,
+    /// 最近一次进度事件的子任务快照（三路状态卡数据源）。
+    results: Vec<crate::swarm_bridge::SubtaskResult>,
 }
 
 /// 去掉模型回复可能携带的 Markdown 代码围栏（```lang ... ```）。
@@ -215,6 +230,11 @@ pub struct ResearchApp {
     /// 可重试的上次 LLM 任务（label, kind, prompt）。
     agent_retry: Option<(String, AgentTaskKind, String)>,
     agent_task_seq: u64,
+    /// 多 Agent 分析后台 worker（惰性启动；确认需求后派发 S17 三契约）。
+    swarm_worker: Option<crate::swarm_bridge::SwarmWorker>,
+    /// 进行中的多 Agent 分析派发（关联需求版本，三路状态卡数据源）。
+    swarm_task: Option<SwarmTask>,
+    swarm_task_seq: u64,
     /// 对话产物卡（项目 ID, 消息序号 → 目标路由 + 原型 title/desc）。
     pub chat_cards: Vec<ArtifactCard>,
     /// 新建项目浮层。
@@ -321,6 +341,9 @@ impl ResearchApp {
             agent_task: None,
             agent_retry: None,
             agent_task_seq: 0,
+            swarm_worker: None,
+            swarm_task: None,
+            swarm_task_seq: 0,
             // 欢迎消息挂需求草稿产物卡（与原型 createProject 首条一致）
             chat_cards: vec![ArtifactCard {
                 project_id: 1,
@@ -527,6 +550,7 @@ impl ResearchApp {
             self.poll(key);
         }
         self.poll_agent_task();
+        self.poll_swarm_task();
         // 调试自动播放：约 700ms 推进一事件
         if self.debug_playing {
             let due = self
@@ -541,7 +565,7 @@ impl ResearchApp {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
         // 按需重绘：有活跃任务时 ~20fps 驱动 spinner（帧内仍 poll）；否则事件驱动
-        if self.active_task_count() > 0 || self.agent_task.is_some() {
+        if self.active_task_count() > 0 || self.agent_task.is_some() || self.swarm_task.is_some() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(50).max(POLL_INTERVAL / 10));
         }
@@ -1209,11 +1233,25 @@ impl ResearchApp {
                 .agent_task
                 .as_ref()
                 .map(|t| format!("{} · {}s", t.label, t.started.elapsed().as_secs()));
+            let swarm_label = self.swarm_task.as_ref().map(|t| {
+                let done = t
+                    .results
+                    .iter()
+                    .filter(|r| r.state == crate::swarm_bridge::SubtaskState::Succeeded)
+                    .count();
+                format!(
+                    "多 Agent 分析 R{} · {}/3 · {}s",
+                    t.req_id,
+                    done,
+                    t.started.elapsed().as_secs()
+                )
+            });
             let retry = self
                 .agent_retry
                 .clone()
                 .filter(|_| self.agent_task.is_none() && coord.is_none());
-            if coord.is_some() || agent_label.is_some() || retry.is_some() {
+            if coord.is_some() || agent_label.is_some() || swarm_label.is_some() || retry.is_some()
+            {
                 ui.allocate_ui(sz(w, 40.0), |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -1275,6 +1313,48 @@ impl ResearchApp {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.add(theme::ghost_button("取消")).clicked() {
                                             self.cancel_agent_task();
+                                            // 多 Agent 分析同样本地放弃（语义对齐
+                                            // cancel_agent_task：模型侧执行不伪造中断）
+                                            if let Some(t) = self.swarm_task.take() {
+                                                self.record(&format!(
+                                                    "多 Agent 分析 R{} · 已取消（本地放弃，模型侧执行不中断）",
+                                                    t.req_id
+                                                ));
+                                            }
+                                        }
+                                    });
+                                } else if let Some(label) = swarm_label {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 8.0;
+                                        let (sr, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            Sense::hover(),
+                                        );
+                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        icons::paint_task_spin(
+                                            ui.painter(),
+                                            sr,
+                                            phase,
+                                            theme::ACCENT_TEXT,
+                                        );
+                                        ui.label(mono(
+                                            format!("{label}…"),
+                                            11.0,
+                                            theme::ACCENT_TEXT,
+                                        ));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(theme::ghost_button("取消")).clicked() {
+                                            if let Some(t) = self.swarm_task.take() {
+                                                self.record(&format!(
+                                                    "多 Agent 分析 R{} · 已取消（本地放弃，模型侧执行不中断）",
+                                                    t.req_id
+                                                ));
+                                            }
+                                            self.tell(
+                                                "多 Agent 分析已取消，未提交新产物。模型调用可能在后台完成，其结果将被丢弃。",
+                                                None,
+                                            );
                                         }
                                     });
                                 } else if let Some((label, kind, prompt)) = retry {
@@ -3292,6 +3372,17 @@ impl ResearchApp {
                 {
                     self.run_form.capital = c;
                 }
+                // S19（issue #15）：LLM 只整理参数填入表单，提交仍需用户点「运行实验」
+                if ui
+                    .add_enabled(
+                        self.agent_task.is_none(),
+                        theme::ghost_button("AI 整理参数"),
+                    )
+                    .on_hover_text("由模型按需求与设计整理 fast/slow/top_k/区间/资金并填入表单；实验数值只来自协调器任务")
+                    .clicked()
+                {
+                    self.do_organize_run_params();
+                }
             });
             render_watch(ui, &self.ai_run);
         });
@@ -4885,6 +4976,28 @@ impl ResearchApp {
         self.start_agent_task("生成策略代码", AgentTaskKind::Code, prompt);
     }
 
+    /// AI 整理实验参数（S19，issue #15）：LLM 只整理 JSON 表单参数；
+    /// 校验通过后填入运行表单，由用户二次确认后走现有 submit_run（不自动提交）。
+    fn do_organize_run_params(&mut self) {
+        let Some((req_text, design_note)) = ({
+            let p = self.workspace.current();
+            let req = p
+                .active_req
+                .and_then(|rid| p.reqs.get(rid - 1))
+                .map(|r| r.text.clone());
+            let design = p
+                .active_design
+                .and_then(|did| p.designs.get(did - 1))
+                .map(|d| d.note.clone());
+            req.zip(design)
+        }) else {
+            self.ai_notice = Some("请先确认需求并保存设计版本，再整理实验参数".into());
+            return;
+        };
+        let prompt = crate::swarm_bridge::s19_organize_params_prompt(&req_text, &design_note);
+        self.start_agent_task("整理实验参数", AgentTaskKind::ExperimentParams, prompt);
+    }
+
     /// 更新合成数据快照（本地操作，不经 LLM）。
     fn do_update_demo_data(&mut self) {
         let rev = self.workspace.update_demo_data();
@@ -5015,6 +5128,37 @@ impl ResearchApp {
                     ),
                     Some(Route::Develop),
                 );
+            }
+            AgentTaskKind::ExperimentParams => {
+                match crate::swarm_bridge::parse_run_params(&reply) {
+                    Ok(params) => {
+                        self.run_form = crate::swarm_bridge::build_run_form(&params);
+                        self.tell_card(
+                            format!(
+                                "实验参数已由模型整理{tokens}并填入运行表单：fast={} slow={} top_k={}，区间 {}~{}，资金 {}。请核对后点击「运行实验」提交协调器；实验数值只来自协调器任务。",
+                                params.fast,
+                                params.slow,
+                                params.top_k,
+                                params.start,
+                                params.end,
+                                params.capital
+                            ),
+                            Some(Route::Experiments),
+                            Some("运行参数已填入"),
+                            Some("等待核对后提交"),
+                        );
+                        let from = self.session.route;
+                        self.session
+                            .navigate(Route::Experiments, self.session.scroll_of(from));
+                    }
+                    Err(e) => {
+                        self.tell(
+                            format!("参数整理失败：{e}。运行表单未改动，可重试。"),
+                            None,
+                        );
+                        self.record("整理实验参数 · 解析拒绝");
+                    }
+                }
             }
         }
         self.record(&format!("{} · 完成{tokens}", task.label));
@@ -5278,8 +5422,128 @@ impl ResearchApp {
                     Some("生成策略设计"),
                     Some(desc.as_str()),
                 );
+                // issue #26：确认需求即派发 S17 三路多 Agent 分析（SwarmWorker
+                // 后台执行，不阻塞渲染；产物摘要终态后挂到 R_n）。
+                self.start_swarm_analysis(id, &text);
             }
             Err(e) => self.ai_notice = Some(e),
+        }
+    }
+
+    /// 需求确认后自动派发 S17 三路分析（issue #26）：SwarmWorker 后台线程执行，
+    /// 进度经 poll_swarm_task 上卡；派发失败不阻塞需求确认本身。
+    fn start_swarm_analysis(&mut self, req_id: usize, requirement_text: &str) {
+        if self.swarm_task.is_some() {
+            self.record("多 Agent 分析 · 已有进行中派发，本次跳过");
+            return;
+        }
+        if self.swarm_worker.is_none() {
+            let project_id = self.workspace.current().id.to_string();
+            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+                &Self::agent_data_dir().join("swarm"),
+                &project_id,
+            );
+            self.swarm_worker = Some(crate::swarm_bridge::SwarmWorker::spawn(config));
+        }
+        self.swarm_task_seq += 1;
+        let id = self.swarm_task_seq;
+        let contracts = crate::swarm_bridge::s17_requirement_contracts(requirement_text);
+        let worker = self.swarm_worker.as_ref().expect("worker 已在上方建立");
+        if let Err(e) = worker.dispatch(id, contracts) {
+            self.record(&format!("多 Agent 分析 · 派发失败：{e}"));
+            return;
+        }
+        self.swarm_task = Some(SwarmTask {
+            id,
+            req_id,
+            started: std::time::Instant::now(),
+            results: Vec::new(),
+        });
+        self.tell(
+            format!(
+                "需求 R{req_id} 的多 Agent 分析已派发：数据可行性 / 反例检索 / 约束核对三路并发执行，完成后产物摘要将挂到该需求版本。"
+            ),
+            None,
+        );
+        self.record(&format!("多 Agent 分析 R{req_id} · 已派发"));
+    }
+
+    /// 轮询 SwarmWorker 进度事件（帧循环调用，非阻塞）。
+    fn poll_swarm_task(&mut self) {
+        let Some(worker) = &self.swarm_worker else {
+            return;
+        };
+        let mut events = Vec::new();
+        while let Some(ev) = worker.try_recv() {
+            events.push(ev);
+        }
+        for ev in events {
+            if self.swarm_task.as_ref().map(|t| t.id) != Some(ev.id) {
+                // 已取消或被替换的派发：丢弃过期事件
+                self.record("过期 swarm 事件已丢弃");
+                continue;
+            }
+            if !ev.terminal {
+                if let Some(t) = self.swarm_task.as_mut() {
+                    t.results = ev.results;
+                }
+                continue;
+            }
+            let task = self.swarm_task.take().expect("上方已比对为当前任务");
+            let ok = ev.state == crate::swarm_bridge::SwarmDispatchState::Completed
+                && !ev.results.is_empty()
+                && ev.results.iter().all(|r| {
+                    r.state == crate::swarm_bridge::SubtaskState::Succeeded
+                        && r.output.as_deref().is_some_and(|s| !s.trim().is_empty())
+                });
+            if ok {
+                let summary = crate::swarm_bridge::summarize_swarm_results(&ev.results);
+                match self
+                    .workspace
+                    .attach_requirement_analysis(task.req_id, &summary)
+                {
+                    Ok(()) => {
+                        self.tell_card(
+                            format!(
+                                "需求 R{} 的多 Agent 分析完成：{} 路产物摘要已挂到该需求版本，可在需求文档查看。",
+                                task.req_id,
+                                ev.results.len()
+                            ),
+                            Some(Route::Requirements),
+                            Some("需求分析摘要"),
+                            Some("三路产物已挂载"),
+                        );
+                        self.record(&format!("多 Agent 分析 R{} · 完成", task.req_id));
+                    }
+                    Err(e) => {
+                        self.tell(format!("分析产物挂载失败：{e}"), None);
+                        self.record("多 Agent 分析 · 挂载失败");
+                    }
+                }
+            } else {
+                let detail = ev.error.unwrap_or_else(|| {
+                    ev.results
+                        .iter()
+                        .filter(|r| r.state != crate::swarm_bridge::SubtaskState::Succeeded)
+                        .map(|r| {
+                            format!(
+                                "{}: {}",
+                                r.contract_id,
+                                r.error.as_deref().unwrap_or("未完成")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("；")
+                });
+                self.tell(
+                    format!(
+                        "需求 R{} 的多 Agent 分析未全部成功（{detail}）。需求版本已保留，可重新确认以再次派发。",
+                        task.req_id
+                    ),
+                    None,
+                );
+                self.record(&format!("多 Agent 分析 R{} · 失败", task.req_id));
+            }
         }
     }
 

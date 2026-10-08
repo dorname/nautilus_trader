@@ -502,3 +502,48 @@ fn st_s17_16_ai_workspace_full_journey() {
         );
     });
 }
+
+/// UT-S17-19：attach_requirement_analysis 判定矩阵（issue #26 挂载口径）——
+/// 绑定正确 R 版本 / req_id 不存在拒绝 / 重复 attach 以最新为准。
+#[test]
+fn ut_s17_19_attach_requirement_analysis() {
+    case("UT-S17-19", || {
+        let mut w = Workspace::new();
+        let r1 = w
+            .confirm_requirement("需求一", "验收", 50.0, 100.0)
+            .expect("确认需求一");
+        let r2 = w
+            .confirm_requirement("需求二", "验收", 50.0, 100.0)
+            .expect("确认需求二");
+        assert_ne!(r1, r2);
+
+        // 新确认的需求版本无分析摘要
+        assert_eq!(w.current().reqs[r1 - 1].swarm_analysis, None);
+
+        // 绑定正确 R 版本，其他版本不受影响
+        w.attach_requirement_analysis(r1, "摘要A").expect("attach r1");
+        assert_eq!(
+            w.current().reqs[r1 - 1].swarm_analysis.as_deref(),
+            Some("摘要A")
+        );
+        assert_eq!(
+            w.current().reqs[r2 - 1].swarm_analysis, None,
+            "其他版本不受影响"
+        );
+
+        // req_id 不存在：拒绝且不产生副作用
+        let err = w
+            .attach_requirement_analysis(99, "x")
+            .expect_err("不存在的 req_id 应拒绝");
+        assert!(err.contains("R99"), "错误应指明版本：{err}");
+        assert_eq!(w.current().reqs.len(), 2, "不得产生新版本");
+
+        // 重复 attach 以最新摘要为准
+        w.attach_requirement_analysis(r1, "摘要B").expect("重复 attach");
+        assert_eq!(
+            w.current().reqs[r1 - 1].swarm_analysis.as_deref(),
+            Some("摘要B"),
+            "重复 attach 以最新为准"
+        );
+    });
+}

@@ -27,6 +27,9 @@ pub struct RequirementVersion {
     pub allocation: f64,
     /// 最低成交额（非负）。
     pub min_amount: f64,
+    /// 多 Agent 分析摘要（S17 场景入口，issue #26：确认需求后三路
+    /// 分析产物聚合挂载；未分析为 None）。
+    pub swarm_analysis: Option<String>,
 }
 
 /// 设计版本 D（绑定需求版本）。
@@ -287,10 +290,28 @@ impl Workspace {
             acceptance: acceptance.trim().to_string(),
             allocation: allocation_pct / 100.0,
             min_amount,
+            swarm_analysis: None,
         });
         p.active_req = Some(id);
         p.revision += 1;
         Ok(id)
+    }
+
+    /// 挂载多 Agent 分析摘要到需求版本（S17 场景入口，issue #26）：
+    /// req_id 不存在拒绝且不产生副作用；重复 attach 以最新摘要为准。
+    pub fn attach_requirement_analysis(
+        &mut self,
+        req_id: usize,
+        summary: impl Into<String>,
+    ) -> Result<(), String> {
+        let p = self.current_mut();
+        let req = p
+            .reqs
+            .iter_mut()
+            .find(|r| r.id == req_id)
+            .ok_or_else(|| format!("需求版本 R{req_id} 不存在"))?;
+        req.swarm_analysis = Some(summary.into());
+        Ok(())
     }
 
     /// 保存设计版本（S18：绑定当前需求；`allocation_pct` 为 0～100）。

@@ -6,9 +6,10 @@
 use nautilus_research_desktop::agent_bridge::AgentSessionConfig;
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
-    SwarmBridge, SwarmDispatchState, SubtaskContract, SubtaskState, reduce_dispatch_terminal,
-    s17_requirement_contracts,
+    SwarmBridge, SwarmDispatchState, SwarmWorker, SubtaskContract, SubtaskState,
+    reduce_dispatch_terminal, s17_requirement_contracts, summarize_swarm_results,
 };
+use nautilus_research_desktop::workspace::Workspace;
 use nautilus_research_testkit::case;
 
 fn temp_agent_config(tag: &str) -> AgentSessionConfig {
@@ -273,6 +274,88 @@ fn st_s17_19_parallel_waits_real_terminal() {
         }
 
         swarm.disconnect_all();
+    });
+}
+
+/// ST-S17-21：真实 LLM 经 SwarmWorker 派发三契约——进度事件流（至少一次非终态
+/// Active）→ 终态 Completed → 三 output 非空 → 聚合摘要 attach 到需求版本可读回。
+///
+/// 真实 LLM 调用产生 API 费用（prompt 已最小化）；worker 事件泵间隔 500ms，
+/// 总超时 300s（吸收 moonshot 尾延迟）。
+#[test]
+fn st_s17_21_swarm_worker_progress_to_attach() {
+    case("ST-S17-21", || {
+        let config = temp_agent_config("s17-worker");
+        let worker = SwarmWorker::spawn(config);
+
+        // 最小 prompt 三契约：验证 worker 机制（契约模板本身由 ST-S17-19 覆盖）
+        let contracts = (0..3)
+            .map(|i| SubtaskContract {
+                contract_id: format!("w-{i}"),
+                label: format!("分析{i}"),
+                prompt: "用一句话回答：1+1等于几？".into(),
+            })
+            .collect();
+        worker.dispatch(1, contracts).expect("dispatch");
+
+        let mut saw_progress = false;
+        let mut terminal_event = None;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(320);
+        while terminal_event.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "320s 内未收到终态事件"
+            );
+            while let Some(ev) = worker.try_recv() {
+                if ev.terminal {
+                    terminal_event = Some(ev);
+                } else {
+                    saw_progress = true;
+                    assert!(
+                        matches!(ev.state, SwarmDispatchState::Active { .. }),
+                        "非终态事件应为 Active，实际：{:?}",
+                        ev.state
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(saw_progress, "应收到至少一次 Active 进度事件（不得只有终态）");
+
+        let ev = terminal_event.expect("终态事件");
+        assert_eq!(
+            ev.state,
+            SwarmDispatchState::Completed,
+            "终态应为 Completed（error: {:?}）",
+            ev.error
+        );
+        assert_eq!(ev.results.len(), 3);
+        for r in &ev.results {
+            assert_eq!(
+                r.state,
+                SubtaskState::Succeeded,
+                "{} 应成功（error: {:?}）",
+                r.contract_id,
+                r.error
+            );
+            assert!(
+                r.output.as_deref().is_some_and(|s| !s.trim().is_empty()),
+                "{} output 应非空",
+                r.contract_id
+            );
+        }
+
+        // 聚合摘要 attach 到需求版本并可读回（issue #26 挂载口径）
+        let mut w = Workspace::new();
+        let req_id = w
+            .confirm_requirement("测试需求", "验收标准", 50.0, 100.0)
+            .expect("确认需求");
+        let summary = summarize_swarm_results(&ev.results);
+        assert!(!summary.trim().is_empty(), "摘要应非空");
+        w.attach_requirement_analysis(req_id, &summary)
+            .expect("attach 摘要");
+        let stored = &w.current().reqs[req_id - 1].swarm_analysis;
+        assert_eq!(stored.as_deref(), Some(summary.as_str()), "R_n 应可读回摘要");
     });
 }
 

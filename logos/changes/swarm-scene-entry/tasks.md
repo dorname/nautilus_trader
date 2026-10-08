@@ -6,4 +6,8 @@
 
 ## [code] 代码实现
 
-- [ ] 实现代码变更
+- [x] swarm_bridge.rs：新增 `SwarmWorker`（后台线程持 SwarmBridge，channel 收发进度事件，对齐 AgentWorker 模式；300s 总超时真实取消不吞成功）；新增 `parse_run_params` 纯函数（严格校验，输出只含表单参数，结果数值字段一律拒绝）、`build_run_form`、`s19_organize_params_prompt`、`summarize_swarm_results`
+- [x] workspace.rs：`RequirementVersion` 增 `swarm_analysis: Option<String>`；新增 `attach_requirement_analysis(req_id, summary)`
+- [x] app.rs：`do_confirm_requirement` 成功后自动派发 S17 三契约；帧循环 `poll_swarm_task` 非阻塞更新；终态聚合摘要 attach 到 R 版本并 tell_card；任务条新增三路进度行（n/3）与本地放弃取消；运行页新增「AI 整理参数」按钮（AgentWorker turn → parse → 填 RunForm → 二次确认走现有 submit_run，不自动提交）
+- [x] 测试：m2 新增 ST-S17-21；s17_s20_ai 新增 UT-S17-19；m4 新增 ST-S19-15 / UT-S19-16；全部 case() reporter 入账 test-results.jsonl
+- [x] 本地回归：m2 9/9、m4 6/6、s17_s20_ai 6/6 全绿（真实 LLM 用例串行执行）

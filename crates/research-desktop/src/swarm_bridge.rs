@@ -538,6 +538,323 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
     ]
 }
 
+// ---------------------------------------------------------------- SwarmWorker（GUI 后台线程封装，issue #26）
+
+/// SwarmWorker 事件泵间隔（毫秒）。
+const SWARM_WORKER_POLL_INTERVAL_MS: u64 = 500;
+
+/// SwarmWorker 单次派发总超时（秒）：三路真实 LLM 并发，吸收 moonshot 尾延迟
+/// （实测拥塞时段单 turn 150s+）。
+pub const SWARM_WORKER_TIMEOUT_SECS: u64 = 300;
+
+/// Swarm 进度事件（worker → GUI 帧循环）。
+#[derive(Debug, Clone)]
+pub struct SwarmEvent {
+    /// 派发序号（取消/替换后丢弃过期事件）。
+    pub id: u64,
+    /// 当前派发状态。
+    pub state: SwarmDispatchState,
+    /// 子任务快照（三路状态卡数据源）。
+    pub results: Vec<SubtaskResult>,
+    /// 是否终态事件（此后 worker 回到空闲等待下一派发）。
+    pub terminal: bool,
+    /// 派发/轮询错误（失败终态时填充）。
+    pub error: Option<String>,
+}
+
+/// Swarm 派发请求。
+struct SwarmRequest {
+    id: u64,
+    contracts: Vec<SubtaskContract>,
+}
+
+/// 后台 Swarm worker：独立线程持有 SwarmBridge（含每子 agent 的 octos serve
+/// 子进程），GUI 帧循环经 channel 收发，不阻塞渲染。对齐 `AgentWorker` 模式：
+/// 同一时间仅一个活跃派发，请求串行处理。
+pub struct SwarmWorker {
+    tx: Option<std::sync::mpsc::Sender<SwarmRequest>>,
+    rx: std::sync::mpsc::Receiver<SwarmEvent>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SwarmWorker {
+    /// 启动 worker 线程（此时不连接 octos；首个 dispatch 才建立子 agent 会话）。
+    pub fn spawn(config: crate::agent_bridge::AgentSessionConfig) -> Self {
+        let (req_tx, req_rx) = std::sync::mpsc::channel::<SwarmRequest>();
+        let (ev_tx, ev_rx) = std::sync::mpsc::channel::<SwarmEvent>();
+        let handle = std::thread::spawn(move || Self::run(config, req_rx, ev_tx));
+        Self {
+            tx: Some(req_tx),
+            rx: ev_rx,
+            handle: Some(handle),
+        }
+    }
+
+    fn run(
+        config: crate::agent_bridge::AgentSessionConfig,
+        req_rx: std::sync::mpsc::Receiver<SwarmRequest>,
+        ev_tx: std::sync::mpsc::Sender<SwarmEvent>,
+    ) {
+        while let Ok(req) = req_rx.recv() {
+            let mut swarm = SwarmBridge::new();
+            if let Err(e) = swarm.dispatch_parallel(&config, req.contracts) {
+                let _ = ev_tx.send(SwarmEvent {
+                    id: req.id,
+                    state: SwarmDispatchState::Failed,
+                    results: Vec::new(),
+                    terminal: true,
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(SWARM_WORKER_TIMEOUT_SECS);
+            loop {
+                if let Err(e) = swarm.poll_all() {
+                    let _ = ev_tx.send(SwarmEvent {
+                        id: req.id,
+                        state: SwarmDispatchState::Failed,
+                        results: swarm.results().to_vec(),
+                        terminal: true,
+                        error: Some(e.to_string()),
+                    });
+                    break;
+                }
+                let terminal = !swarm.is_active();
+                if ev_tx
+                    .send(SwarmEvent {
+                        id: req.id,
+                        state: swarm.state(),
+                        results: swarm.results().to_vec(),
+                        terminal,
+                        error: None,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                if terminal {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    // 超时：真实取消并把剩余 Running 置 Cancelled（不得吞为成功）
+                    let _ = swarm.cancel_all();
+                    let _ = ev_tx.send(SwarmEvent {
+                        id: req.id,
+                        state: swarm.state(),
+                        results: swarm.results().to_vec(),
+                        terminal: true,
+                        error: Some(format!(
+                            "派发超时（{}s 未达终态）",
+                            SWARM_WORKER_TIMEOUT_SECS
+                        )),
+                    });
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(SWARM_WORKER_POLL_INTERVAL_MS));
+            }
+            swarm.disconnect_all();
+        }
+    }
+
+    /// 派发并行子任务（非阻塞；进度事件经 `try_recv` 获取）。
+    pub fn dispatch(&self, id: u64, contracts: Vec<SubtaskContract>) -> Result<(), String> {
+        let tx = self.tx.as_ref().ok_or("swarm worker 已关闭")?;
+        tx.send(SwarmRequest { id, contracts })
+            .map_err(|e| format!("swarm worker 已退出：{e}"))
+    }
+
+    /// 非阻塞接收一个进度事件。
+    pub fn try_recv(&self) -> Option<SwarmEvent> {
+        self.rx.try_recv().ok()
+    }
+}
+
+impl Drop for SwarmWorker {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// 契约 ID → 中文标签（S17 标准契约；未知 ID 原样返回）。
+fn contract_label(id: &str) -> &str {
+    match id {
+        "feasibility" => "数据可行性",
+        "counterexample" => "反例检索",
+        "constraint" => "约束核对",
+        other => other,
+    }
+}
+
+/// 聚合子任务产物为需求分析摘要（挂到 R_n 的 `swarm_analysis`）。
+pub fn summarize_swarm_results(results: &[SubtaskResult]) -> String {
+    let mut out = String::new();
+    for r in results {
+        let body = r.output.as_deref().unwrap_or("（无产物）");
+        let snippet: String = body.chars().take(200).collect();
+        out.push_str(&format!("【{}】{}\n", contract_label(&r.contract_id), snippet));
+    }
+    out
+}
+
+// ---------------------------------------------------------------- S19 实验参数整理（issue #15）
+
+/// S19 实验参数（LLM 整理输出；只含表单参数，不得含任何结果数值）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunParams {
+    pub fast: u32,
+    pub slow: u32,
+    pub top_k: u32,
+    pub start: String,
+    pub end: String,
+    pub capital: String,
+}
+
+/// LLM 输出中禁止出现的结果数值字段（实验数值只来自协调器任务）。
+const BANNED_RESULT_FIELDS: &[&str] = &[
+    "total_return",
+    "return_pct",
+    "sharpe",
+    "max_drawdown",
+    "equity",
+    "result",
+    "metrics",
+];
+
+/// 从 LLM 回复提取 JSON 对象体（容忍 ```json fence 与前后散文）。
+fn extract_json_object(reply: &str) -> Option<&str> {
+    let start = reply.find('{')?;
+    let end = reply.rfind('}')?;
+    (start <= end).then(|| &reply[start..=end])
+}
+
+fn json_u32(obj: &serde_json::Map<String, Value>, key: &str) -> Result<u32, String> {
+    let v = obj.get(key).ok_or_else(|| format!("缺少字段 {key}"))?;
+    let n = match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| format!("{key} 须为正整数"))?;
+    u32::try_from(n).map_err(|_| format!("{key} 超出范围"))
+}
+
+fn json_text(obj: &serde_json::Map<String, Value>, key: &str) -> Result<String, String> {
+    let v = obj.get(key).ok_or_else(|| format!("缺少字段 {key}"))?;
+    match v {
+        Value::String(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+        Value::Number(n) => Ok(n.to_string()),
+        _ => Err(format!("{key} 须为非空字符串或数字")),
+    }
+}
+
+/// 校验 YYYY-MM-DD 日期格式（月 01-12、日 01-31）。
+fn validate_date(s: &str) -> Result<(), String> {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return Err(format!("日期 {s} 须为 YYYY-MM-DD 格式"));
+    }
+    if !b
+        .iter()
+        .enumerate()
+        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    {
+        return Err(format!("日期 {s} 含非法字符"));
+    }
+    let month: u32 = s[5..7].parse().map_err(|_| format!("日期 {s} 非法"))?;
+    let day: u32 = s[8..10].parse().map_err(|_| format!("日期 {s} 非法"))?;
+    if !(1..=12).contains(&month) {
+        return Err(format!("日期 {s} 月份越界"));
+    }
+    if !(1..=31).contains(&day) {
+        return Err(format!("日期 {s} 日越界"));
+    }
+    Ok(())
+}
+
+/// 解析 LLM 整理的实验参数（S19 职责边界：LLM 只整理参数，数值只来自协调器）。
+///
+/// 严格校验：非 JSON / 缺字段 / fast>=slow / top_k=0 / 非正 capital / 非法日期
+/// 一律拒绝；输出含结果数值字段（total_return 等）一律拒绝。
+pub fn parse_run_params(reply: &str) -> Result<RunParams, String> {
+    let body = extract_json_object(reply).ok_or_else(|| "回复中未找到 JSON 对象".to_string())?;
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("参数 JSON 解析失败：{e}"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "参数须为 JSON 对象".to_string())?;
+    for key in BANNED_RESULT_FIELDS {
+        if obj.contains_key(*key) {
+            return Err(format!(
+                "LLM 输出不得包含结果数值字段 {key}（实验数值只来自协调器任务）"
+            ));
+        }
+    }
+    let fast = json_u32(obj, "fast")?;
+    let slow = json_u32(obj, "slow")?;
+    if fast == 0 || slow == 0 {
+        return Err("fast/slow 须为正整数".into());
+    }
+    if fast >= slow {
+        return Err(format!("fast（{fast}）须小于 slow（{slow}）"));
+    }
+    let top_k = json_u32(obj, "top_k")?;
+    if top_k == 0 {
+        return Err("top_k 须为正整数".into());
+    }
+    let start = json_text(obj, "start")?;
+    let end = json_text(obj, "end")?;
+    validate_date(&start).map_err(|e| format!("start：{e}"))?;
+    validate_date(&end).map_err(|e| format!("end：{e}"))?;
+    if start > end {
+        return Err(format!("start（{start}）不得晚于 end（{end}）"));
+    }
+    let capital = json_text(obj, "capital")?;
+    let c: f64 = capital.parse().map_err(|_| "capital 须为数字".to_string())?;
+    if !c.is_finite() || c <= 0.0 {
+        return Err("capital 须为正数".to_string());
+    }
+    Ok(RunParams {
+        fast,
+        slow,
+        top_k,
+        start,
+        end,
+        capital,
+    })
+}
+
+/// 参数映射为运行表单（费用等环境字段沿用表单默认值）。
+pub fn build_run_form(params: &RunParams) -> crate::bridge::RunForm {
+    crate::bridge::RunForm {
+        fast: params.fast,
+        slow: params.slow,
+        top_k: params.top_k,
+        start: params.start.clone(),
+        end: params.end.clone(),
+        capital: params.capital.clone(),
+        ..Default::default()
+    }
+}
+
+/// S19 参数整理 prompt（LLM 只输出 JSON 表单参数，不输出解释与结果指标）。
+pub fn s19_organize_params_prompt(requirement_text: &str, design_note: &str) -> String {
+    format!(
+        "将以下研究需求与策略设计整理为回测参数。\n\n\
+        研究需求：{requirement_text}\n\n\
+        策略设计：{design_note}\n\n\
+        只输出一个 JSON 对象（不要输出任何解释、markdown 标记或结果指标），字段：\n\
+        - fast：短均线周期（正整数）\n\
+        - slow：长均线周期（正整数，必须大于 fast）\n\
+        - top_k：持仓数量（正整数）\n\
+        - start：回测开始日期（YYYY-MM-DD，须在数据区间内）\n\
+        - end：回测结束日期（YYYY-MM-DD，不早于 start）\n\
+        - capital：初始资金 CNY（正数）"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
