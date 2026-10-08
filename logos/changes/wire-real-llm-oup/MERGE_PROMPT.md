@@ -1,3 +1,11 @@
+# 合并指令
+
+## 变更提案
+- 提案名称：wire-real-llm-oup
+- 提案目录：logos/changes/wire-real-llm-oup/
+
+## 提案内容
+
 # 变更提案：真实 LLM OUP 接线（wire-real-llm-oup）
 
 > 模块：core；分支：a-stock；状态：新建，待实现
@@ -142,3 +150,25 @@ grep -r "DemoTask\|DemoAction" crates/research-desktop/src/
 2. 按实现步骤修改代码
 3. 编写验收测试
 4. 运行 OpenLogos verify 并合并
+
+
+## 需要合并的 Delta 文件
+
+### 1. deltas/test/core-S17-test-cases.md
+
+- Delta 文件：`logos/changes/wire-real-llm-oup/deltas/test/core-S17-test-cases.md`
+- 目标目录：`logos/resources/test/`
+- 操作：读取 delta 中的 ADDED / MODIFIED / REMOVED 标记，合并到目标目录中对应的主文档
+
+## 执行要求
+
+1. 逐个 Delta 文件处理，每处理完一个报告修改摘要
+2. 对于 ADDED 标记：在主文档的指定位置插入新内容
+3. 对于 MODIFIED 标记：替换主文档中同名章节的内容
+4. 对于 REMOVED 标记：从主文档中删除对应章节
+5. 保持主文档的原有格式和风格
+6. 如果主文档有"最后更新"时间戳，同步更新
+7. 所有变更完成后，列出修改清单
+8. 所有变更合并完成后，自动执行 git commit（告知用户，无需确认）：
+   git add -A && git commit -m "docs(wire-real-llm-oup): merge spec deltas"
+   然后提示用户：按更新后的规格实现代码，代码完成后运行 `openlogos verify` 验收，验收通过后明确授权执行 `openlogos archive wire-real-llm-oup`。
