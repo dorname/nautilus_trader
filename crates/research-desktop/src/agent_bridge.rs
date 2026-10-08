@@ -167,18 +167,25 @@ impl AgentBridge {
 
         let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
 
-        // 启动 turn
+        // 客户端生成 turn_id，并随 turn_start 返回值带回（服务端 accepted 未必含该字段）
         let start_result = client.turn_start(&self.config.session_id, prompt)?;
         let turn_id = start_result
             .get("turn_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
+            .ok_or_else(|| AgentError::Oup(crate::oup::OupError::Rpc(-32603, "missing turn_id".into())))?
             .to_string();
 
         self.state = AgentSessionState::TurnActive;
 
-        // 等待完成
-        let completed = client.turn_wait_completed(&self.config.session_id, &turn_id, timeout_secs)?;
+        // 等待完成（同时泵 rx + notification_rx，避免 turn/completed 饿死）
+        let completed = match client.turn_wait_completed(&self.config.session_id, &turn_id, timeout_secs)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.state = AgentSessionState::Connected;
+                return Err(AgentError::Oup(e));
+            }
+        };
 
         self.state = AgentSessionState::Connected;
         Ok((turn_id, completed))

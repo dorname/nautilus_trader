@@ -60,7 +60,7 @@ fn st_wire_01_real_llm_turn_completed() {
 
     // 提交真实 LLM 调用（简短 prompt 控制成本）
     let result = bridge
-        .submit_and_wait("回复 ok", 30)
+        .submit_and_wait("回复 ok", 120)
         .expect("submit_and_wait should succeed");
 
     let (turn_id, completed) = result;
@@ -101,14 +101,14 @@ fn st_wire_03_turn_id_unique() {
 
     bridge.connect().expect("connect");
 
-    // 第一次调用
+    // 第一次调用（真实 LLM，超时对齐提案 120s）
     let (turn_id_1, _) = bridge
-        .submit_and_wait("回复 1", 30)
+        .submit_and_wait("回复 1", 120)
         .expect("first call");
 
     // 第二次调用
     let (turn_id_2, _) = bridge
-        .submit_and_wait("回复 2", 30)
+        .submit_and_wait("回复 2", 120)
         .expect("second call");
 
     // 验证两个 turn_id 不同

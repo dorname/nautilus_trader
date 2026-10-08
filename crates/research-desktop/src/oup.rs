@@ -101,6 +101,8 @@ pub enum OupError {
     Serde(serde_json::Error),
     /// 进程已退出。
     ProcessExited,
+    /// 等待 turn 完成超时。
+    Timeout,
 }
 
 impl std::fmt::Display for OupError {
@@ -111,6 +113,7 @@ impl std::fmt::Display for OupError {
             OupError::Rpc(code, msg) => write!(f, "RPC 错误 {code}: {msg}"),
             OupError::Serde(e) => write!(f, "序列化错误: {e}"),
             OupError::ProcessExited => write!(f, "octos 进程已退出"),
+            OupError::Timeout => write!(f, "等待 turn 完成超时"),
         }
     }
 }
@@ -269,12 +272,15 @@ impl OupClient {
     }
 
     /// 启动 turn（OUP turn/start）。
+    ///
+    /// 返回值始终含客户端生成的 `turn_id`（UUID）；服务端 `accepted` 响应里未必带回该字段。
     pub fn turn_start(&mut self, session_id: &str, prompt: &str) -> OupResult<Value> {
         let turn_id = uuid::Uuid::new_v4().to_string();
-        self.turn_start_with_id(session_id, &turn_id, prompt)
+        self.turn_start_with_id(session_id, &turn_id, prompt)?;
+        Ok(serde_json::json!({ "turn_id": turn_id, "accepted": true }))
     }
 
-    /// 启动 turn 并指定 turn_id（发送请求但不等待响应，turn/completed 由 turn_wait_completed 处理）。
+    /// 启动 turn 并指定 turn_id（发送请求并等待 accepted；turn/completed 由 turn_wait_completed 处理）。
     pub fn turn_start_with_id(&mut self, session_id: &str, turn_id: &str, prompt: &str) -> OupResult<Value> {
         self.counter += 1;
         let id = format!("{ID_PREFIX}-{}", self.counter);
@@ -324,45 +330,92 @@ impl OupClient {
 
     /// 等待 turn 完成（阻塞直到收到 turn/completed 或 turn/error）。
     ///
-    /// 返回 completed_result。超时或进程退出返回 Err(ProcessExited)。
-    /// 注意：这是阻塞调用，CPU 红线：仅在用户主动提交时调用，不用于轮询。
+    /// 同时泵 `rx` 与 `notification_rx`：读线程只写入 `rx`；`call`/`turn_start_with_id`
+    /// 期间转发的通知进 `notification_rx`，但 turn/start accepted 之后到达的
+    /// `turn/completed` 仍停在 `rx` 上——只读 notification 通道会饿死并误报退出。
+    ///
+    /// 超时返回 [`OupError::Timeout`]；读端断开返回 [`OupError::ProcessExited`]。
     pub fn turn_wait_completed(&mut self, session_id: &str, turn_id: &str, timeout_secs: u64) -> OupResult<Value> {
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(timeout_secs);
 
         loop {
             if start.elapsed() > timeout {
-                return Err(OupError::ProcessExited);
+                return Err(OupError::Timeout);
             }
 
-            // 阻塞接收通知（带超时）
-            let msg = match self.notification_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-                Ok(m) => m,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(OupError::ProcessExited),
-            };
+            // 先排空已转发的通知，再试 rx（accepted 后事件留在 rx）
+            if let Some(outcome) = Self::match_turn_terminal(
+                self.notification_rx.try_recv().ok(),
+                session_id,
+                turn_id,
+            )? {
+                return outcome;
+            }
+            if let Some(outcome) = Self::match_turn_terminal(self.rx.try_recv().ok(), session_id, turn_id)? {
+                return outcome;
+            }
 
-            // 检查是否为 turn/completed 或 turn/error 通知
-            if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
-                if method == "turn/completed" || method == "turn/error" {
-                    if let Some(params) = msg.get("params") {
-                        if params.get("turn_id").and_then(|t| t.as_str()) == Some(turn_id)
-                            && params.get("session_id").and_then(|s| s.as_str()) == Some(session_id)
-                        {
-                            if method == "turn/error" {
-                                let error_msg = params
-                                    .get("error")
-                                    .and_then(|e| e.as_str())
-                                    .unwrap_or("unknown error");
-                                return Err(OupError::Rpc(-32000, error_msg.to_string()));
+            // 短阻塞：优先等 notification；超时后回环再泵 rx，避免空转打满 CPU
+            match self.notification_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(msg) => {
+                    if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
+                        return outcome;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // notification 发送端已丢弃时仍可能只剩 rx 上的终态事件
+                    match self.rx.try_recv() {
+                        Ok(msg) => {
+                            if let Some(outcome) =
+                                Self::match_turn_terminal(Some(msg), session_id, turn_id)?
+                            {
+                                return outcome;
                             }
-                            return Ok(params.clone());
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            return Err(OupError::ProcessExited);
                         }
                     }
                 }
             }
-            // 其他消息（响应、其他通知）丢弃
         }
+    }
+
+    /// 若 `msg` 是匹配的 turn 终态通知，返回 `Some(Ok/Err)`；无关消息返回 `Ok(None)`。
+    fn match_turn_terminal(
+        msg: Option<Value>,
+        session_id: &str,
+        turn_id: &str,
+    ) -> OupResult<Option<OupResult<Value>>> {
+        let Some(msg) = msg else {
+            return Ok(None);
+        };
+        let Some(method) = msg.get("method").and_then(|m| m.as_str()) else {
+            return Ok(None);
+        };
+        if method != "turn/completed" && method != "turn/error" {
+            return Ok(None);
+        }
+        let Some(params) = msg.get("params") else {
+            return Ok(None);
+        };
+        if params.get("turn_id").and_then(|t| t.as_str()) != Some(turn_id) {
+            return Ok(None);
+        }
+        if params.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
+            return Ok(None);
+        }
+        if method == "turn/error" {
+            let error_msg = params
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("unknown error");
+            return Ok(Some(Err(OupError::Rpc(-32000, error_msg.to_string()))));
+        }
+        Ok(Some(Ok(params.clone())))
     }
 
     /// 关闭子进程。

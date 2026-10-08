@@ -82,7 +82,7 @@
     "sandbox_mode": "off",
     "sandbox_root": "/tmp",
     "sandbox_deny_workspace_write": true,
-    "pre_run_command": "rm -f logos/resources/verify/test-results.jsonl && export CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 && cargo test -j 2 -p nautilus-research-domain -p nautilus-research-worker --offline && sh scripts/run-astock-tests.sh && cargo test -j 2 -p nautilus-baseline-tests --offline && cargo test -j 2 -p nautilus-research-cli --offline && cargo test -j 2 -p nautilus-research-desktop --offline -- --skip st_wire",
+    "pre_run_command": "rm -f logos/resources/verify/test-results.jsonl && export CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1 && cargo test -j 2 -p nautilus-research-domain -p nautilus-research-worker --offline && sh scripts/run-astock-tests.sh && cargo test -j 2 -p nautilus-baseline-tests --offline && cargo test -j 2 -p nautilus-research-cli --offline && cargo test -j 2 -p nautilus-research-desktop --offline",
     "report_path": "logos/resources/verify/smoke-report.md"
   }
 }
