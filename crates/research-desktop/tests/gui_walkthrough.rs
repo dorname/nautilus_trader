@@ -1,0 +1,300 @@
+//! GUI 无头走查（gui-walkthrough 提案）：egui_kittest 无头驱动真实
+//! `ResearchApp::render_root`，把 swarm-scene-entry 落地的两条多 Agent 旅程
+//! （S17 确认需求→三路分析→产物挂载；S19 AI 整理参数→填表→二次确认停留）
+//! 从 [manual] 目检升级为自动化证据。
+//!
+//! 背景：issue #1/#32 表明当前 WSL2/WSLg 环境无可见窗口，人工走查不可用；
+//! 本套件延续 ST-S15-06 的无头先例，经 AccessKit 树完成导航、点击与断言，
+//! 并尽力（best-effort）经 wgpu 软件渲染落盘关键帧截图到
+//! `target/gui-walkthrough/`（无可用 GPU 后端时跳过，不影响判定）。
+//!
+//! ST-GUI-01/02 调用真实 LLM（moonshot-coding，profile 缺省取
+//! ~/.octos/profiles/octos.json），会产生 API 调用；与 wire_real_llm 同口径。
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use nautilus_research_desktop::app::ResearchApp;
+use nautilus_research_desktop::nav::{ALL_ROUTES, Route};
+use nautilus_research_desktop::theme;
+use nautilus_research_testkit::case;
+
+/// 无头走查会话：真实 app + 独立临时工作区（协调器桥就地落盘）。
+struct Walk {
+    harness: Harness<'static, ResearchApp>,
+}
+
+fn temp_root(tag: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "rd-gui-walk-{tag}-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("创建走查临时目录");
+    dir
+}
+
+fn build_walk(tag: &str, llm: bool) -> Walk {
+    let ws = temp_root(tag).join("workspace");
+    std::fs::create_dir_all(&ws).expect("创建走查工作区");
+    if llm {
+        // SAFETY：本套件仅 ST 旅程（单线程串行旅程内）读写该进程级环境变量；
+        // UT 用例不触发 agent_data_dir（worker 惰性创建），无并发读写。
+        unsafe { std::env::set_var("RESEARCH_WORKSPACE", &ws) };
+    }
+    let mut app = ResearchApp::new(false);
+    app.attach_bridge(ws);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1440.0, 900.0))
+        .build_ui_state(|ui, app: &mut ResearchApp| app.render_root(ui), app);
+    // 内嵌 Noto Sans SC：保证中文标签进入 AccessKit 树与截图一致
+    theme::setup_fonts(&harness.ctx);
+    harness.run_steps(2);
+    Walk { harness }
+}
+
+/// AccessKit 树中是否存在包含指定子串的标签（聊天气泡 / 卡片 / 任务条均为 label）。
+fn has_text(h: &Harness<'_, ResearchApp>, needle: &str) -> bool {
+    h.query_all_by_label_contains(needle).next().is_some()
+}
+
+/// 经侧栏导航到指定路由（nav_item 已带 widget_info，角色为 Button）。
+fn goto(w: &mut Walk, route: Route) {
+    w.harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, route.title())
+        .click_accesskit();
+    w.harness.run_steps(3);
+    assert_eq!(
+        w.harness.state().test_current_route(),
+        route,
+        "侧栏导航应切换到 {}",
+        route.title()
+    );
+}
+
+/// 点击按钮标签（精确匹配、Button 角色）：经 AccessKit Action 触发，
+/// 不受滚动视口裁剪影响（折叠区头往往在首屏之外，指针点击会被裁掉）。
+fn click_button(w: &mut Walk, label: &str) {
+    w.harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, label)
+        .click_accesskit();
+    w.harness.run_steps(3);
+}
+
+/// 展开默认折叠的协调器运行参数区（「AI 整理参数」位于其中）。
+fn open_run_params_section(w: &mut Walk) {
+    click_button(w, "运行参数（协调器）");
+}
+
+/// 泵帧直到谓词满足或超时（后台 worker 以真实时间推进，帧间 sleep）。
+fn pump_until(
+    w: &mut Walk,
+    timeout: Duration,
+    mut pred: impl FnMut(&Harness<'_, ResearchApp>) -> bool,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        w.harness.step();
+        if pred(&w.harness) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// 尽力截图：wgpu 软件渲染成功则落盘 PNG，失败仅记录（不阻断走查判定）。
+fn snap(w: &mut Walk, name: &str) {
+    match w.harness.render() {
+        Ok(img) => {
+            let dir =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/gui-walkthrough");
+            if std::fs::create_dir_all(&dir).is_err() {
+                return;
+            }
+            let path = dir.join(format!("{name}.png"));
+            match img.save(&path) {
+                Ok(()) => eprintln!("[gui-walkthrough] 截图已落盘：{}", path.display()),
+                Err(e) => eprintln!("[gui-walkthrough] 截图保存失败（忽略）：{e}"),
+            }
+        }
+        Err(e) => eprintln!("[gui-walkthrough] 无可用渲染后端，跳过截图 {name}：{e}"),
+    }
+}
+
+/// UT-GUI-01：无头渲染关键路由不 panic；「确认需求」按钮可见可定位；
+/// 侧栏 11 路由全部以 Button 角色可达。
+#[test]
+fn ut_gui_01_render_and_nav() {
+    case("UT-GUI-01", || {
+        let mut w = build_walk("ut01", false);
+        // 11 条路由逐一导航：每页渲染不 panic，且侧栏项始终可达
+        for route in ALL_ROUTES {
+            goto(&mut w, route);
+        }
+        // 需求页确认按钮可见可定位（不点击：点击会真实派发 LLM 任务）
+        goto(&mut w, Route::Requirements);
+        w.harness
+            .get_by_role_and_label(egui::accesskit::Role::Button, "确认需求");
+        snap(&mut w, "ut-gui-01-requirements");
+    });
+}
+
+/// UT-GUI-02：空态（无实验）结构断言——空态引导「运行合成实验」可见；
+/// 「运行参数（协调器）」折叠区（含「AI 整理参数」）按 UI 口径不渲染。
+#[test]
+fn ut_gui_02_empty_state_gating() {
+    case("UT-GUI-02", || {
+        let mut w = build_walk("ut02", false);
+        goto(&mut w, Route::Experiments);
+        assert!(
+            w.harness
+                .query_all_by_role_and_label(
+                    egui::accesskit::Role::Button,
+                    "运行合成实验"
+                )
+                .next()
+                .is_some(),
+            "空态应出现「运行合成实验」引导按钮"
+        );
+        assert!(
+            w.harness
+                .query_all_by_label_contains("运行参数（协调器）")
+                .next()
+                .is_none(),
+            "无实验时运行参数折叠区不应渲染（UI 既有口径）"
+        );
+    });
+}
+
+/// UT-GUI-03：无任务时任务条不出现（无「多 Agent 分析」/「取消」节点）。
+#[test]
+fn ut_gui_03_idle_no_taskbar() {
+    case("UT-GUI-03", || {
+        let mut w = build_walk("ut03", false);
+        w.harness.run_steps(2);
+        assert!(
+            !has_text(&w.harness, "多 Agent 分析"),
+            "空闲态不应出现多 Agent 任务行"
+        );
+        assert!(
+            w.harness
+                .query_all_by_role_and_label(egui::accesskit::Role::Button, "取消")
+                .next()
+                .is_none(),
+            "空闲态不应出现任务条取消按钮"
+        );
+    });
+}
+
+/// ST-GUI-01/02（真实 LLM，单会话顺序旅程）：
+/// 确认需求 → 任务条三路进度行 → 完成卡 → swarm_analysis 挂载；
+/// 保存设计/策略版本 → 合成实验 → AI 整理参数 → 表单填入 → 停留等待二次确认。
+#[test]
+fn st_gui_journey_real_llm() {
+    let mut w = build_walk("st", true);
+
+    // ---- ST-GUI-01：S17 确认需求派发三路多 Agent 分析（issue #26）
+    case("ST-GUI-01", std::panic::AssertUnwindSafe(|| {
+        goto(&mut w, Route::Requirements);
+        click_button(&mut w, "确认需求");
+
+        // 派发后任务条出现三路进度行（多 Agent 分析 R1 · n/3 · Ns）
+        let dispatched = pump_until(&mut w, Duration::from_secs(15), |h| {
+            has_text(h, "多 Agent 分析 R1") && has_text(h, "/3")
+        });
+        assert!(dispatched, "确认需求后任务条应出现三路进度行");
+        snap(&mut w, "st-gui-01-taskbar");
+
+        // 终态：完成卡出现（worker 超时 300s，留足余量）
+        let completed = pump_until(&mut w, Duration::from_secs(420), |h| {
+            has_text(h, "多 Agent 分析完成") || has_text(h, "多 Agent 分析未全部成功")
+        });
+        assert!(completed, "三路分析应在超时前到达终态");
+        assert!(
+            has_text(&w.harness, "多 Agent 分析完成"),
+            "三路分析应全部成功并产出完成卡"
+        );
+
+        // 产物摘要已挂到需求版本 R1
+        let summary = w.harness.state().test_requirement_swarm_analysis(1);
+        assert!(
+            summary.is_some_and(|s| !s.trim().is_empty()),
+            "R1 需求版本应挂载多 Agent 分析摘要"
+        );
+        snap(&mut w, "st-gui-01-completed");
+    }));
+
+    // ---- ST-GUI-02：S19 LLM 整理参数填表，提交仍需人工二次确认（issue #15）
+    case("ST-GUI-02", std::panic::AssertUnwindSafe(|| {
+        // 设计版本是整理参数的前置（本地保存，不经 LLM）
+        goto(&mut w, Route::Design);
+        click_button(&mut w, "保存设计版本");
+        w.harness.step();
+
+        // 策略版本（本地检查 + 保存），解锁合成实验入口
+        goto(&mut w, Route::Develop);
+        click_button(&mut w, "检查草稿");
+        w.harness.step();
+        click_button(&mut w, "保存版本");
+        w.harness.step();
+
+        // UI 口径：运行参数折叠区仅在已有实验时渲染，先跑一次本地合成实验
+        goto(&mut w, Route::Experiments);
+        click_button(&mut w, "运行合成实验");
+        let ran = pump_until(&mut w, Duration::from_secs(30), |h| {
+            has_text(h, "实验 E1 完成")
+        });
+        assert!(ran, "合成实验应即时完成并出现提示");
+
+        let form_before = w.harness.state().test_run_form().clone();
+        open_run_params_section(&mut w);
+        click_button(&mut w, "AI 整理参数");
+
+        // 任务条出现 LLM 任务行
+        let started = pump_until(&mut w, Duration::from_secs(15), |h| {
+            has_text(h, "整理实验参数 ·")
+        });
+        assert!(started, "点击整理参数后应出现 LLM 任务行");
+
+        // 终态：参数填入卡出现
+        let filled = pump_until(&mut w, Duration::from_secs(420), |h| {
+            has_text(h, "运行参数已填入") || has_text(h, "参数整理失败")
+        });
+        assert!(filled, "整理参数应在超时前到达终态");
+        assert!(
+            has_text(&w.harness, "运行参数已填入"),
+            "模型整理参数应成功填入运行表单"
+        );
+
+        // 表单被真实填入：起止日期非空（缺省为空串）、fast<slow、top_k>0
+        let form = w.harness.state().test_run_form();
+        assert!(!form.start.is_empty(), "整理后起始日期应非空");
+        assert!(!form.end.is_empty(), "整理后结束日期应非空");
+        assert!(form.fast < form.slow, "整理后 fast 应小于 slow");
+        assert!(form.top_k > 0, "整理后 top_k 应大于 0");
+        assert_ne!(
+            (form.start.clone(), form.end.clone()),
+            (form_before.start, form_before.end),
+            "整理后区间应较缺省表单发生变化"
+        );
+
+        // 二次确认语义：填表后导航到回测实验页等待人工核对，未自动提交
+        assert_eq!(
+            w.harness.state().test_current_route(),
+            Route::Experiments,
+            "填表后应导航到回测实验页等待核对"
+        );
+        assert!(
+            !has_text(&w.harness, "整理实验参数 ·"),
+            "任务终态后任务条 LLM 行应消失"
+        );
+        snap(&mut w, "st-gui-02-form-filled");
+    }));
+}

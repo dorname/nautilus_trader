@@ -482,6 +482,28 @@ impl eframe::App for ResearchApp {
 // ================================================================ 布局骨架
 
 impl ResearchApp {
+    /// 测试可达：当前路由（gui-walkthrough 无头走查断言用，与 render_root 同级可见性约定）。
+    #[doc(hidden)]
+    pub fn test_current_route(&self) -> Route {
+        self.session.route
+    }
+
+    /// 测试可达：指定需求版本（1 起）已挂载的多 Agent 分析摘要。
+    #[doc(hidden)]
+    pub fn test_requirement_swarm_analysis(&self, req_id: usize) -> Option<&str> {
+        let p = self.workspace.current();
+        req_id
+            .checked_sub(1)
+            .and_then(|i| p.reqs.get(i))
+            .and_then(|r| r.swarm_analysis.as_deref())
+    }
+
+    /// 测试可达：运行表单只读快照（S19 整理参数填表断言用）。
+    #[doc(hidden)]
+    pub fn test_run_form(&self) -> &RunForm {
+        &self.run_form
+    }
+
     /// 根 Ui 渲染（eframe 0.36 模型）：环境柔光 + 左侧栏卡 + 主区卡（顶栏/画布+对话/footer）。
     /// RD-008：提取为独立方法，供 ST-S15-06 无头几何回归经 egui::Context::run_ui 驱动
     /// （pub 仅为测试可达，GUI 入口仍是 eframe::App::ui）。
@@ -759,6 +781,10 @@ impl ResearchApp {
         let count = (route == Route::Experiments && !slim)
             .then(|| self.workspace.current().experiments.len());
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, theme::fs(30.0)), Sense::click());
+        // 无障碍元信息：自绘导航项对 AccessKit/无头走查可见（不改变视觉与交互行为）
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), route.title())
+        });
         let fill = if active {
             theme::ACCENT_SOFT
         } else if resp.hovered() {
