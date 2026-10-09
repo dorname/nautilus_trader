@@ -194,6 +194,69 @@ fn ut_gui_03_idle_no_taskbar() {
     });
 }
 
+/// UT-GUI-04：窄视口（880px）布局对照（desktop-window-bootstrap 提案，
+/// issue #7）——侧栏按 Slim 计划收成 65px 图标栏；截图落盘
+/// docs/research-desktop/screenshots/ 作原型 ≤900px 对照证据。
+#[test]
+fn ut_gui_04_narrow_viewport_slim_sidebar() {
+    case("UT-GUI-04", || {
+        let ws = temp_root("ut04").join("workspace");
+        std::fs::create_dir_all(&ws).expect("创建走查工作区");
+        let mut app = ResearchApp::new(false);
+        app.attach_bridge(ws);
+        // 880px ≤ 900 断点：应触发 Slim 图标栏
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(880.0, 720.0))
+            .build_ui_state(|ui, app: &mut ResearchApp| app.render_root(ui), app);
+        theme::setup_fonts(&harness.ctx);
+        harness.run_steps(3);
+
+        // Slim 口径断言：导航项宽 ≈ 65px 图标栏内容宽（远小于宽档 178/212）
+        let nav = harness.get_by_role_and_label(egui::accesskit::Role::Button, "需求文档");
+        let w = nav.rect().width();
+        assert!(
+            w < 100.0,
+            "880px 窄视口导航项应收成图标栏宽度（<100px），实测 {w}"
+        );
+
+        // 对照宽档：1440px 时导航项为完整宽度
+        let ws2 = temp_root("ut04w").join("workspace");
+        std::fs::create_dir_all(&ws2).expect("创建走查工作区");
+        let mut app2 = ResearchApp::new(false);
+        app2.attach_bridge(ws2);
+        let mut wide = Harness::builder()
+            .with_size(egui::vec2(1440.0, 900.0))
+            .build_ui_state(|ui, app: &mut ResearchApp| app.render_root(ui), app2);
+        theme::setup_fonts(&wide.ctx);
+        wide.run_steps(3);
+        let nav_wide =
+            wide.get_by_role_and_label(egui::accesskit::Role::Button, "需求文档");
+        assert!(
+            nav_wide.rect().width() > 150.0,
+            "1440px 宽档导航项应为完整宽度（>150px），实测 {}",
+            nav_wide.rect().width()
+        );
+
+        // 截图证据落盘 docs（原型 ≤900px 对照）
+        match harness.render() {
+            Ok(img) => {
+                let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../docs/research-desktop/screenshots");
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    let path = dir.join("ut-gui-04-narrow.png");
+                    match img.save(&path) {
+                        Ok(()) => eprintln!("[gui-walkthrough] 窄视口截图：{}", path.display()),
+                        Err(e) => eprintln!("[gui-walkthrough] 窄视口截图保存失败（忽略）：{e}"),
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[gui-walkthrough] 无渲染后端，UT-GUI-04 截图跳过（布局断言仍有效）：{e}")
+            }
+        }
+    });
+}
+
 /// UT-S17-23：OUP 会话项目隔离（oup-session-config 提案，issue #27）——
 /// 两项目 session_id/数据目录互不相同；安装 worker 后切换项目，worker 重置、
 /// 再次惰性创建时绑定新项目 session。

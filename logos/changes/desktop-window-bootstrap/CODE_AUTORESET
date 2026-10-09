@@ -1,0 +1,1 @@
+{"ts":"2026-10-09T13:29:05.647Z","trigger":"merge","old_code":"## [code] 代码实现\n- [ ] main.rs 启动里程碑日志（版本/显示环境/后端，stderr）\n- [ ] 首帧看门狗：超时无首帧 → 诊断输出 + 非零退出（#32 Expected）\n- [ ] 依实测定位 WSLg 挂起点并适配（后端选择/参数）\n- [ ] docs/research-desktop/ 写 WSLg 启动参数与排障文档\n- [ ] UT-GUI-04：880px 窄视口 slim 图标栏断言 + 截图证据（#7）"}
