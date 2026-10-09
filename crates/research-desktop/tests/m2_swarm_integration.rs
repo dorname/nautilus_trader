@@ -8,8 +8,9 @@ use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
     SwarmBridge, SwarmDispatchState, SwarmError, SwarmWorker, SubtaskContract, SubtaskResult,
     SubtaskState, mark_cancel_outcomes, reduce_dispatch_terminal, s17_requirement_contracts,
-    summarize_swarm_results,
+    summarize_swarm_results, aggregate_valid,
 };
+use nautilus_research_desktop::swarm_ledger::{LedgerState, SwarmLedger, recover_on_startup};
 use nautilus_research_desktop::workspace::Workspace;
 use nautilus_research_testkit::case;
 
@@ -514,5 +515,108 @@ fn st_s17_20_first_poll_not_false_completed() {
         }
 
         swarm.disconnect_all();
+    });
+}
+
+/// UT-S17-25：swarm 账本（swarm-ledger-adr 提案，issue #23）——写入派发、
+/// 终态更新、模拟重启（重开账本）后未完成派发全部标记中断且不残留 Active。
+#[test]
+fn ut_s17_25_swarm_ledger_recovery() {
+    case("UT-S17-25", || {
+        let dir = std::env::temp_dir().join(format!(
+            "rd-ledger-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let path = dir.join("swarm-ledger.redb");
+
+        // 写入：两笔派发，一笔到终态，一笔保持 Active
+        {
+            let mut ledger = SwarmLedger::open(&path).expect("open ledger");
+            ledger
+                .record_dispatch(
+                    "d-done",
+                    vec!["feasibility".into()],
+                    vec!["t-1".into()],
+                )
+                .expect("record d-done");
+            ledger
+                .record_terminal("d-done", LedgerState::Completed)
+                .expect("terminal d-done");
+            ledger
+                .record_dispatch(
+                    "d-open",
+                    vec!["counterexample".into(), "constraint".into()],
+                    vec!["t-2".into(), "t-3".into()],
+                )
+                .expect("record d-open");
+
+            let rec = ledger.get("d-done").expect("get").expect("存在");
+            assert_eq!(rec.state, LedgerState::Completed);
+            assert_eq!(rec.turn_ids, vec!["t-1".to_string()]);
+            let rec = ledger.get("d-open").expect("get").expect("存在");
+            assert_eq!(rec.state, LedgerState::Active);
+            assert_eq!(rec.contracts.len(), 2);
+        } // drop 关闭（模拟进程结束）
+
+        // 模拟重启：未完成派发全部标记中断，不残留 Active
+        {
+            let mut ledger = SwarmLedger::open(&path).expect("reopen ledger");
+            let open = ledger.unfinished().expect("unfinished");
+            assert_eq!(open.len(), 1);
+            assert_eq!(open[0].dispatch_id, "d-open");
+            let n = ledger.mark_unfinished_interrupted().expect("mark");
+            assert_eq!(n, 1);
+            assert!(ledger.unfinished().expect("unfinished").is_empty());
+            let rec = ledger.get("d-open").expect("get").expect("存在");
+            assert_eq!(rec.state, LedgerState::Interrupted);
+            // 已 Completed 的不受影响
+            let rec = ledger.get("d-done").expect("get").expect("存在");
+            assert_eq!(rec.state, LedgerState::Completed);
+        }
+
+        // recover_on_startup 幂等：第二次调用 0 条；不存在路径返回 0
+        assert_eq!(recover_on_startup(&path), 0);
+        assert_eq!(
+            recover_on_startup(&dir.join("nonexistent").join("x.redb")),
+            0
+        );
+    });
+}
+
+/// UT-S17-26：聚合校验判定矩阵（issue #23 M4.3 validator 语义）——
+/// 仅全 Succeeded 且 output 非空放行，其余一律阻断。
+#[test]
+fn ut_s17_26_aggregate_valid_matrix() {
+    case("UT-S17-26", || {
+        let mk = |state: SubtaskState, output: Option<&str>| SubtaskResult {
+            contract_id: "c".into(),
+            state,
+            output: output.map(str::to_string),
+            error: None,
+            turn_id: "t".into(),
+            final_prompt: String::new(),
+        };
+        // 全 Succeeded + 非空 output → 放行
+        assert!(aggregate_valid(&[
+            mk(SubtaskState::Succeeded, Some("ok")),
+            mk(SubtaskState::Succeeded, Some("ok2")),
+        ]));
+        // 空结果集 → 阻断
+        assert!(!aggregate_valid(&[]));
+        // 含 Failed → 阻断
+        assert!(!aggregate_valid(&[
+            mk(SubtaskState::Succeeded, Some("ok")),
+            mk(SubtaskState::Failed, None),
+        ]));
+        // 含 Cancelled → 阻断
+        assert!(!aggregate_valid(&[mk(SubtaskState::Cancelled, None)]));
+        // output 空白串 → 阻断
+        assert!(!aggregate_valid(&[mk(SubtaskState::Succeeded, Some("  "))]));
+        // output None → 阻断
+        assert!(!aggregate_valid(&[mk(SubtaskState::Succeeded, None)]));
     });
 }

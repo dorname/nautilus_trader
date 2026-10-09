@@ -93,6 +93,17 @@ pub fn mark_cancel_outcomes(results: &mut [SubtaskResult], issued: &[bool]) -> u
     missed
 }
 
+/// 聚合校验（core-06 M4.3 validator 语义，issue #23；UT-S17-26）：
+/// 仅当全部子任务 Succeeded 且 output 非空白时才允许产物挂载（true）；
+/// 其余一律阻断（false）。空结果集不算成功。
+pub fn aggregate_valid(results: &[SubtaskResult]) -> bool {
+    !results.is_empty()
+        && results.iter().all(|r| {
+            r.state == SubtaskState::Succeeded
+                && r.output.as_deref().is_some_and(|s| !s.trim().is_empty())
+        })
+}
+
 /// 解析 base 配置的 profile 路径（issue #24：禁止机器绝对路径硬编码）。
 /// profile 由 `AgentSessionConfig::desktop_with_profile` 解析复制到 base 数据
 /// 目录；缺失时明确报错（不静默跳过导致子 agent 无模型静默失败）。
@@ -698,6 +709,43 @@ impl SwarmWorker {
                 });
                 continue;
             }
+            // core-06 约束 5（issue #23）：派发写 redb 账本；失败降级不阻断
+            let ledger_path =
+                std::path::Path::new(&config.oup.data_dir).join("swarm-ledger.redb");
+            let mut ledger = crate::swarm_ledger::SwarmLedger::open(&ledger_path)
+                .map_err(|e| eprintln!("[swarm-ledger] 账本打开失败（派发继续）：{e}"))
+                .ok();
+            let ledger_id = format!(
+                "{}-{id}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
+            if let Some(l) = &mut ledger {
+                let contracts: Vec<String> =
+                    swarm.results().iter().map(|r| r.contract_id.clone()).collect();
+                let turn_ids: Vec<String> =
+                    swarm.results().iter().map(|r| r.turn_id.clone()).collect();
+                if let Err(e) = l.record_dispatch(&ledger_id, contracts, turn_ids) {
+                    eprintln!("[swarm-ledger] 派发记录失败（派发继续）：{e}");
+                }
+            }
+            // 终态入账助手：Completed→Completed，其余→Failed（不得吞为成功）
+            macro_rules! ledger_terminal {
+                ($l:expr, $state:expr) => {
+                    if let Some(l) = &mut $l {
+                        let ls = if $state == SwarmDispatchState::Completed {
+                            crate::swarm_ledger::LedgerState::Completed
+                        } else {
+                            crate::swarm_ledger::LedgerState::Failed
+                        };
+                        if let Err(e) = l.record_terminal(&ledger_id, ls) {
+                            eprintln!("[swarm-ledger] 终态入账失败（忽略）：{e}");
+                        }
+                    }
+                };
+            }
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_secs(SWARM_WORKER_TIMEOUT_SECS);
             loop {
@@ -708,6 +756,7 @@ impl SwarmWorker {
                     match extra {
                         SwarmRequest::Cancel { id: cid } if cid == id => {
                             let cancel_err = swarm.cancel_all().err().map(|e| e.to_string());
+                            ledger_terminal!(ledger, swarm.state());
                             let sent = ev_tx.send(SwarmEvent {
                                 id,
                                 state: swarm.state(),
@@ -737,6 +786,7 @@ impl SwarmWorker {
                     break;
                 }
                 if let Err(e) = swarm.poll_all() {
+                    ledger_terminal!(ledger, SwarmDispatchState::Failed);
                     let _ = ev_tx.send(SwarmEvent {
                         id,
                         state: SwarmDispatchState::Failed,
@@ -747,6 +797,9 @@ impl SwarmWorker {
                     break;
                 }
                 let terminal = !swarm.is_active();
+                if terminal {
+                    ledger_terminal!(ledger, swarm.state());
+                }
                 if ev_tx
                     .send(SwarmEvent {
                         id,
@@ -765,6 +818,7 @@ impl SwarmWorker {
                 if std::time::Instant::now() >= deadline {
                     // 超时：真实取消并把剩余 Running 置 Cancelled（不得吞为成功）
                     let _ = swarm.cancel_all();
+                    ledger_terminal!(ledger, swarm.state());
                     let _ = ev_tx.send(SwarmEvent {
                         id,
                         state: swarm.state(),

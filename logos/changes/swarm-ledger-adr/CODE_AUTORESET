@@ -1,0 +1,1 @@
+{"ts":"2026-10-09T14:36:08.927Z","trigger":"merge","old_code":"## [code] 代码实现\n- [ ] research-desktop 加 redb 依赖；swarm_ledger 模块（record_dispatch/record_terminal/unfinished/mark_unfinished_interrupted）\n- [ ] SwarmWorker dispatch/终态写账本（失败降级不阻断）\n- [ ] GUI attach_bridge 后账本重建：未完成派发标记「中断（进程重启）」并记录\n- [ ] aggregate_valid 纯函数提取（聚合校验，#23）\n- [ ] UT-S17-25 / UT-S17-26 入账 reporter 并通过"}

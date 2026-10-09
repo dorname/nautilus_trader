@@ -377,6 +377,20 @@ impl ResearchApp {
             Ok(b) => {
                 self.bridge_error = None;
                 self.bridge = Some(b);
+                // core-06 约束 5（issue #23）：启动时从 redb 账本恢复——
+                // 未完成派发标记「中断（进程重启）」，不假装仍在运行
+                let ledger_path = Self::agent_data_dir()
+                    .join("swarm")
+                    .join("data")
+                    .join("swarm-ledger.redb");
+                let n = crate::swarm_ledger::recover_on_startup(&ledger_path);
+                if n > 0 {
+                    self.tell(
+                        format!("检测到上次会话遗留 {n} 个未完成的多 Agent 派发，已标记为「中断（进程重启）」。历史版本与实验不受影响，可重新确认需求再次派发。"),
+                        None,
+                    );
+                    self.record(&format!("多 Agent 账本恢复 · {n} 个遗留派发标记中断"));
+                }
             }
             Err(e) => {
                 self.bridge_error = Some(format!("工作区打开失败：{}", e.message));
@@ -5597,12 +5611,9 @@ impl ResearchApp {
                 continue;
             }
             let task = self.swarm_task.take().expect("上方已比对为当前任务");
+            // 聚合校验（core-06 M4.3 validator，issue #23）：不通过则阻断挂载
             let ok = ev.state == crate::swarm_bridge::SwarmDispatchState::Completed
-                && !ev.results.is_empty()
-                && ev.results.iter().all(|r| {
-                    r.state == crate::swarm_bridge::SubtaskState::Succeeded
-                        && r.output.as_deref().is_some_and(|s| !s.trim().is_empty())
-                });
+                && crate::swarm_bridge::aggregate_valid(&ev.results);
             if ok {
                 let summary = crate::swarm_bridge::summarize_swarm_results(&ev.results);
                 match self

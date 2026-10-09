@@ -8025,6 +8025,7 @@ dependencies = [
  "nautilus-research-domain",
  "nautilus-research-testkit",
  "nautilus-research-worker",
+ "redb",
  "serde",
  "serde_json",
  "uuid",

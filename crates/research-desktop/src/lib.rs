@@ -23,5 +23,6 @@ pub mod oup;
 pub mod pipeline;
 pub mod session;
 pub mod swarm_bridge;
+pub mod swarm_ledger;
 pub mod theme;
 pub mod workspace;

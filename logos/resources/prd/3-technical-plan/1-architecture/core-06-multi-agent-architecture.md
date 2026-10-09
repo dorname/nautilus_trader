@@ -9,10 +9,10 @@
 | 决策点 | 选择 | 理由 |
 |---|---|---|
 | Agent 运行时 | **复用 octos 内核**（`octos serve` 进程） | octos 已提供 agent 执行循环、工具、审批、任务监督、持久化账本；原型中的"演示计算器"在生产中就是真实的 sub-agent dispatch |
-| 多 Agent 编排 | **复用 octos-swarm** 的 `Swarm::dispatch` | 已具备 Parallel/Sequential/Pipeline/Fanout 四种拓扑、幂等派发、崩溃恢复、重试上限、聚合校验 |
+| 多 Agent 编排 | **客户端侧并行 turn（SwarmBridge 经 OUP stdio）**（ADR 修订，swarm-ledger-adr） | octos-swarm 不作为库公开发布（仅以 CLI 分发），stdio 客户端无法进程内复用；SwarmBridge 已具备 Parallel/Pipeline 拓扑、幂等键、真实 turn 终态归约、turn/interrupt 中断、redb 账本恢复、聚合校验 |
 | 接入方式 | **OUP over stdio / WebSocket**（参考 octoscode） | octoscode 的接线方式：GUI（TUI）不内嵌 agent，而是通过 `AppUiCommand`/JSON-RPC 与 `octos serve` 通信；research-desktop 作为另一个 OUP 客户端 |
 | Agent 定义 | **AgentDefinition 清单**（JSON/TOML manifest） | 声明式能力包络：工具白/黑名单、模型偏好、生命周期钩子；与 Claude Code 的 AgentDefinition 字段对齐 |
-| 状态持久化 | **redb 派发账本 + SQLite 项目元数据** | swarm 派发状态用 octos 自带 redb ledger（幂等恢复）；研究项目/版本/产物用 research-desktop 现有 SQLite |
+| 状态持久化 | **redb 派发账本 + SQLite 项目元数据** | swarm 派发状态用 research-desktop 自建 redb 账本（`swarm_ledger`，幂等恢复；ADR 修订：原为 octos 自带 ledger）；研究项目/版本/产物用 research-desktop 现有 SQLite |
 | 前端呈现 | **隐藏编排细节**（延续 core-05 决策） | 用户不选角色、不配预算；只呈现任务状态卡片与产物引用 |
 
 ## 2. 运行时拓扑
@@ -118,7 +118,7 @@ tools = ["read_file", "grep", "glob", "shell"]  # shell 仅用于 cargo check / 
 2. **未确认需求不能生成设计**：dispatch 前校验上游冻结引用（`contracts_fingerprint` 类似物：需求版本哈希）
 3. **任意源码不可冒称执行**：code-reviewer 只接受预置示例完整匹配才允许进入演示运行（S18 语义保留）
 4. **正式验证恒需真实证据**：真实数据/样本外/稳健性缺失时报告必须显示"证据不足"（S19 语义保留）
-5. **幂等与恢复**：所有 dispatch 携带 idempotency 键（dispatch_id + 契约指纹）；GUI 重启后从 redb 账本重建任务卡片状态
+5. **幂等与恢复**：所有 dispatch 携带 idempotency 键（dispatch_id + 契约指纹）；GUI 重启后从自建 redb 账本（`swarm_ledger`）重建任务卡片状态——未完成派发一律标记「中断（进程重启）」（诚实口径：octos 子进程已随旧进程死亡，不得假装仍在运行）
 6. **项目隔离**：dispatch 的 `session_id` 绑定 research-desktop 项目 ID；切换项目不影响在途任务归属
 7. **零新增 unsafe**：遵循 octos workspace `deny(unsafe_code)`
 
