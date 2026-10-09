@@ -1339,11 +1339,13 @@ impl ResearchApp {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.add(theme::ghost_button("取消")).clicked() {
                                             self.cancel_agent_task();
-                                            // 多 Agent 分析同样本地放弃（语义对齐
-                                            // cancel_agent_task：模型侧执行不伪造中断）
+                                            // 多 Agent 分析同样先真实 interrupt 再本地放弃
                                             if let Some(t) = self.swarm_task.take() {
+                                                if let Some(worker) = &self.swarm_worker {
+                                                    let _ = worker.cancel(t.id);
+                                                }
                                                 self.record(&format!(
-                                                    "多 Agent 分析 R{} · 已取消（本地放弃，模型侧执行不中断）",
+                                                    "多 Agent 分析 R{} · 已取消（已请求中断模型执行）",
                                                     t.req_id
                                                 ));
                                             }
@@ -1372,13 +1374,16 @@ impl ResearchApp {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if ui.add(theme::ghost_button("取消")).clicked() {
                                             if let Some(t) = self.swarm_task.take() {
+                                                if let Some(worker) = &self.swarm_worker {
+                                                    let _ = worker.cancel(t.id);
+                                                }
                                                 self.record(&format!(
-                                                    "多 Agent 分析 R{} · 已取消（本地放弃，模型侧执行不中断）",
+                                                    "多 Agent 分析 R{} · 已取消（已请求中断模型执行）",
                                                     t.req_id
                                                 ));
                                             }
                                             self.tell(
-                                                "多 Agent 分析已取消，未提交新产物。模型调用可能在后台完成，其结果将被丢弃。",
+                                                "多 Agent 分析已取消并请求中断模型执行，未提交新产物；若中断前模型已产出，其结果将被丢弃。",
                                                 None,
                                             );
                                         }
@@ -5076,9 +5081,14 @@ impl ResearchApp {
     /// 若结果稍后返回，按过期任务丢弃（RD 语义：不伪造中断）。
     fn cancel_agent_task(&mut self) {
         if let Some(t) = self.agent_task.take() {
-            self.record(&format!("{} · 已取消（本地放弃，模型侧执行不中断）", t.label));
+            // issue #19：先向 worker 发真实 turn/interrupt，再本地放弃等待；
+            // 中断结果（turn/error interrupted）按过期任务丢弃，不再上卡。
+            if let Some(worker) = &self.agent_worker {
+                let _ = worker.cancel(t.id);
+            }
+            self.record(&format!("{} · 已取消（已请求中断模型执行）", t.label));
             self.tell(
-                "任务已取消，未提交新产物。已有版本和实验继续保留。模型调用可能在后台完成，其结果将被丢弃。",
+                "任务已取消并请求中断模型执行，未提交新产物。已有版本和实验继续保留；若中断前模型已产出，其结果将被丢弃。",
                 None,
             );
         }

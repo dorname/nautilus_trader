@@ -327,6 +327,21 @@ impl OupClient {
         )
     }
 
+    /// 中断活跃 turn（OUP turn/interrupt，issue #19）。
+    ///
+    /// 真实探针语义：服务端返回 `{interrupted:true}`，随后该 turn 以
+    /// `turn/error(code=interrupted)` 收尾；`turn/state/get` 为 `interrupted`。
+    /// 与 `task/cancel` 不同，本方法对活跃 LLM turn 真实生效。
+    pub fn turn_interrupt(&mut self, session_id: &str, turn_id: &str) -> OupResult<Value> {
+        self.call(
+            "turn/interrupt",
+            serde_json::json!({
+                "session_id": session_id,
+                "turn_id": turn_id,
+            }),
+        )
+    }
+
     /// 启动 turn（OUP turn/start）。
     ///
     /// 返回值始终含客户端生成的 `turn_id`（UUID）；服务端 `accepted` 响应里未必带回该字段。

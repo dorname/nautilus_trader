@@ -71,6 +71,28 @@ pub struct SubtaskResult {
     pub final_prompt: String,
 }
 
+/// 依据各子任务 interrupt 是否真实发出归约取消结果（纯函数，UT-S17-20）：
+/// - 仅 Running 子任务参与归约：`issued=true` → Cancelled；`false` → Failed
+///   并写入诚实错误（不伪装取消成功，issue #28）；
+/// - 非 Running 子任务保持原状；
+/// - 返回中断未发出的子任务数（>0 时调用方必须返回错误）。
+pub fn mark_cancel_outcomes(results: &mut [SubtaskResult], issued: &[bool]) -> usize {
+    let mut missed = 0;
+    for (r, ok) in results.iter_mut().zip(issued.iter()) {
+        if r.state != SubtaskState::Running {
+            continue;
+        }
+        if *ok {
+            r.state = SubtaskState::Cancelled;
+        } else {
+            r.state = SubtaskState::Failed;
+            r.error = Some("中断请求未发出（不伪装取消成功）".into());
+            missed += 1;
+        }
+    }
+    missed
+}
+
 /// 派发终态归约（纯函数，UT-S17-18 判定矩阵）：
 /// - 空集或含 Queued/Running → `None`（不得判终态）；
 /// - 含 Failed/Cancelled → `Some(Failed)`（失败不得吞为成功）；
@@ -129,6 +151,8 @@ pub enum SwarmError {
     TooManyContracts { max: usize, actual: usize },
     /// 无活跃派发。
     NoActiveDispatch,
+    /// 部分子任务中断请求未发出（不得伪装取消成功，issue #28）。
+    CancelIncomplete { missed: usize },
 }
 
 impl std::fmt::Display for SwarmError {
@@ -139,6 +163,9 @@ impl std::fmt::Display for SwarmError {
                 write!(f, "子任务数 {actual} 超过上限 {max}")
             }
             SwarmError::NoActiveDispatch => write!(f, "无活跃派发"),
+            SwarmError::CancelIncomplete { missed } => {
+                write!(f, "{missed} 个子任务中断请求未发出（不伪装取消成功）")
+            }
         }
     }
 }
@@ -169,6 +196,25 @@ impl SwarmBridge {
     /// 子任务结果。
     pub fn results(&self) -> &[SubtaskResult] {
         &self.results
+    }
+
+    /// 测试可达：注入一个 Running 子任务（无对应 agent 连接；
+    /// UT-S17-20 取消归约「中断发不出」分支用）。
+    #[doc(hidden)]
+    pub fn test_seed_running(&mut self, contract_id: &str, turn_id: &str) {
+        self.results.push(SubtaskResult {
+            contract_id: contract_id.into(),
+            state: SubtaskState::Running,
+            output: None,
+            error: None,
+            turn_id: turn_id.into(),
+            final_prompt: String::new(),
+        });
+        let total = self.results.len();
+        self.state = SwarmDispatchState::Active {
+            dispatched: total,
+            total,
+        };
     }
 
     /// 是否有活跃派发。
@@ -431,25 +477,29 @@ impl SwarmBridge {
 
     /// 取消所有活跃子任务。
     pub fn cancel_all(&mut self) -> SwarmResult<()> {
-        for agent in &mut self.agents {
-            if let Ok(tasks) = agent.poll_tasks() {
-                if let Some(arr) = tasks.get("tasks").and_then(|t| t.as_array()) {
-                    for task in arr {
-                        if let Some(task_id) = task.get("task_id").and_then(|t| t.as_str()) {
-                            let _ = agent.cancel_task(task_id);
-                        }
-                    }
+        // issue #19/#28：按 turn_id 对每个 Running 子任务发真实 turn/interrupt；
+        // 只有中断请求真实发出的才标 Cancelled，发不出的标 Failed 且整体返回
+        // Err——空 tasks 或本地状态机不得伪装成功取消。
+        let mut issued = Vec::with_capacity(self.results.len());
+        for i in 0..self.results.len() {
+            let ok = if self.results[i].state == SubtaskState::Running {
+                match self.agents.get_mut(i) {
+                    Some(agent) => agent.interrupt_turn().is_ok(),
+                    None => false,
                 }
-            }
+            } else {
+                true
+            };
+            issued.push(ok);
         }
-
-        for result in &mut self.results {
-            if result.state == SubtaskState::Running {
-                result.state = SubtaskState::Cancelled;
-            }
+        let missed = mark_cancel_outcomes(&mut self.results, &issued);
+        let states: Vec<SubtaskState> = self.results.iter().map(|r| r.state.clone()).collect();
+        if let Some(s) = reduce_dispatch_terminal(&states) {
+            self.state = s;
         }
-
-        self.state = SwarmDispatchState::Failed;
+        if missed > 0 {
+            return Err(SwarmError::CancelIncomplete { missed });
+        }
         Ok(())
     }
 
@@ -562,10 +612,17 @@ pub struct SwarmEvent {
     pub error: Option<String>,
 }
 
-/// Swarm 派发请求。
-struct SwarmRequest {
-    id: u64,
-    contracts: Vec<SubtaskContract>,
+/// Swarm worker 请求。
+enum SwarmRequest {
+    /// 派发并行子任务。
+    Dispatch {
+        id: u64,
+        contracts: Vec<SubtaskContract>,
+    },
+    /// 中断进行中的派发（按任务 ID 对齐；issue #19 真实 interrupt）。
+    Cancel {
+        id: u64,
+    },
 }
 
 /// 后台 Swarm worker：独立线程持有 SwarmBridge（含每子 agent 的 octos serve
@@ -596,10 +653,14 @@ impl SwarmWorker {
         ev_tx: std::sync::mpsc::Sender<SwarmEvent>,
     ) {
         while let Ok(req) = req_rx.recv() {
+            let SwarmRequest::Dispatch { id, contracts } = req else {
+                // 空闲期收到的 Cancel 无作用对象，忽略
+                continue;
+            };
             let mut swarm = SwarmBridge::new();
-            if let Err(e) = swarm.dispatch_parallel(&config, req.contracts) {
+            if let Err(e) = swarm.dispatch_parallel(&config, contracts) {
                 let _ = ev_tx.send(SwarmEvent {
-                    id: req.id,
+                    id,
                     state: SwarmDispatchState::Failed,
                     results: Vec::new(),
                     terminal: true,
@@ -610,9 +671,44 @@ impl SwarmWorker {
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_secs(SWARM_WORKER_TIMEOUT_SECS);
             loop {
+                // 忙期请求：对当前派发的 Cancel 发真实 interrupt（issue #19）；
+                // 其他 ID 的 Cancel 忽略；忙期新 Dispatch 直接失败回执（单活跃口径）。
+                let mut cancelled = false;
+                while let Ok(extra) = req_rx.try_recv() {
+                    match extra {
+                        SwarmRequest::Cancel { id: cid } if cid == id => {
+                            let cancel_err = swarm.cancel_all().err().map(|e| e.to_string());
+                            let sent = ev_tx.send(SwarmEvent {
+                                id,
+                                state: swarm.state(),
+                                results: swarm.results().to_vec(),
+                                terminal: true,
+                                error: cancel_err,
+                            });
+                            if sent.is_err() {
+                                return;
+                            }
+                            cancelled = true;
+                            break;
+                        }
+                        SwarmRequest::Cancel { .. } => {}
+                        SwarmRequest::Dispatch { id: did, .. } => {
+                            let _ = ev_tx.send(SwarmEvent {
+                                id: did,
+                                state: SwarmDispatchState::Failed,
+                                results: Vec::new(),
+                                terminal: true,
+                                error: Some("已有进行中派发，本次请求被拒绝".into()),
+                            });
+                        }
+                    }
+                }
+                if cancelled {
+                    break;
+                }
                 if let Err(e) = swarm.poll_all() {
                     let _ = ev_tx.send(SwarmEvent {
-                        id: req.id,
+                        id,
                         state: SwarmDispatchState::Failed,
                         results: swarm.results().to_vec(),
                         terminal: true,
@@ -623,7 +719,7 @@ impl SwarmWorker {
                 let terminal = !swarm.is_active();
                 if ev_tx
                     .send(SwarmEvent {
-                        id: req.id,
+                        id,
                         state: swarm.state(),
                         results: swarm.results().to_vec(),
                         terminal,
@@ -640,7 +736,7 @@ impl SwarmWorker {
                     // 超时：真实取消并把剩余 Running 置 Cancelled（不得吞为成功）
                     let _ = swarm.cancel_all();
                     let _ = ev_tx.send(SwarmEvent {
-                        id: req.id,
+                        id,
                         state: swarm.state(),
                         results: swarm.results().to_vec(),
                         terminal: true,
@@ -660,7 +756,15 @@ impl SwarmWorker {
     /// 派发并行子任务（非阻塞；进度事件经 `try_recv` 获取）。
     pub fn dispatch(&self, id: u64, contracts: Vec<SubtaskContract>) -> Result<(), String> {
         let tx = self.tx.as_ref().ok_or("swarm worker 已关闭")?;
-        tx.send(SwarmRequest { id, contracts })
+        tx.send(SwarmRequest::Dispatch { id, contracts })
+            .map_err(|e| format!("swarm worker 已退出：{e}"))
+    }
+
+    /// 请求中断进行中的派发（非阻塞；worker 对当前任务发真实 turn/interrupt，
+    /// 终态事件经 `try_recv` 获取）。空闲期或无匹配任务时静默忽略。
+    pub fn cancel(&self, id: u64) -> Result<(), String> {
+        let tx = self.tx.as_ref().ok_or("swarm worker 已关闭")?;
+        tx.send(SwarmRequest::Cancel { id })
             .map_err(|e| format!("swarm worker 已退出：{e}"))
     }
 

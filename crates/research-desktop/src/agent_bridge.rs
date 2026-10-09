@@ -118,6 +118,8 @@ pub enum AgentError {
     NotConnected,
     /// 会话已存在活跃 turn。
     TurnAlreadyActive,
+    /// 无活跃 turn 可中断（interrupt 语义拒绝，不得伪装成功）。
+    NoActiveTurn,
 }
 
 impl std::fmt::Display for AgentError {
@@ -126,6 +128,7 @@ impl std::fmt::Display for AgentError {
             AgentError::Oup(e) => write!(f, "OUP 错误: {e}"),
             AgentError::NotConnected => write!(f, "Agent 会话未连接"),
             AgentError::TurnAlreadyActive => write!(f, "已有活跃对话进行中"),
+            AgentError::NoActiveTurn => write!(f, "无活跃对话可中断"),
         }
     }
 }
@@ -300,6 +303,22 @@ impl AgentBridge {
         Ok(())
     }
 
+    /// 中断当前活跃 turn（OUP turn/interrupt，issue #19/#29）。
+    ///
+    /// 按 `active_turn_id` 向 octos 发真实中断；返回服务端响应
+    /// （`{interrupted:true}`）。中断后 turn 以 `turn/error(interrupted)`
+    /// 收尾，由后续 `poll_turn_outcome` 归约为 `TurnTerminal::Failed`。
+    /// 无活跃 turn 或未连接时明确拒绝（`NoActiveTurn`/`NotConnected`），
+    /// 不伪造中断成功（issue #28 口径）。
+    pub fn interrupt_turn(&mut self) -> AgentResult<Value> {
+        if self.state != AgentSessionState::TurnActive {
+            return Err(AgentError::NoActiveTurn);
+        }
+        let turn_id = self.active_turn_id.clone().ok_or(AgentError::NoActiveTurn)?;
+        let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
+        Ok(client.turn_interrupt(&self.config.session_id, &turn_id)?)
+    }
+
     /// 列出 agents（agent/list）。
     pub fn list_agents(&mut self) -> AgentResult<Value> {
         let client = self.client.as_mut().ok_or(AgentError::NotConnected)?;
@@ -350,11 +369,13 @@ pub struct WorkerResponse {
     pub result: Result<WorkerTurn, String>,
 }
 
-/// Worker 请求：任务 ID + prompt。
+/// Worker 请求。
 #[derive(Debug)]
-struct WorkerRequest {
-    id: u64,
-    prompt: String,
+enum WorkerRequest {
+    /// 提交 prompt（串行执行）。
+    Submit { id: u64, prompt: String },
+    /// 中断进行中的 turn（按任务 ID 对齐；issue #19 真实 turn/interrupt）。
+    Cancel { id: u64 },
 }
 
 /// 后台 Agent worker：独立线程持有 AgentBridge（含 octos serve 子进程），
@@ -385,13 +406,17 @@ impl AgentWorker {
     ) {
         let mut bridge: Option<AgentBridge> = None;
         while let Ok(req) = req_rx.recv() {
+            let WorkerRequest::Submit { id, prompt } = req else {
+                // 空闲期收到的 Cancel 无作用对象，忽略
+                continue;
+            };
             if bridge.is_none() {
                 let mut b = AgentBridge::new(config.clone());
                 match b.connect() {
                     Ok(()) => bridge = Some(b),
                     Err(e) => {
                         let _ = resp_tx.send(WorkerResponse {
-                            id: req.id,
+                            id,
                             result: Err(format!("连接 octos 失败：{e}")),
                         });
                         continue;
@@ -399,25 +424,86 @@ impl AgentWorker {
                 }
             }
             let b = bridge.as_mut().expect("bridge 已在上方建立");
-            let result = b
-                .submit_and_wait(&req.prompt, DEFAULT_TURN_TIMEOUT_SECS)
-                .map(|(turn_id, out)| WorkerTurn {
-                    turn_id,
-                    reply: out.assistant_text,
-                    tokens_in: out.completed.get("tokens_in").and_then(|v| v.as_u64()),
-                    tokens_out: out.completed.get("tokens_out").and_then(|v| v.as_u64()),
-                })
-                .map_err(|e| e.to_string());
-            if resp_tx.send(WorkerResponse { id: req.id, result }).is_err() {
+            let result =
+                Self::run_turn(b, id, &prompt, &req_rx, &resp_tx);
+            if resp_tx.send(WorkerResponse { id, result }).is_err() {
                 return;
             }
+        }
+    }
+
+    /// 执行单个 turn：非阻塞提交后轮询终态；轮询间隙处理 Cancel
+    /// （真实 turn/interrupt）与忙期新 Submit（回绝，保持单活跃口径）。
+    fn run_turn(
+        b: &mut AgentBridge,
+        id: u64,
+        prompt: &str,
+        req_rx: &std::sync::mpsc::Receiver<WorkerRequest>,
+        resp_tx: &std::sync::mpsc::Sender<WorkerResponse>,
+    ) -> Result<WorkerTurn, String> {
+        let turn_id = b.submit_prompt(prompt).map_err(|e| e.to_string())?;
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECS);
+        let mut interrupted = false;
+        loop {
+            while let Ok(extra) = req_rx.try_recv() {
+                match extra {
+                    WorkerRequest::Cancel { id: cid } if cid == id => {
+                        // 中断发不出时不伪装：标记失败语义由终态归约表达
+                        interrupted = b.interrupt_turn().is_ok();
+                    }
+                    WorkerRequest::Cancel { .. } => {}
+                    WorkerRequest::Submit { id: sid, .. } => {
+                        let _ = resp_tx.send(WorkerResponse {
+                            id: sid,
+                            result: Err("另一任务进行中，本次提交被拒绝".into()),
+                        });
+                    }
+                }
+            }
+            match b.poll_turn_outcome() {
+                Ok(Some(TurnTerminal::Completed(out))) => {
+                    return Ok(WorkerTurn {
+                        turn_id,
+                        reply: out.assistant_text,
+                        tokens_in: out.completed.get("tokens_in").and_then(|v| v.as_u64()),
+                        tokens_out: out.completed.get("tokens_out").and_then(|v| v.as_u64()),
+                    });
+                }
+                Ok(Some(TurnTerminal::Failed(msg))) => {
+                    return Err(if interrupted {
+                        format!("任务已中断（{msg}）")
+                    } else {
+                        msg
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+            if std::time::Instant::now() >= deadline {
+                // 超时：尝试真实中断（不伪造成功），返回超时错误
+                let _ = b.interrupt_turn();
+                return Err(format!(
+                    "turn 超时（{}s 未达终态）",
+                    DEFAULT_TURN_TIMEOUT_SECS
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 
     /// 提交任务（非阻塞；worker 串行执行，真实 LLM 调用带 120s 超时）。
     pub fn submit(&self, id: u64, prompt: String) -> Result<(), String> {
         let tx = self.tx.as_ref().ok_or("agent worker 已关闭")?;
-        tx.send(WorkerRequest { id, prompt })
+        tx.send(WorkerRequest::Submit { id, prompt })
+            .map_err(|e| format!("agent worker 已退出：{e}"))
+    }
+
+    /// 请求中断进行中的任务（非阻塞；worker 对当前 turn 发真实
+    /// turn/interrupt，结果仍经 `try_recv` 返回）。空闲期静默忽略。
+    pub fn cancel(&self, id: u64) -> Result<(), String> {
+        let tx = self.tx.as_ref().ok_or("agent worker 已关闭")?;
+        tx.send(WorkerRequest::Cancel { id })
             .map_err(|e| format!("agent worker 已退出：{e}"))
     }
 

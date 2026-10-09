@@ -3,11 +3,12 @@
 //! CPU 红线：每个测试独立临时目录；并发上限 MAX_PARALLEL_DISPATCH=3；
 //! 测试完成后清理所有子进程。
 
-use nautilus_research_desktop::agent_bridge::AgentSessionConfig;
+use nautilus_research_desktop::agent_bridge::{AgentBridge, AgentError, AgentSessionConfig};
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
-    SwarmBridge, SwarmDispatchState, SwarmWorker, SubtaskContract, SubtaskState,
-    reduce_dispatch_terminal, s17_requirement_contracts, summarize_swarm_results,
+    SwarmBridge, SwarmDispatchState, SwarmError, SwarmWorker, SubtaskContract, SubtaskResult,
+    SubtaskState, mark_cancel_outcomes, reduce_dispatch_terminal, s17_requirement_contracts,
+    summarize_swarm_results,
 };
 use nautilus_research_desktop::workspace::Workspace;
 use nautilus_research_testkit::case;
@@ -133,34 +134,120 @@ fn st_m2_03_dispatch_exceeds_limit() {
     assert!(!swarm.is_active());
 }
 
-/// ST-M2-04：取消所有子任务。
+/// ST-S17-22：真实 LLM 派发中 cancel_all（turn/interrupt）——子任务终态
+/// Cancelled（非 Succeeded），归约 Failed，无假成功（issue #19/#28/#29）。
 #[test]
-fn st_m2_04_cancel_all() {
-    let config = temp_agent_config("cancel");
-    let mut swarm = SwarmBridge::new();
+fn st_s17_22_cancel_all_interrupts_real_turn() {
+    case("ST-S17-22", || {
+        let config = temp_agent_config("cancel");
+        let mut swarm = SwarmBridge::new();
 
-    let contracts = vec![
-        SubtaskContract {
-            contract_id: "cancel-a".into(),
-            label: "取消测试A".into(),
-            prompt: "test cancel".into(),
-        },
-        SubtaskContract {
-            contract_id: "cancel-b".into(),
-            label: "取消测试B".into(),
-            prompt: "test cancel".into(),
-        },
-    ];
+        // 长输出 prompt 保证 turn 在 cancel_all 时仍活跃（interrupt 落在执行中）
+        let contracts = vec![
+            SubtaskContract {
+                contract_id: "cancel-a".into(),
+                label: "取消测试A".into(),
+                prompt: "从 1 数到 200，每个数字单独一行，不要输出任何其他内容。".into(),
+            },
+            SubtaskContract {
+                contract_id: "cancel-b".into(),
+                label: "取消测试B".into(),
+                prompt: "从 1 数到 200，每个数字单独一行，不要输出任何其他内容。".into(),
+            },
+        ];
 
-    swarm
-        .dispatch_parallel(&config, contracts)
-        .expect("dispatch");
-    assert!(swarm.is_active());
+        let turn_ids = swarm
+            .dispatch_parallel(&config, contracts)
+            .expect("dispatch");
+        assert!(swarm.is_active());
+        // issue #29：SubtaskResult 持有 turn_id，cancel 可按 turn 对齐
+        for (r, tid) in swarm.results().iter().zip(turn_ids.iter()) {
+            assert_eq!(&r.turn_id, tid, "子任务应保留派发返回的 turn_id");
+            assert!(!r.turn_id.is_empty());
+        }
 
-    swarm.cancel_all().expect("cancel_all");
-    assert_eq!(swarm.state(), SwarmDispatchState::Failed);
+        // 真实中断：interrupt 真实发出 → 全部 Cancelled 且整体 Ok
+        swarm.cancel_all().expect("活跃 turn 应可中断");
+        for r in swarm.results() {
+            assert_eq!(
+                r.state,
+                SubtaskState::Cancelled,
+                "中断后子任务应为 Cancelled（非 Succeeded）：{}",
+                r.contract_id
+            );
+        }
+        assert_eq!(
+            swarm.state(),
+            SwarmDispatchState::Failed,
+            "取消归约必须为 Failed（不得吞为 Completed）"
+        );
 
-    swarm.disconnect_all();
+        swarm.disconnect_all();
+    });
+}
+
+/// UT-S17-20：取消/中断判定矩阵（无 LLM）——无活跃 turn 拒绝 interrupt；
+/// mark_cancel_outcomes 全发出/部分发出/无 Running；无 agent 连接时
+/// cancel_all 不得伪装成功（Err + Failed 而非 Cancelled）。
+#[test]
+fn ut_s17_20_cancel_interrupt_matrix() {
+    case("UT-S17-20", || {
+        // 1. 无活跃 turn：interrupt_turn 明确拒绝且不改状态
+        let mut bridge = AgentBridge::new(AgentSessionConfig::default());
+        let before = bridge.state().clone();
+        assert!(matches!(
+            bridge.interrupt_turn(),
+            Err(AgentError::NoActiveTurn)
+        ));
+        assert_eq!(bridge.state(), &before);
+
+        // 2. mark_cancel_outcomes 纯函数矩阵
+        let mk = |id: &str, state: SubtaskState| SubtaskResult {
+            contract_id: id.into(),
+            state,
+            output: None,
+            error: None,
+            turn_id: format!("t-{id}"),
+            final_prompt: String::new(),
+        };
+        // 全发出 → 全 Cancelled，missed=0
+        let mut rs = vec![
+            mk("a", SubtaskState::Running),
+            mk("b", SubtaskState::Running),
+        ];
+        assert_eq!(mark_cancel_outcomes(&mut rs, &[true, true]), 0);
+        assert!(rs.iter().all(|r| r.state == SubtaskState::Cancelled));
+        // 部分发出 → 未发出 Failed + 诚实错误，missed=1；已终态子任务不受影响
+        let mut rs = vec![
+            mk("a", SubtaskState::Running),
+            mk("b", SubtaskState::Running),
+            mk("c", SubtaskState::Succeeded),
+        ];
+        assert_eq!(mark_cancel_outcomes(&mut rs, &[true, false, true]), 1);
+        assert_eq!(rs[0].state, SubtaskState::Cancelled);
+        assert_eq!(rs[1].state, SubtaskState::Failed);
+        assert!(rs[1].error.as_deref().is_some_and(|e| e.contains("未发出")));
+        assert_eq!(rs[2].state, SubtaskState::Succeeded);
+        // 无 Running → missed=0 且无任何改动
+        let mut rs = vec![mk("a", SubtaskState::Succeeded)];
+        assert_eq!(mark_cancel_outcomes(&mut rs, &[true]), 0);
+        assert_eq!(rs[0].state, SubtaskState::Succeeded);
+
+        // 3. 无 agent 连接（中断发不出）：cancel_all 必须 Err 且标 Failed，
+        //    不得伪装 Cancelled/成功（issue #28 核心口径）
+        let mut swarm = SwarmBridge::new();
+        swarm.test_seed_running("x", "t-x");
+        swarm.test_seed_running("y", "t-y");
+        assert!(matches!(
+            swarm.cancel_all(),
+            Err(SwarmError::CancelIncomplete { missed: 2 })
+        ));
+        for r in swarm.results() {
+            assert_eq!(r.state, SubtaskState::Failed);
+            assert!(r.error.is_some());
+        }
+        assert_eq!(swarm.state(), SwarmDispatchState::Failed);
+    });
 }
 
 /// ST-M2-05：轮询所有子任务状态。
