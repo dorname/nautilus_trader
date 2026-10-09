@@ -6,7 +6,7 @@
 
 | Metric | Value |
 |--------|-------|
-| Defined cases | 124 |
+| Defined cases | 129 |
 | Manual cases (excluded) | 18 |
 | Executed cases | 129 |
 | Passed | 125 |
@@ -15,7 +15,7 @@
 | Uncovered | 0 |
 | Coverage | 100% |
 | Pass rate | 100% |
-| **Gate 3.5** | **FAIL** |
+| **Gate 3.5** | **PASS** |
 
 ## Skipped Cases
 
