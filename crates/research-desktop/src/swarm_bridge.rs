@@ -93,6 +93,30 @@ pub fn mark_cancel_outcomes(results: &mut [SubtaskResult], issued: &[bool]) -> u
     missed
 }
 
+/// 解析 base 配置的 profile 路径（issue #24：禁止机器绝对路径硬编码）。
+/// profile 由 `AgentSessionConfig::desktop_with_profile` 解析复制到 base 数据
+/// 目录；缺失时明确报错（不静默跳过导致子 agent 无模型静默失败）。
+fn base_profile_path(
+    base_config: &crate::agent_bridge::AgentSessionConfig,
+) -> SwarmResult<std::path::PathBuf> {
+    let p = std::path::Path::new(&base_config.oup.data_dir)
+        .join("profiles")
+        .join(format!("{}.json", base_config.profile_id));
+    if p.exists() {
+        Ok(p)
+    } else {
+        Err(SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "LLM profile 缺失：{}（先经 AgentSessionConfig 解析 profile）",
+                    p.display()
+                ),
+            ),
+        ))))
+    }
+}
+
 /// 派发终态归约（纯函数，UT-S17-18 判定矩阵）：
 /// - 空集或含 Queued/Running → `None`（不得判终态）；
 /// - 含 Failed/Cancelled → `Some(Failed)`（失败不得吞为成功）；
@@ -254,12 +278,11 @@ impl SwarmBridge {
             std::fs::create_dir_all(&profile_dst_dir).map_err(|e| {
                 SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
             })?;
-            let profile_src = std::path::Path::new("/home/kyle/.octos/profiles/octos.json");
-            if profile_src.exists() {
-                std::fs::copy(profile_src, profile_dst_dir.join("octos.json")).map_err(|e| {
-                    SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
-                })?;
-            }
+            // issue #24：从 base 配置数据目录取 profile（已解析），缺失即报错
+            let profile_src = base_profile_path(base_config)?;
+            std::fs::copy(&profile_src, profile_dst_dir.join("octos.json")).map_err(|e| {
+                SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
+            })?;
 
             let mut agent = AgentBridge::new(agent_config);
             agent.connect()?;
@@ -343,12 +366,11 @@ impl SwarmBridge {
             std::fs::create_dir_all(&profile_dst_dir).map_err(|e| {
                 SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
             })?;
-            let profile_src = std::path::Path::new("/home/kyle/.octos/profiles/octos.json");
-            if profile_src.exists() {
-                std::fs::copy(profile_src, profile_dst_dir.join("octos.json")).map_err(|e| {
-                    SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
-                })?;
-            }
+            // issue #24：从 base 配置数据目录取 profile（已解析），缺失即报错
+            let profile_src = base_profile_path(base_config)?;
+            std::fs::copy(&profile_src, profile_dst_dir.join("octos.json")).map_err(|e| {
+                SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
+            })?;
 
             let mut agent = AgentBridge::new(agent_config);
             agent.connect()?;
@@ -631,11 +653,14 @@ pub struct SwarmWorker {
     tx: Option<std::sync::mpsc::Sender<SwarmRequest>>,
     rx: std::sync::mpsc::Receiver<SwarmEvent>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// 构造时绑定的会话 ID（含项目 ID；项目切换校验用，issue #27）。
+    session_id: String,
 }
 
 impl SwarmWorker {
     /// 启动 worker 线程（此时不连接 octos；首个 dispatch 才建立子 agent 会话）。
     pub fn spawn(config: crate::agent_bridge::AgentSessionConfig) -> Self {
+        let session_id = config.session_id.clone();
         let (req_tx, req_rx) = std::sync::mpsc::channel::<SwarmRequest>();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel::<SwarmEvent>();
         let handle = std::thread::spawn(move || Self::run(config, req_rx, ev_tx));
@@ -643,7 +668,13 @@ impl SwarmWorker {
             tx: Some(req_tx),
             rx: ev_rx,
             handle: Some(handle),
+            session_id,
         }
+    }
+
+    /// 绑定的会话 ID（项目隔离校验用，issue #27）。
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     fn run(

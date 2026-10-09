@@ -6,6 +6,12 @@
 //!
 //! CPU 红线（对齐 pipeline.rs）：静默零帧——无活跃任务时不轮询；
 //! 读线程阻塞在 stdout read，有数据才唤醒 GUI。
+//!
+//! stdio 能力子集（issue #20）：`octos serve --stdio` 未配置 REST handler，
+//! `session/messages_page` 不可用（503）。桌面读取 turn 产物的权威路径是
+//! notification（`turn/completed` / `assistant_persisted` /
+//! `projection/envelope`）与 `turn/state/get`；不得把 REST 风格
+//! `messages_page` 当作桌面读历史/产物的主路径。
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -29,8 +35,11 @@ pub struct OupConfig {
     pub data_dir: String,
     /// 独立实例目录。
     pub instance_dir: String,
-    /// 工作区根目录。
+    /// 工作区根目录（子进程 cwd，issue #14）。
     pub workspace_root: String,
+    /// 额外注入子进程的环境变量（如 profile `config.env_vars` 的 LLM 凭据，
+    /// 由 AgentBridge::connect 解析填充；禁止写仓库，issue #14）。
+    pub extra_env: Vec<(String, String)>,
 }
 
 impl Default for OupConfig {
@@ -41,6 +50,7 @@ impl Default for OupConfig {
             data_dir: base.join("data").to_string_lossy().into(),
             instance_dir: base.join("instance").to_string_lossy().into(),
             workspace_root: ".".into(),
+            extra_env: Vec::new(),
         }
     }
 }
@@ -159,7 +169,13 @@ impl OupClient {
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::create_dir_all(&config.instance_dir)?;
 
-        let mut child = Command::new(&config.octos_bin)
+        // issue #14：stderr 落盘可排障（原为 Stdio::null 静默吞掉）
+        let log_dir = std::path::Path::new(&config.data_dir).join("logs");
+        std::fs::create_dir_all(&log_dir)?;
+        let stderr_log = std::fs::File::create(log_dir.join("octos-stderr.log"))?;
+
+        let mut cmd = Command::new(&config.octos_bin);
+        cmd
             .args([
                 "serve",
                 "--stdio",
@@ -169,11 +185,13 @@ impl OupClient {
                 &config.instance_dir,
             ])
             .env("OCTOS_HOME", &config.data_dir)
+            // issue #14：workspace_root 作为子进程 cwd（原为未使用字段）
+            .current_dir(&config.workspace_root)
+            .envs(config.extra_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(OupError::Spawn)?;
+            .stderr(Stdio::from(stderr_log));
+        let mut child = cmd.spawn().map_err(OupError::Spawn)?;
 
         let stdin = child.stdin.take().ok_or(OupError::ProcessExited)?;
         let stdout = child.stdout.take().ok_or(OupError::ProcessExited)?;
@@ -531,6 +549,12 @@ impl OupClient {
         if let Some(handle) = self.reader_handle.take() {
             let _ = handle.join();
         }
+    }
+
+    /// 子进程 PID（测试可达：UT-S17-24 经 /proc 校验 cwd）。
+    #[doc(hidden)]
+    pub fn child_pid(&self) -> u32 {
+        self.child.id()
     }
 }
 

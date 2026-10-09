@@ -25,10 +25,14 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     std::fs::create_dir_all(&data_dir).expect("create data dir");
     std::fs::create_dir_all(&instance_dir).expect("create instance dir");
 
-    let profile_src = std::path::Path::new("/home/kyle/.octos/profiles/octos.json");
+    // issue #24：经 HOME 解析，禁止机器绝对路径硬编码
+    let profile_src = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|h| h.join(".octos/profiles/octos.json"))
+        .filter(|p| p.exists());
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
-    if profile_src.exists() {
+    if let Some(profile_src) = profile_src {
         std::fs::copy(profile_src, profile_dst_dir.join("octos.json")).expect("copy profile");
     }
 
@@ -39,7 +43,9 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
             octos_bin: "octos".into(),
             data_dir: data_dir.to_string_lossy().into(),
             instance_dir: instance_dir.to_string_lossy().into(),
-            workspace_root: "/home/kyle/nautilus_trader".into(),
+            // issue #24：禁止机器绝对路径；仓库根经 CARGO_MANIFEST_DIR 解析
+            workspace_root: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").into(),
+            extra_env: Vec::new(),
         },
     }
 }

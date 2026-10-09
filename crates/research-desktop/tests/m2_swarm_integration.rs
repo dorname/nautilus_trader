@@ -29,12 +29,15 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     std::fs::create_dir_all(&data_dir).expect("create data dir");
     std::fs::create_dir_all(&instance_dir).expect("create instance dir");
 
-    // 复制 profile 配置（从主 octos 数据目录）
-    let profile_src = std::path::Path::new("/home/kyle/.octos/profiles/octos.json");
+    // 复制 profile 配置（issue #24：经 HOME 解析，禁止机器绝对路径硬编码）
+    let profile_src = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|h| h.join(".octos/profiles/octos.json"))
+        .filter(|p| p.exists());
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
-    if profile_src.exists() {
-        std::fs::copy(profile_src, profile_dst_dir.join("octos.json")).expect("copy profile");
+    if let Some(src) = profile_src {
+        std::fs::copy(src, profile_dst_dir.join("octos.json")).expect("copy profile");
     }
 
     AgentSessionConfig {
@@ -44,7 +47,9 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
             octos_bin: "octos".into(),
             data_dir: data_dir.to_string_lossy().into(),
             instance_dir: instance_dir.to_string_lossy().into(),
-            workspace_root: "/home/kyle/nautilus_trader".into(),
+            // issue #24：禁止机器绝对路径；仓库根经 CARGO_MANIFEST_DIR 解析
+            workspace_root: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").into(),
+            extra_env: Vec::new(),
         },
     }
 }
@@ -183,6 +188,37 @@ fn st_s17_22_cancel_all_interrupts_real_turn() {
         );
 
         swarm.disconnect_all();
+    });
+}
+
+/// UT-S17-24：OUP 子进程环境（oup-session-config 提案，issue #14）——
+/// spawn 级断言（connect 仅启动 octos serve，不调用 LLM）：
+/// stderr 落盘日志存在、profile env_vars 注入 extra_env、cwd 为 workspace_root。
+#[test]
+fn ut_s17_24_child_process_environment() {
+    case("UT-S17-24", || {
+        let config = temp_agent_config("env");
+        let mut bridge = AgentBridge::new(config.clone());
+        bridge.connect().expect("connect（spawn octos，不调 LLM）");
+
+        // 1. stderr 落盘（原为 Stdio::null 静默吞掉）
+        let log = std::path::Path::new(&config.oup.data_dir).join("logs/octos-stderr.log");
+        assert!(log.exists(), "stderr 日志应落盘：{}", log.display());
+
+        // 2. profile env_vars 注入（只断言键名，值不落断言/日志防泄漏）
+        let keys = bridge.test_extra_env_keys();
+        assert!(
+            keys.iter().any(|k| k == "KIMI_API_KEY"),
+            "profile env_vars 应注入子进程环境：{keys:?}"
+        );
+
+        // 3. 子进程 cwd = workspace_root（经 /proc 核实）
+        let pid = bridge.test_child_pid().expect("子进程 PID");
+        let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).expect("读子进程 cwd");
+        let expect = std::fs::canonicalize(&config.oup.workspace_root).expect("规范化 workspace_root");
+        assert_eq!(cwd, expect, "子进程 cwd 应为 workspace_root");
+
+        bridge.disconnect();
     });
 }
 

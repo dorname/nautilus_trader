@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use nautilus_research_desktop::agent_bridge::AgentSessionConfig;
 use nautilus_research_desktop::app::ResearchApp;
 use nautilus_research_desktop::nav::{ALL_ROUTES, Route};
 use nautilus_research_desktop::theme;
@@ -189,6 +190,51 @@ fn ut_gui_03_idle_no_taskbar() {
                 .next()
                 .is_none(),
             "空闲态不应出现任务条取消按钮"
+        );
+    });
+}
+
+/// UT-S17-23：OUP 会话项目隔离（oup-session-config 提案，issue #27）——
+/// 两项目 session_id/数据目录互不相同；安装 worker 后切换项目，worker 重置、
+/// 再次惰性创建时绑定新项目 session。
+#[test]
+fn ut_s17_23_project_isolation() {
+    case("UT-S17-23", || {
+        // 配置层：两项目 session_id 与数据目录互不相同
+        let d1 = temp_root("iso1");
+        let d2 = temp_root("iso2");
+        let c1 = AgentSessionConfig::desktop(&d1, "1");
+        let c2 = AgentSessionConfig::desktop(&d2, "2");
+        assert_ne!(c1.session_id, c2.session_id, "不同项目 session_id 必须不同");
+        assert!(c1.session_id.ends_with("-1") && c2.session_id.ends_with("-2"));
+        assert_ne!(c1.oup.data_dir, c2.oup.data_dir, "数据目录必须按项目隔离");
+
+        // GUI 层：worker 随项目切换重置并重绑新 session
+        let mut w = build_walk("ut23", true);
+        w.harness.state_mut().test_spawn_workers();
+        let (a1, s1) = w.harness.state().test_worker_sessions();
+        assert!(a1.is_some() && s1.is_some(), "worker 应已惰性创建");
+        assert!(
+            a1.as_deref().is_some_and(|s| s.ends_with("-1")),
+            "初始 worker 应绑项目 1：{a1:?}"
+        );
+
+        let new_id = w
+            .harness
+            .state_mut()
+            .test_add_project_and_switch("第二项目");
+        let (a2, s2) = w.harness.state().test_worker_sessions();
+        assert!(
+            a2.is_none() && s2.is_none(),
+            "切换项目后旧 worker 必须被重置（不串旧 session）"
+        );
+
+        w.harness.state_mut().test_spawn_workers();
+        let (a3, _) = w.harness.state().test_worker_sessions();
+        assert!(
+            a3.as_deref()
+                .is_some_and(|s| s.ends_with(&format!("-{new_id}"))),
+            "重建 worker 应绑新项目 session：{a3:?}"
         );
     });
 }

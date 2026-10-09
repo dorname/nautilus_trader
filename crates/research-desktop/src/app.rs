@@ -504,6 +504,49 @@ impl ResearchApp {
         &self.run_form
     }
 
+    /// 测试可达：以当前项目配置惰性创建两个 worker（UT-S17-23 用，不派发任务、
+    /// 不连接 octos）。
+    #[doc(hidden)]
+    pub fn test_spawn_workers(&mut self) {
+        let project_id = self.workspace.current().id.to_string();
+        if self.agent_worker.is_none() {
+            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+                &Self::agent_data_dir(),
+                &project_id,
+            );
+            self.agent_worker = Some(crate::agent_bridge::AgentWorker::spawn(config));
+        }
+        if self.swarm_worker.is_none() {
+            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+                &Self::agent_data_dir().join("swarm"),
+                &project_id,
+            );
+            self.swarm_worker = Some(crate::swarm_bridge::SwarmWorker::spawn(config));
+        }
+    }
+
+    /// 测试可达：两 worker 绑定的 session_id（UT-S17-23 项目隔离断言用）。
+    #[doc(hidden)]
+    pub fn test_worker_sessions(&self) -> (Option<String>, Option<String>) {
+        (
+            self.agent_worker
+                .as_ref()
+                .map(|w| w.session_id().to_string()),
+            self.swarm_worker
+                .as_ref()
+                .map(|w| w.session_id().to_string()),
+        )
+    }
+
+    /// 测试可达：新建项目并切换过去（触发 worker 重置；UT-S17-23 用）。
+    /// 返回新项目 ID。
+    #[doc(hidden)]
+    pub fn test_add_project_and_switch(&mut self, name: &str) -> usize {
+        let id = self.workspace.add_project(name.to_string());
+        self.reset_agent_workers_for_project_switch();
+        id
+    }
+
     /// 根 Ui 渲染（eframe 0.36 模型）：环境柔光 + 左侧栏卡 + 主区卡（顶栏/画布+对话/footer）。
     /// RD-008：提取为独立方法，供 ST-S15-06 无头几何回归经 egui::Context::run_ui 驱动
     /// （pub 仅为测试可达，GUI 入口仍是 eframe::App::ui）。
@@ -698,7 +741,9 @@ impl ResearchApp {
                     .show_ui(ui, |ui| {
                         for (i, name) in &names {
                             if ui.selectable_label(*i == active, name.clone()).clicked() {
-                                self.workspace.switch_to(*i);
+                                if self.workspace.switch_to(*i) {
+                                    self.reset_agent_workers_for_project_switch();
+                                }
                             }
                         }
                     });
@@ -4698,6 +4743,7 @@ impl ResearchApp {
                             } else {
                                 let id = self.workspace.add_project(name);
                                 let n = self.workspace.current().messages.len();
+                                self.reset_agent_workers_for_project_switch();
                                 self.push_artifact(
                                     id,
                                     n - 1,
@@ -5464,6 +5510,31 @@ impl ResearchApp {
             }
             Err(e) => self.ai_notice = Some(e),
         }
+    }
+
+    /// 项目切换/新建后重置 agent 会话（issue #27 项目隔离）：旧 worker 绑旧项目
+    /// session，后台线程销毁（不阻塞渲染；在途 turn 由 worker drop 语义收尾），
+    /// 在途任务引用放弃并记录，下次任务惰性重建绑定新项目。
+    fn reset_agent_workers_for_project_switch(&mut self) {
+        let had_agent = self.agent_worker.is_some();
+        let had_swarm = self.swarm_worker.is_some();
+        if !had_agent && !had_swarm && self.agent_task.is_none() && self.swarm_task.is_none() {
+            return;
+        }
+        if let Some(w) = self.agent_worker.take() {
+            std::thread::spawn(move || drop(w));
+        }
+        if let Some(w) = self.swarm_worker.take() {
+            std::thread::spawn(move || drop(w));
+        }
+        if self.agent_task.take().is_some() {
+            self.record("项目切换 · 在途 LLM 任务引用已放弃（不迁移到新项目）");
+        }
+        if self.swarm_task.take().is_some() {
+            self.record("项目切换 · 在途多 Agent 分析引用已放弃（不迁移到新项目）");
+        }
+        self.agent_retry = None;
+        self.record("项目切换 · agent 会话已重置（项目隔离）");
     }
 
     /// 需求确认后自动派发 S17 三路分析（issue #26）：SwarmWorker 后台线程执行，

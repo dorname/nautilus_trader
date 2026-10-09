@@ -75,7 +75,9 @@ impl AgentSessionConfig {
                 octos_bin: "octos".into(),
                 data_dir: data_dir.to_string_lossy().into(),
                 instance_dir: instance_dir.to_string_lossy().into(),
-                workspace_root: ".".into(),
+                // issue #14：子进程 cwd 显式落在工作区根（原为占位 "."）
+                workspace_root: base_dir.to_string_lossy().into(),
+                extra_env: Vec::new(),
             },
         }
     }
@@ -109,6 +111,30 @@ pub struct AgentBridge {
 
 /// Agent 操作结果。
 pub type AgentResult<T> = Result<T, AgentError>;
+
+/// 读取 profile 的 `config.env_vars` 并压平为键值对（issue #14）；
+/// 文件缺失或结构不符时返回空表（connect 仍继续，LLM 调用失败由
+/// turn 层诚实上报）。
+fn read_profile_env_vars(config: &AgentSessionConfig) -> Vec<(String, String)> {
+    let path = std::path::Path::new(&config.oup.data_dir)
+        .join("profiles")
+        .join(format!("{}.json", config.profile_id));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    json.get("config")
+        .and_then(|c| c.get("env_vars"))
+        .and_then(|v| v.as_object())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// Agent 错误。
 #[derive(Debug)]
@@ -161,6 +187,10 @@ impl AgentBridge {
             return Ok(()); // 幂等
         }
 
+        // issue #14：显式把 profile `config.env_vars`（如 LLM API key）注入
+        // 子进程环境，不再依赖 octos 是否自行加载 profile；值不进日志/仓库。
+        self.config.oup.extra_env = read_profile_env_vars(&self.config);
+
         let mut client = OupClient::spawn(&self.config.oup)?;
         client.session_open_with_profile(&self.config.session_id, &self.config.profile_id)?;
 
@@ -168,6 +198,23 @@ impl AgentBridge {
         self.state = AgentSessionState::Connected;
         self.last_error = None;
         Ok(())
+    }
+
+    /// 测试可达：子进程 PID（UT-S17-24 经 /proc 校验 cwd 用）。
+    #[doc(hidden)]
+    pub fn test_child_pid(&self) -> Option<u32> {
+        self.client.as_ref().map(|c| c.child_pid())
+    }
+
+    /// 测试可达：connect 解析注入的环境变量键名（不含值，防泄漏）。
+    #[doc(hidden)]
+    pub fn test_extra_env_keys(&self) -> Vec<String> {
+        self.config
+            .oup
+            .extra_env
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     /// 断开连接（关闭子进程）。
@@ -385,11 +432,14 @@ pub struct AgentWorker {
     tx: Option<std::sync::mpsc::Sender<WorkerRequest>>,
     rx: std::sync::mpsc::Receiver<WorkerResponse>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// 构造时绑定的会话 ID（含项目 ID；项目切换校验用，issue #27）。
+    session_id: String,
 }
 
 impl AgentWorker {
     /// 启动 worker 线程（此时不连接 octos；首个 submit 才建立会话）。
     pub fn spawn(config: AgentSessionConfig) -> Self {
+        let session_id = config.session_id.clone();
         let (req_tx, req_rx) = std::sync::mpsc::channel::<WorkerRequest>();
         let (resp_tx, resp_rx) = std::sync::mpsc::channel::<WorkerResponse>();
         let handle = std::thread::spawn(move || Self::run(config, req_rx, resp_tx));
@@ -397,7 +447,13 @@ impl AgentWorker {
             tx: Some(req_tx),
             rx: resp_rx,
             handle: Some(handle),
+            session_id,
         }
+    }
+
+    /// 绑定的会话 ID（项目隔离校验用，issue #27）。
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 
     fn run(
