@@ -212,8 +212,8 @@ fn st_gui_journey_real_llm() {
         assert!(dispatched, "确认需求后任务条应出现三路进度行");
         snap(&mut w, "st-gui-01-taskbar");
 
-        // 终态：完成卡出现（worker 超时 300s，留足余量）
-        let completed = pump_until(&mut w, Duration::from_secs(420), |h| {
+        // 终态：完成卡出现（worker 超时 600s，泵帧预算留足余量）
+        let completed = pump_until(&mut w, Duration::from_secs(700), |h| {
             has_text(h, "多 Agent 分析完成") || has_text(h, "多 Agent 分析未全部成功")
         });
         assert!(completed, "三路分析应在超时前到达终态");
@@ -263,8 +263,8 @@ fn st_gui_journey_real_llm() {
         });
         assert!(started, "点击整理参数后应出现 LLM 任务行");
 
-        // 终态：参数填入卡出现
-        let filled = pump_until(&mut w, Duration::from_secs(420), |h| {
+        // 终态：参数填入卡出现（worker turn 超时 420s，泵帧预算留余量）
+        let filled = pump_until(&mut w, Duration::from_secs(500), |h| {
             has_text(h, "运行参数已填入") || has_text(h, "参数整理失败")
         });
         assert!(filled, "整理参数应在超时前到达终态");

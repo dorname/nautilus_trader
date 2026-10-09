@@ -63,7 +63,7 @@ fn st_s17_17_real_llm_turn_completed() {
 
         // 提交真实 LLM 调用（简短 prompt 控制成本，超时对齐提案 120s）
         let (turn_id, outcome) = bridge
-            .submit_and_wait("回复 ok", 120)
+            .submit_and_wait("回复 ok", 420)
             .expect("submit_and_wait should succeed");
 
         // 验证 turn_id 是合法 UUID
@@ -101,10 +101,10 @@ fn st_s17_18_turn_id_unique() {
         bridge.connect().expect("connect");
 
         // 第一次调用（真实 LLM，超时对齐提案 120s）
-        let (turn_id_1, out_1) = bridge.submit_and_wait("回复 1", 120).expect("first call");
+        let (turn_id_1, out_1) = bridge.submit_and_wait("回复 1", 420).expect("first call");
 
         // 第二次调用
-        let (turn_id_2, out_2) = bridge.submit_and_wait("回复 2", 120).expect("second call");
+        let (turn_id_2, out_2) = bridge.submit_and_wait("回复 2", 420).expect("second call");
 
         // 两个 turn_id 均为合法 UUID 且互不相同；两次均为 turn/completed
         assert_ne!(turn_id_1, turn_id_2, "turn_ids should be unique");

@@ -593,9 +593,8 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
 /// SwarmWorker 事件泵间隔（毫秒）。
 const SWARM_WORKER_POLL_INTERVAL_MS: u64 = 500;
 
-/// SwarmWorker 单次派发总超时（秒）：三路真实 LLM 并发，吸收 moonshot 尾延迟
-/// （实测拥塞时段单 turn 150s+）。
-pub const SWARM_WORKER_TIMEOUT_SECS: u64 = 300;
+/// 拥塞期实测单 turn 尾延迟 270s+，三路并发更慢；预算放宽到 600s。
+pub const SWARM_WORKER_TIMEOUT_SECS: u64 = 600;
 
 /// Swarm 进度事件（worker → GUI 帧循环）。
 #[derive(Debug, Clone)]

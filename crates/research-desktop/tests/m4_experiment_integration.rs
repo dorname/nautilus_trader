@@ -319,7 +319,7 @@ fn st_s19_15_llm_params_to_real_coordinator() {
             "单标的均线策略研究：持仓 1 只，数据区间 2023-12-04 至 2024-01-05，初始资金 20000 元",
             "EMA 双均线交叉，fast=1，slow=2",
         );
-        let (turn_id, outcome) = agent.submit_and_wait(&prompt, 180).expect("LLM turn");
+        let (turn_id, outcome) = agent.submit_and_wait(&prompt, 420).expect("LLM turn");
         assert!(
             uuid::Uuid::parse_str(&turn_id).is_ok(),
             "turn_id 应为合法 UUID: {turn_id}"

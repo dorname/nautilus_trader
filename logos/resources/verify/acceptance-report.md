@@ -6,16 +6,54 @@
 
 | Metric | Value |
 |--------|-------|
-| Defined cases | 129 |
+| Defined cases | 131 |
 | Manual cases (excluded) | 18 |
-| Executed cases | 129 |
-| Passed | 125 |
-| Failed | 0 |
+| Executed cases | 102 |
+| Passed | 97 |
+| Failed | 1 |
 | Skipped | 4 |
-| Uncovered | 0 |
-| Coverage | 100% |
-| Pass rate | 100% |
-| **Gate 3.5** | **PASS** |
+| Uncovered | 29 |
+| Coverage | 78% |
+| Pass rate | 99% |
+| **Gate 3.5** | **FAIL** |
+
+## Failed Cases
+
+| ID | Error |
+|----|-------|
+| ST-S17-19 | 180s 内未达终态 |
+
+## Uncovered Cases
+
+- ST-S15-04
+- ST-S15-05
+- ST-S15-06
+- ST-S15-07
+- ST-S15-08
+- ST-S15-09
+- ST-S15-10
+- ST-S15-11
+- ST-S15-12
+- ST-S15-13
+- ST-S15-14
+- ST-S15-15
+- ST-S17-16
+- ST-S17-17
+- ST-S17-18
+- ST-S18-16
+- ST-S19-15
+- UT-S15-07
+- UT-S15-08
+- UT-S15-09
+- UT-S15-10
+- UT-S15-11
+- UT-S17-16
+- UT-S17-17
+- UT-S17-19
+- UT-S18-15
+- UT-S19-15
+- UT-S19-16
+- UT-S20-14
 
 ## Skipped Cases
 

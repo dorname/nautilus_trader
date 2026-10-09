@@ -11,3 +11,4 @@
 - [x] AgentWorker/SwarmWorker 请求枚举化（Submit/Cancel、Dispatch/Cancel），忙期真实 interrupt；GUI 任务条「取消」接线（先真实中断再本地放弃）
 - [x] UT-S17-20 无 LLM 判定矩阵 + ST-S17-22 真实 LLM interrupt 终态断言（reporter 入账，m2 套件 10/10 通过）
 - [x] st_m2_04_cancel_all 重写为 ST-S17-22 新口径
+- [x] 超时预算校准（只放宽等待、不动断言）：DEFAULT_TURN_TIMEOUT 120→420s、SWARM_WORKER_TIMEOUT 300→600s、ST-S17-19 180→480s、wire/m4 显式预算 120/180→420s、GUI 泵帧 420→700/500s（moonshot 拥塞期实测尾延迟 270s+）

@@ -10,8 +10,9 @@ use serde_json::Value;
 
 use crate::oup::{OupClient, OupConfig, OupError, TurnOutcome, TurnTerminal};
 
-/// 真实 LLM 调用默认超时（秒），对齐 wire-real-llm-oup 提案。
-pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 120;
+/// 单 turn 默认超时。moonshot 拥塞期实测尾延迟 270s+（2026-10-09 验收窗口），
+/// 预算放宽到 420s：宁可慢等真实终态，不得把慢当作失败（诚实口径不变）。
+pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 420;
 
 /// Agent 会话配置。
 #[derive(Debug, Clone)]
