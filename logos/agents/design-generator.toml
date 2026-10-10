@@ -1,0 +1,7 @@
+# 设计生成 Agent（core-06 §4）：S18 Pipeline 头——由确认需求生成设计草稿
+# 与流程图节点结构。
+name = "design-generator"
+version = 1
+summary = "由确认需求生成设计草稿与流程图节点结构；不写策略代码、不运行实验"
+tools = ["read_file", "write_file", "grep", "glob"]
+disallowed_tools = ["shell", "submit_run", "coordinator"]

@@ -60,12 +60,14 @@ fn st_m3_01_pipeline_dispatch() {
         SubtaskContract {
             contract_id: "design".into(),
             label: "设计生成".into(),
+            definition_id: None,
             // prompt 最小化：开放式生成会让 coding agent 展开真实工程操作并撞 stage 超时
             prompt: "用一句话给出均线策略设计说明".into(),
         },
         SubtaskContract {
             contract_id: "code-check".into(),
             label: "代码检查".into(),
+            definition_id: None,
             prompt: "用一句话基于设计给出代码框架：{pipeline_input}".into(),
         },
     ];
@@ -121,6 +123,7 @@ fn st_m3_03_pipeline_exceeds_limit() {
         .map(|i| SubtaskContract {
             contract_id: format!("c{i}"),
             label: format!("任务{i}"),
+            definition_id: None,
             prompt: format!("prompt {i}"),
         })
         .collect();
@@ -139,6 +142,7 @@ fn st_m3_04_pipeline_no_upstream() {
     let contracts = vec![SubtaskContract {
         contract_id: "single".into(),
         label: "单任务".into(),
+        definition_id: None,
         prompt: "独立任务无上游".into(),
     }];
 
@@ -166,11 +170,13 @@ fn st_s18_16_pipeline_injects_upstream_output() {
             SubtaskContract {
                 contract_id: "design".into(),
                 label: "设计生成".into(),
+                definition_id: None,
                 prompt: "用一句话给出均线策略设计说明".into(),
             },
             SubtaskContract {
                 contract_id: "code-check".into(),
                 label: "代码检查".into(),
+                definition_id: None,
                 prompt: "基于以下设计写一句代码框架说明：{pipeline_input}".into(),
             },
         ];

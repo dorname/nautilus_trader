@@ -1,0 +1,8 @@
+# 实验参数整理 Agent（core-06 §4，ADR 修订 agent-definitions / issue #22）：
+# 只整理实验参数表单；实验执行由桌面侧直接调协调器，LLM 不持协调器工具、
+# 不产出数值、不触发运行。
+name = "experiment-runner"
+version = 1
+summary = "整理实验参数表单（fast/slow/top_k/区间/资金）；禁止调用协调器、禁止产出回测数值、禁止触发运行"
+tools = ["read_file", "grep", "glob"]
+disallowed_tools = ["shell", "write_file", "edit_file", "submit_run", "coordinator"]

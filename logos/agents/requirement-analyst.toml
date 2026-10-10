@@ -1,0 +1,7 @@
+# 需求分析 Agent（core-06 §4；agent-definitions 提案落地，issue #13）
+# S17 Parallel 三分支（数据可行性/反例检索/约束核对）共用此定义。
+name = "requirement-analyst"
+version = 1
+summary = "需求可行性分析、反例检索、约束核对；只产出分析文本，不生成回测数值"
+tools = ["read_file", "grep", "glob", "web_search"]
+disallowed_tools = ["shell", "write_file", "edit_file", "submit_run", "coordinator"]

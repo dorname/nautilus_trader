@@ -65,16 +65,19 @@ fn st_m2_01_swarm_dispatch_parallel() {
         SubtaskContract {
             contract_id: "task-a".into(),
             label: "任务A".into(),
+            definition_id: None,
             prompt: "分析数据可行性".into(),
         },
         SubtaskContract {
             contract_id: "task-b".into(),
             label: "任务B".into(),
+            definition_id: None,
             prompt: "检索反例".into(),
         },
         SubtaskContract {
             contract_id: "task-c".into(),
             label: "任务C".into(),
+            definition_id: None,
             prompt: "核对约束".into(),
         },
     ];
@@ -131,6 +134,7 @@ fn st_m2_03_dispatch_exceeds_limit() {
         .map(|i| SubtaskContract {
             contract_id: format!("c{i}"),
             label: format!("任务{i}"),
+            definition_id: None,
             prompt: format!("prompt {i}"),
         })
         .collect();
@@ -153,11 +157,13 @@ fn st_s17_22_cancel_all_interrupts_real_turn() {
             SubtaskContract {
                 contract_id: "cancel-a".into(),
                 label: "取消测试A".into(),
+                definition_id: None,
                 prompt: "从 1 数到 200，每个数字单独一行，不要输出任何其他内容。".into(),
             },
             SubtaskContract {
                 contract_id: "cancel-b".into(),
                 label: "取消测试B".into(),
+                definition_id: None,
                 prompt: "从 1 数到 200，每个数字单独一行，不要输出任何其他内容。".into(),
             },
         ];
@@ -296,6 +302,7 @@ fn st_m2_05_poll_all() {
     let contracts = vec![SubtaskContract {
         contract_id: "poll-a".into(),
         label: "轮询测试".into(),
+        definition_id: None,
         prompt: "test poll".into(),
     }];
 
@@ -418,6 +425,7 @@ fn st_s17_21_swarm_worker_progress_to_attach() {
             .map(|i| SubtaskContract {
                 contract_id: format!("w-{i}"),
                 label: format!("分析{i}"),
+                definition_id: None,
                 prompt: "用一句话回答：1+1等于几？".into(),
             })
             .collect();
@@ -584,6 +592,74 @@ fn ut_s17_25_swarm_ledger_recovery() {
             recover_on_startup(&dir.join("nonexistent").join("x.redb")),
             0
         );
+    });
+}
+
+/// UT-S17-27：Agent 定义清单（agent-definitions 提案，issue #13/#22）——
+/// 内嵌 manifest 四定义齐全；场景契约 definition_id 均命中；experiment-runner
+/// 禁协调器调用；未知 definition_id 派发被拒绝且无副作用。
+#[test]
+fn ut_s17_27_agent_definitions_manifest() {
+    case("UT-S17-27", || {
+        use nautilus_research_desktop::agent_defs::{agent_definition, agent_definitions};
+
+        // 1. 四定义齐全且字段解析成功
+        let defs = agent_definitions();
+        assert_eq!(defs.len(), 4, "内嵌 manifest 应恰为四份");
+        for name in [
+            "requirement-analyst",
+            "design-generator",
+            "code-reviewer",
+            "experiment-runner",
+        ] {
+            let d = agent_definition(name).unwrap_or_else(|| panic!("缺定义 {name}"));
+            assert_eq!(d.version, 1);
+            assert!(!d.summary.is_empty());
+        }
+
+        // 2. experiment-runner 显式禁止协调器调用（issue #22 ADR）
+        let er = agent_definition("experiment-runner").expect("experiment-runner");
+        assert!(
+            er.disallowed_tools
+                .iter()
+                .any(|t| t == "submit_run" || t == "coordinator"),
+            "experiment-runner 必须禁协调器调用：{:?}",
+            er.disallowed_tools
+        );
+
+        // 3. 场景契约 definition_id 均命中清单
+        for c in s17_requirement_contracts("测试需求") {
+            let id = c.definition_id.as_deref().expect("S17 契约应声明 definition_id");
+            assert!(agent_definition(id).is_some(), "未知 definition_id：{id}");
+        }
+        for c in nautilus_research_desktop::swarm_bridge::s18_design_to_code_contracts("测试需求")
+        {
+            let id = c.definition_id.as_deref().expect("S18 契约应声明 definition_id");
+            assert!(agent_definition(id).is_some(), "未知 definition_id：{id}");
+        }
+        for c in
+            nautilus_research_desktop::swarm_bridge::s19_experiment_contracts("v1", "snap")
+        {
+            let id = c.definition_id.as_deref().expect("S19 契约应声明 definition_id");
+            assert!(agent_definition(id).is_some(), "未知 definition_id：{id}");
+        }
+
+        // 4. 未知 definition_id：派发被拒绝且无副作用（不建 agent、不改状态）
+        let config = temp_agent_config("unknown-def");
+        let mut swarm = SwarmBridge::new();
+        let bad = vec![SubtaskContract {
+            contract_id: "bad".into(),
+            label: "未知定义".into(),
+            definition_id: Some("no-such-agent".into()),
+            prompt: "p".into(),
+        }];
+        let result = swarm.dispatch_parallel(&config, bad);
+        assert!(matches!(
+            result,
+            Err(SwarmError::UnknownAgentDefinition { .. })
+        ));
+        assert!(!swarm.is_active(), "拒绝派发后不得进入 Active");
+        assert!(swarm.results().is_empty(), "拒绝派发不得产生子任务");
     });
 }
 

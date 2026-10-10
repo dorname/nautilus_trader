@@ -1,0 +1,7 @@
+# 代码审查 Agent（core-06 §4）：S18 Pipeline 尾——策略代码静态检查、
+# 预置示例比对；shell 仅用于 cargo check / 预置检查脚本。
+name = "code-reviewer"
+version = 1
+summary = "策略代码静态检查与预置示例比对；shell 仅限 cargo check / 预置检查脚本"
+tools = ["read_file", "grep", "glob", "shell"]
+disallowed_tools = ["write_file", "edit_file", "submit_run", "coordinator"]

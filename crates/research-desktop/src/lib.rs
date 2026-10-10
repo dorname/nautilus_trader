@@ -12,6 +12,7 @@
 //! （静默零帧，仅活跃任务以 POLL_INTERVAL 轮询）。
 
 pub mod agent_bridge;
+pub mod agent_defs;
 pub mod ai;
 pub mod app;
 pub mod bridge;

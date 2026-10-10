@@ -39,6 +39,10 @@ pub struct SubtaskContract {
     pub label: String,
     /// 提示词。
     pub prompt: String,
+    /// Agent 定义 ID（core-06 §4 manifest；issue #13）。声明后派发前校验
+    /// 必须命中 logos/agents 清单；None 为匿名契约（测试/临时派发）。
+    #[serde(default)]
+    pub definition_id: Option<String>,
 }
 
 /// 子任务状态（对齐 octos-swarm SubtaskOutcome）。
@@ -91,6 +95,19 @@ pub fn mark_cancel_outcomes(results: &mut [SubtaskResult], issued: &[bool]) -> u
         }
     }
     missed
+}
+
+/// 派发前校验契约的 definition_id 命中 logos/agents 清单（issue #13）；
+/// 匿名契约（None）放行。失败即拒绝且无副作用。
+fn validate_contract_definitions(contracts: &[SubtaskContract]) -> SwarmResult<()> {
+    for c in contracts {
+        if let Some(id) = &c.definition_id {
+            if crate::agent_defs::agent_definition(id).is_none() {
+                return Err(SwarmError::UnknownAgentDefinition { id: id.clone() });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 聚合校验（core-06 M4.3 validator 语义，issue #23；UT-S17-26）：
@@ -188,6 +205,8 @@ pub enum SwarmError {
     NoActiveDispatch,
     /// 部分子任务中断请求未发出（不得伪装取消成功，issue #28）。
     CancelIncomplete { missed: usize },
+    /// 契约声明的 Agent 定义 ID 不在 logos/agents 清单中（issue #13）。
+    UnknownAgentDefinition { id: String },
 }
 
 impl std::fmt::Display for SwarmError {
@@ -200,6 +219,9 @@ impl std::fmt::Display for SwarmError {
             SwarmError::NoActiveDispatch => write!(f, "无活跃派发"),
             SwarmError::CancelIncomplete { missed } => {
                 write!(f, "{missed} 个子任务中断请求未发出（不伪装取消成功）")
+            }
+            SwarmError::UnknownAgentDefinition { id } => {
+                write!(f, "未知 Agent 定义 ID：{id}（须在 logos/agents 清单中）")
             }
         }
     }
@@ -272,6 +294,7 @@ impl SwarmBridge {
                 actual: contracts.len(),
             });
         }
+        validate_contract_definitions(&contracts)?;
 
         let mut turn_ids = Vec::new();
         let total = contracts.len();
@@ -341,6 +364,7 @@ impl SwarmBridge {
                 actual: contracts.len(),
             });
         }
+        validate_contract_definitions(&contracts)?;
 
         let mut turn_ids = Vec::new();
         let total = contracts.len();
@@ -563,6 +587,7 @@ pub fn s19_experiment_contracts(version_id: &str, data_snapshot: &str) -> Vec<Su
     vec![SubtaskContract {
         contract_id: "experiment".into(),
         label: "实验执行".into(),
+        definition_id: Some("experiment-runner".into()),
         prompt: format!(
             "执行冻结版本 {} 的回测实验（数据快照：{}）。\n\n\
             注意：数值结果必须来自协调器计算任务，不得自行生成。\n\
@@ -578,6 +603,7 @@ pub fn s18_design_to_code_contracts(requirement_text: &str) -> Vec<SubtaskContra
         SubtaskContract {
             contract_id: "design".into(),
             label: "设计生成".into(),
+            definition_id: Some("design-generator".into()),
             prompt: format!(
                 "根据以下需求生成策略设计说明：{}\n\n输出：1) 设计说明 2) 处理流程图节点 3) 参数定义",
                 requirement_text
@@ -586,6 +612,7 @@ pub fn s18_design_to_code_contracts(requirement_text: &str) -> Vec<SubtaskContra
         SubtaskContract {
             contract_id: "code-check".into(),
             label: "代码检查".into(),
+            definition_id: Some("code-reviewer".into()),
             prompt: "基于以下设计说明生成策略代码框架并检查：{pipeline_input}\n\n输出：1) 代码框架 2) 静态检查结果 3) 与预置示例比对".into(),
         },
     ]
@@ -597,6 +624,7 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
         SubtaskContract {
             contract_id: "feasibility".into(),
             label: "数据可行性分析".into(),
+            definition_id: Some("requirement-analyst".into()),
             prompt: format!(
                 "分析以下研究需求的数据可行性：{}\n\n评估：1) 所需数据是否可得 2) 数据质量要求 3) 潜在数据缺口",
                 requirement_text
@@ -605,6 +633,7 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
         SubtaskContract {
             contract_id: "counterexample".into(),
             label: "反例检索".into(),
+            definition_id: Some("requirement-analyst".into()),
             prompt: format!(
                 "针对以下研究需求检索反例和边界情况：{}\n\n找出：1) 类似研究失败案例 2) 常见陷阱 3) 约束条件冲突",
                 requirement_text
@@ -613,6 +642,7 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
         SubtaskContract {
             contract_id: "constraint".into(),
             label: "约束核对".into(),
+            definition_id: Some("requirement-analyst".into()),
             prompt: format!(
                 "核对以下研究需求的约束条件：{}\n\n检查：1) 资源约束 2) 时间约束 3) 技术约束 4) 合规约束",
                 requirement_text
@@ -1053,6 +1083,7 @@ mod tests {
         let c = SubtaskContract {
             contract_id: "test".into(),
             label: "测试".into(),
+            definition_id: None,
             prompt: "prompt".into(),
         };
         let json = serde_json::to_string(&c).unwrap();
@@ -1077,6 +1108,7 @@ mod tests {
             .map(|i| SubtaskContract {
                 contract_id: format!("c{i}"),
                 label: format!("任务{i}"),
+                definition_id: None,
                 prompt: format!("prompt {i}"),
             })
             .collect();
