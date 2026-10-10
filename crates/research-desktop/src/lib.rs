@@ -19,6 +19,7 @@ pub mod bridge;
 pub mod demo_sim;
 pub mod icons;
 pub mod layout;
+pub mod motion;
 pub mod nav;
 pub mod oup;
 pub mod pipeline;

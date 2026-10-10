@@ -150,6 +150,8 @@ pub struct EquityChartState {
 
 /// 研究桌面应用（统一工作台）。
 pub struct ResearchApp {
+    /// 减少动态效果；原生入口按系统偏好初始化，可在运行记录中调整。
+    pub reduce_motion: bool,
     /// 会话状态（当前路由、每路由滚动、字体提示）。
     pub session: Session,
     /// 协调器桥（打开失败时保留错误行，页面提示重试）。
@@ -285,6 +287,7 @@ impl ResearchApp {
     /// 协调器桥由 `attach_bridge` 建立）。
     pub fn new(_font_missing: bool) -> Self {
         Self {
+            reduce_motion: true,
             session: Session::new(),
             bridge: None,
             bridge_error: None,
@@ -566,6 +569,15 @@ impl ResearchApp {
     /// （pub 仅为测试可达，GUI 入口仍是 eframe::App::ui）。
     #[doc(hidden)]
     pub fn render_root(&mut self, ui: &mut egui::Ui) {
+        // 系统偏好与显式选择也约束 egui 控件过渡和滚动动画。
+        ui.ctx().all_styles_mut(|style| {
+            style.animation_time = if self.reduce_motion { 0.0 } else { 0.2 };
+            style.scroll_animation = if self.reduce_motion {
+                egui::style::ScrollAnimation::none()
+            } else {
+                egui::style::ScrollAnimation::default()
+            };
+        });
         // 仅 Ctrl/Cmd + 滚轮缩放：egui 会把该手势写入 zoom_delta 并清零
         // smooth_scroll_delta。纯滚轮 / 触控板双指滑动不得改 zoom_factor
         // （部分环境会额外发出 Pinch→Event::Zoom，必须用修饰键门禁过滤）。
@@ -1357,7 +1369,9 @@ impl ResearchApp {
                                             egui::vec2(10.0, 10.0),
                                             Sense::hover(),
                                         );
-                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        let phase = crate::motion::task_phase(
+                                            self.reduce_motion, ui.input(|i| i.time),
+                                        );
                                         icons::paint_task_spin(
                                             ui.painter(),
                                             sr,
@@ -1382,7 +1396,9 @@ impl ResearchApp {
                                             egui::vec2(10.0, 10.0),
                                             Sense::hover(),
                                         );
-                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        let phase = crate::motion::task_phase(
+                                            self.reduce_motion, ui.input(|i| i.time),
+                                        );
                                         icons::paint_task_spin(
                                             ui.painter(),
                                             sr,
@@ -1417,7 +1433,9 @@ impl ResearchApp {
                                             egui::vec2(10.0, 10.0),
                                             Sense::hover(),
                                         );
-                                        let phase = ui.input(|i| i.time as f32) * 6.0;
+                                        let phase = crate::motion::task_phase(
+                                            self.reduce_motion, ui.input(|i| i.time),
+                                        );
                                         icons::paint_task_spin(
                                             ui.painter(),
                                             sr,
@@ -4561,6 +4579,7 @@ impl ResearchApp {
             .open(&mut self.show_logs)
             .default_width(520.0)
             .show(ctx, |ui| {
+                ui.checkbox(&mut self.reduce_motion, "减少动态效果");
                 ui.label(note(
                     "只记录任务动作、依据和产物，不展示模型内部推理。任务由真实 LLM（octos）执行。",
                 ));
@@ -6844,6 +6863,79 @@ const ALIGN2_CENTER: egui::Align2 = egui::Align2::CENTER_CENTER;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UT-GUI-06：真实任务条在减少动态效果下保留取消与轮询。
+    #[test]
+    fn motion_keeps_task_controls_and_polling() {
+        nautilus_research_testkit::case("UT-GUI-06", || {
+            for reduce in [true, false] {
+                let ctx = egui::Context::default();
+                theme::setup_embedded_fonts(&ctx);
+                let mut app = ResearchApp::new(false);
+                app.reduce_motion = reduce;
+                app.agent_task = Some(AgentTask {
+                    id: 1,
+                    label: "生成策略设计".into(),
+                    kind: AgentTaskKind::Design,
+                    started: std::time::Instant::now(),
+                });
+                let mut frames = Vec::new();
+                for time in [0.0, 0.2] {
+                    let mut out = ctx.run_ui(
+                        egui::RawInput {
+                            time: Some(time),
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                Pos2::ZERO,
+                                egui::vec2(1440.0, 900.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ui| app.render_root(ui),
+                    );
+                    let spinner = out
+                        .shapes
+                        .iter()
+                        .find_map(|s| match &s.shape {
+                            egui::Shape::Path(p)
+                                if p.points.len() == 11 && (p.stroke.width - 1.6).abs() < 0.001 =>
+                            {
+                                Some(p.points.clone())
+                            }
+                            _ => None,
+                        })
+                        .expect("任务状态指示器");
+                    assert!(out.shapes.iter().any(
+                        |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text()=="取消")
+                    ));
+                    assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("生成策略设计"))));
+                    assert_eq!(ctx.style().animation_time == 0.0, reduce);
+                    assert!(
+                        out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+                            <= std::time::Duration::from_millis(50)
+                    );
+                    frames.push(spinner);
+                    out.shapes.clear();
+                    out.drop_without_applying_deltas();
+                }
+                if reduce {
+                    assert_eq!(frames[0], frames[1]);
+                } else {
+                    assert_ne!(frames[0], frames[1]);
+                }
+                app.cancel_agent_task();
+                assert!(app.agent_task.is_none());
+                assert!(
+                    app.workspace
+                        .current()
+                        .messages
+                        .last()
+                        .unwrap()
+                        .text
+                        .contains("未提交新产物")
+                );
+            }
+        });
+    }
 
     /// 概览下一步推断：链路逐级推进（需求 → 设计 → 版本 → 实验 → 报告 → 计划）。
     /// 内联纯函数单测不带 reporter（惯例：reporter 由 tests/ 规格对齐用例承载）。

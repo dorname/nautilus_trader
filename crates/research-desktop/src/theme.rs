@@ -155,7 +155,8 @@ pub fn apply(style: &mut Style) {
     v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER_STRONG);
     v.widgets.hovered.bg_fill = Color32::from_rgba_premultiplied(15, 15, 15, 15);
     v.widgets.hovered.weak_bg_fill = Color32::from_rgba_premultiplied(15, 15, 15, 15);
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 46));
+    v.widgets.hovered.bg_stroke =
+        egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 46));
 }
 
 /// 玻璃卡片容器（悬浮圆角 + 描边 + 顶部高光近似）。
@@ -582,6 +583,9 @@ fn glow(ui: &mut egui::Ui, rect: egui::Rect, corner: Pos2, color: Color32) {
 
 /// 内嵌 CJK 字体（core-02「中文字体随包提供」兜底）：Noto Sans SC Regular，
 /// SIL Open Font License 可再分发；系统探测全部失败时兜底，消除字体缺失告警。
+/// 随包许可证原文，保留版权与再分发条件。
+pub const EMBEDDED_CJK_LICENSE: &str = include_str!("../assets/OFL.txt");
+
 const EMBEDDED_CJK: &[u8] = include_bytes!("../assets/NotoSansSC-Regular.otf");
 
 /// footer 左侧声明（RD-006：原生桌面语义，移除「原型/刷新重置」）。
@@ -613,8 +617,13 @@ pub fn setup_fonts(ctx: &egui::Context) -> usize {
         }
     }
     // 系统路径全部缺失：内嵌字体兜底（随包提供承诺）
-    install_cjk(ctx, egui::FontData::from_static(EMBEDDED_CJK));
+    setup_embedded_fonts(ctx);
     1
+}
+
+/// 只加载随包字体，用于无系统字体环境与兜底验收。
+pub fn setup_embedded_fonts(ctx: &egui::Context) {
+    install_cjk(ctx, egui::FontData::from_static(EMBEDDED_CJK));
 }
 
 /// 把一份 CJK 字体数据注册为默认族首位（中文 UI 用同一套度量，避免

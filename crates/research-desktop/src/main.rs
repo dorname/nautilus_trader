@@ -57,12 +57,15 @@ fn main() {
                 milestone(&format!(
                     "错误：{FIRST_FRAME_WATCHDOG_SECS}s 内未渲染首帧——进程未创建可见窗口（WSLg 已知问题）。"
                 ));
-                milestone("排查：1) 确认 WSLg 组件完好（wsl --shutdown 后重启）；2) 试 WINIT_UNIX_BACKEND=x11；3) 试 LIBGL_ALWAYS_SOFTWARE=1；4) 仍失败请提 issue 并附本日志。");
+                milestone(
+                    "排查：1) 确认 WSLg 组件完好（wsl --shutdown 后重启）；2) 试 WINIT_UNIX_BACKEND=x11；3) 试 LIBGL_ALWAYS_SOFTWARE=1；4) 仍失败请提 issue 并附本日志。",
+                );
                 std::process::exit(EXIT_FIRST_FRAME_TIMEOUT);
             }
         });
     }
 
+    let reduce_motion = nautilus_research_desktop::motion::system_reduce_motion();
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(theme::DEFAULT_WINDOW)
@@ -83,6 +86,7 @@ fn main() {
             // 显式保留 Ctrl+/−/0 整窗缩放；滚轮缩放由 render_root 按修饰键门禁处理
             cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = true);
             let mut app = ResearchApp::new(false);
+            app.reduce_motion = reduce_motion;
             // 工作区：环境变量 RESEARCH_WORKSPACE 优先，缺省 ./research-workspace
             let ws = std::env::var_os("RESEARCH_WORKSPACE")
                 .map(std::path::PathBuf::from)
