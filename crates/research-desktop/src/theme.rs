@@ -644,8 +644,8 @@ fn install_cjk(ctx: &egui::Context, mut data: egui::FontData) {
 
 /// 默认窗口尺寸（core-02：默认 1440×900）。
 pub const DEFAULT_WINDOW: Vec2 = Vec2::new(1440.0, 900.0);
-/// 最小窗口尺寸（core-02：最小 1100×720）。
-pub const MIN_WINDOW: Vec2 = Vec2::new(1100.0, 720.0);
+/// 最小窗口尺寸（core-02：最小 880×720）。
+pub const MIN_WINDOW: Vec2 = Vec2::new(880.0, 720.0);
 
 #[cfg(test)]
 mod tests {
@@ -691,6 +691,6 @@ mod tests {
         assert!(contrast_ratio(ACCENT_TEXT, BASE) >= 4.5, "强调绿对比度不足");
         // 窗口尺寸
         assert_eq!(DEFAULT_WINDOW, Vec2::new(1440.0, 900.0));
-        assert_eq!(MIN_WINDOW, Vec2::new(1100.0, 720.0));
+        assert_eq!(MIN_WINDOW, Vec2::new(880.0, 720.0));
     }
 }

@@ -10,7 +10,7 @@
 - 功能规格：core-05-ai-workspace-design.md「视觉保真验收口径」。
 - 场景：S15 桌面布局、S17 统一工作区导航。
 - 实现：research-desktop 的 theme.rs、layout.rs、app.rs、字体资源与相关 GUI 测试。
-- 测试：core-S15-test-cases.md、core-S17-test-cases.md 及对应 GUI 编排。
+- 测试：core-S15-test-cases.md、core-S17-test-cases.md 及对应 GUI 编排；真实 LLM 测试遵循已有 RESEARCH_OCTOS_PROFILE 配置选择，避免固定提供方额度耗尽阻断复验。
 - 本地记录：docs/research-desktop/issues/RD-003-ui-prototype-gaps.md、README.md。
 - API、数据库：无契约与表结构变更。
 - 需求、部署方案：沿用现行规格，不发布安装包。

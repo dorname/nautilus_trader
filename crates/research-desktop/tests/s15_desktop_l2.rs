@@ -108,9 +108,9 @@ fn ut_s15_08_theme_tokens_and_layout_breakpoints() {
         assert!(theme::contrast_ratio(theme::TEXT, theme::BASE) >= 4.5);
         assert!(theme::contrast_ratio(theme::TEXT2, theme::BASE) >= 4.5);
         assert!(theme::contrast_ratio(theme::MUTED, theme::BASE) >= 4.5);
-        // 窗口尺寸（core-02：默认 1440×900，最小 1100×720）
+        // 窗口尺寸（core-02：默认 1440×900，最小 880×720）
         assert_eq!(theme::DEFAULT_WINDOW, egui::Vec2::new(1440.0, 900.0));
-        assert_eq!(theme::MIN_WINDOW, egui::Vec2::new(1100.0, 720.0));
+        assert_eq!(theme::MIN_WINDOW, egui::Vec2::new(880.0, 720.0));
         // 布局断点：>1200 舒适 / ≤1200 窄（原型 @media max-width:1200px）
         assert_eq!(layout::plan_for_width(1440.0), LayoutPlan::Comfortable);
         assert_eq!(layout::plan_for_width(1201.0), LayoutPlan::Comfortable);

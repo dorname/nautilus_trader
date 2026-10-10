@@ -5,7 +5,7 @@ use nautilus_research_testkit::case;
 
 fn harness(width: f32) -> Harness<'static, ResearchApp> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(width, 900.0))
+        .with_size(egui::vec2(width, if width == 880.0 {720.0} else {900.0}))
         .build_ui_state(
             |ui, app: &mut ResearchApp| {
                 // kittest 的 UI 包装默认加 8px 外边距；原生入口直接使用完整根矩形。
@@ -34,7 +34,7 @@ fn frame(width: f32) -> Vec<egui::epaint::ClippedShape> {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(width, 900.0),
+                    egui::vec2(width, if width == 880.0 {720.0} else {900.0}),
                 )),
                 ..Default::default()
             },
@@ -102,7 +102,9 @@ fn st_s15_16_boundary_render_evidence() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/research-desktop/screenshots/rd003");
         std::fs::create_dir_all(&dir).expect("创建证据目录");
-        for width in [900.0, 901.0, 1200.0, 1201.0] {
+        assert!(theme::MIN_WINDOW.x <= layout::SLIM_MAX_W, "原生窗口必须可缩到图标档");
+        assert_eq!(theme::MIN_WINDOW, egui::vec2(880.0,720.0));
+        for width in [880.0, 900.0, 901.0, 1200.0, 1201.0] {
             let shapes = frame(width);
             let texts: Vec<_> = shapes
                 .iter()
