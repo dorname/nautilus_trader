@@ -77,6 +77,14 @@ sequenceDiagram
 
 ## 4. Agent 定义清单（manifest）
 
+> **ADR 修订（agent-definitions，issue #22，2026-10-10）**：experiment-runner
+> 不再设计为「持协调器工具的 agent」——实验执行由桌面侧直接调协调器
+> （`DesktopBridge::submit_run`），LLM 只整理参数表单（`parse_run_params`
+> 严格校验，拒绝任何结果数值字段），不持协调器工具、不产出数值、不触发
+> 运行。octos stdio 侧无 agent/工具注册 API（见 #16/#20 能力子集说明），
+> 工具白名单的约束力落在客户端派发校验（manifest definition_id）上。
+> manifest 为权威声明源，经 include_str! 编译期内嵌进 research-desktop。
+
 在 `logos/agents/` 下放置声明式清单（schema 对齐 octos `AgentDefinition`，version=1）：
 
 ```toml
@@ -108,13 +116,13 @@ tools = ["read_file", "grep", "glob", "shell"]  # shell 仅用于 cargo check / 
 | requirement-analyst | 需求可行性分析、反例检索、约束核对 | S17 Parallel 分支 |
 | design-generator | 由确认需求生成设计草稿与流程图节点结构 | S18 Pipeline 头 |
 | code-reviewer | 策略代码静态检查、预置示例比对 | S18 Pipeline 尾 |
-| experiment-runner（薄封装） | 把"运行实验"翻译为协调器任务消息，**不自行计算** | S19 单契约 |
+| experiment-runner（薄封装） | **只整理实验参数表单**（ADR 修订，agent-definitions）：实验执行由桌面侧直接调协调器（`DesktopBridge::submit_run`），LLM 不持协调器工具、不产出数值、不触发运行 | S19 参数整理 |
 
 加载规则沿用 octos：目录扫描 + 内置默认 + 同名覆盖；`SpawnTool` 的 `agent_definition_id` 引用清单，内联字段优先。
 
 ## 5. 关键生产约束（继承自原型设计）
 
-1. **数值结果必须来自计算任务**：experiment-runner 只发消息给协调器；LLM 不得生成回测数值（core-05 硬约束，不变）
+1. **数值结果必须来自计算任务**：实验执行由桌面侧直接调协调器（ADR 修订，agent-definitions：原为 experiment-runner 发消息给协调器）；LLM 不得生成回测数值、不得触发运行（core-05 硬约束，不变）
 2. **未确认需求不能生成设计**：dispatch 前校验上游冻结引用（`contracts_fingerprint` 类似物：需求版本哈希）
 3. **任意源码不可冒称执行**：code-reviewer 只接受预置示例完整匹配才允许进入演示运行（S18 语义保留）
 4. **正式验证恒需真实证据**：真实数据/样本外/稳健性缺失时报告必须显示"证据不足"（S19 语义保留）
