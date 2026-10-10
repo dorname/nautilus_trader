@@ -253,11 +253,13 @@ pub fn tag_live_ui(ui: &mut egui::Ui, text: &str) -> egui::Response {
 
 /// 原型 .brand-mark：29×29、圆角 9、145° 线性渐变 #4ade80→#16a34a、外圈辉光、字色 #03130a。
 pub fn paint_brand_mark(painter: &Painter, rect: egui::Rect) {
-    painter.circle_filled(
-        rect.center(),
-        21.0,
-        Color32::from_rgba_unmultiplied(34, 197, 94, 89),
-    );
+    // 多层透明度递减叠加，近似原型品牌外圈辉光。
+    for (radius, alpha) in [(21.0, 20), (18.0, 35), (16.0, 50)] {
+        painter.circle_filled(
+            rect.center(), radius,
+            Color32::from_rgba_unmultiplied(34, 197, 94, alpha),
+        );
+    }
     painter.add(egui::Shape::mesh(rounded_gradient_rect(
         rect,
         9.0,

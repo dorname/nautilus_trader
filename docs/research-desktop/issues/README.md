@@ -21,3 +21,7 @@
 列表页：https://github.com/dorname/nautilus_trader/issues?q=is%3Aissue+label%3Aa-stock
 
 截图目录：[`../screenshots/`](../screenshots/)（HTML 原型在窄视口下的对照；原生窗口本环境未能稳定截屏）。
+
+## RD-003 关闭进度（2026-10-11）
+
+GitHub 查询仅 #3 未关闭；修复与针对性测试已完成，全量验收与远程关闭待完成。逐项证据见 [RD-003 关闭证据](RD-003-closure-evidence.md)。

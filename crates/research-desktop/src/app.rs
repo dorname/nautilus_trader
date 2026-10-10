@@ -926,7 +926,7 @@ impl ResearchApp {
                         Pos2::new(rect.left(), cy - half),
                         Pos2::new(rect.left(), cy + half),
                     ],
-                    Stroke::new(4.0, Color32::from_rgba_premultiplied(34, 197, 94, alpha)),
+                    Stroke::new(4.0, Color32::from_rgba_unmultiplied(34, 197, 94, alpha)),
                 );
             }
             ui.painter().line_segment(
@@ -6908,7 +6908,7 @@ mod tests {
                         |s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text()=="取消")
                     ));
                     assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("生成策略设计"))));
-                    assert_eq!(ctx.style().animation_time == 0.0, reduce);
+                    assert_eq!(ctx.style_of(egui::Theme::Dark).animation_time == 0.0, reduce);
                     assert!(
                         out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
                             <= std::time::Duration::from_millis(50)

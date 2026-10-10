@@ -116,6 +116,25 @@ fn st_s15_16_boundary_render_evidence() {
                 })
                 .collect();
             let sidebar = layout::sidebar_w(layout::plan_for_width(width));
+            let bars: Vec<_> = shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::LineSegment { points, stroke }
+                        if points[0].x < sidebar
+                            && (points[0].x - points[1].x).abs() < 0.01
+                            && stroke.color == theme::ACCENT
+                            && (stroke.width - 2.0).abs() < 0.01 =>
+                    {
+                        Some(points[0].x)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bars.len(), 1, "只有激活导航含绿色指示条");
+            let glows = shapes.iter().filter(|s| matches!(&s.shape,
+                egui::Shape::LineSegment { points, stroke } if (points[0].x-bars[0]).abs()<0.01 && (stroke.width-4.0).abs()<0.01)).count();
+            assert_eq!(glows, 3, "激活导航必须有三层辉光");
+
             let brand = texts
                 .iter()
                 .any(|(t, r, _)| *t == "研序" && r.left() < sidebar);

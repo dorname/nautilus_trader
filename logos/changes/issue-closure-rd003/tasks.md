@@ -1,10 +1,14 @@
 # 实现任务
 
 ## [delta] 规格变更
-- [x] 产出 deltas/test/core-S15-test-cases.md：定义品牌、辉光、布局边界、字体兜底证据断言，复用适用 UT/ST ID，缺失用例另行编号。
-- [x] 产出 deltas/test/core-S17-test-cases.md：定义窄窗口导航编排、无动画或减少动态效果断言。
-- [x] 产出 deltas/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md：补充验收方法与证据索引，保持现行视觉要求。
+- [x] 产出并合并 core-S15-test-cases.md 的关闭证据断言。
+- [x] 产出并合并 core-S17-test-cases.md 的导航与动态效果断言。
+- [x] 产出并合并 core-05-ai-workspace-design.md 的验收方法。
 
 ## [code] 实现与证据产物
+- [x] 完成动态效果偏好、显式开关及真实任务条回归测试。
+- [x] 实现品牌绘制、内嵌字体、布局边界与导航测试，包含 OpenLogos reporter。
+- [x] 保存六项关闭证据及原型与 egui 渲染对照，记录环境与局限。
+- [x] 更新本地 RD-003 记录及索引，远程关闭后同步最终状态。
 
-- [ ] 实现代码变更
+验收、归档、推送与关闭顺序见 proposal.md；独立 CLI 确认节点不作为可勾选任务。

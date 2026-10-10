@@ -2,7 +2,7 @@
 
 - **类型**：UI 保真
 - **优先级**：P1
-- **状态**：fixed（2026-10-05，提案 desktop-issue-fixes-rd003-rd006）
+- **状态**：实现与针对性测试已完成；GitHub #3 待全量验收后关闭（2026-10-11，issue-closure-rd003）
 - **权威原型**：`core-05-ai-workspace-prototype.html`
 - **实现**：`theme.rs` / `layout.rs` / `icons.rs` / `app.rs`
 - **已归档相关**：`desktop-fidelity-visuals`（图标 / hero 双环 / empty 图标已补；净值曲线明确缩减）
@@ -13,11 +13,11 @@
 |----------|-----------|--------------|
 | `backdrop-filter: blur(…)` 真实毛玻璃 | 半透明面板色 + 描边近似 | `theme.rs` 模块头 |
 | 双径向环境柔光 | 角点色网格线性插值 | `theme::paint_ambient` |
-| CSS `box-shadow` 导航辉光 / 品牌 glow | 基本缺失或仅实线指示条 | `nav_item` / 品牌 mark |
+| CSS `box-shadow` 导航辉光 / 品牌 glow | 品牌与导航使用分层透明图元近似 | `nav_item` / 品牌 mark |
 
 这些属于平台能力差，**不应假装已像素级一致**，但应在验收文档中写明「近似口径」。
 
-## 仍构成不一致的缺口
+## 初始问题描述（历史记录，当前结论见关闭证据）
 
 1. **品牌 mark**  
    原型：`linear-gradient(145deg,#4ade80,#16a34a)` + `box-shadow` 辉光。  
@@ -47,7 +47,11 @@
 - 列出「必须像素/交互对齐」vs「平台近似可接受」两张表，并入验收规格。
 - P1 建议优先：品牌渐变 mark、≤900（或明确声明原生桌面不做该断点）、字体随包或改写规格。
 
-## 证据
+## 当前关闭证据
+
+见 [逐项修复与渲染对照](RD-003-closure-evidence.md)。以下实现描述为初始记录，不代表当前状态。
+
+## 初始证据
 
 - 原型 CSS：`.brand-mark`、`.nav button.active:before`、`@media(max-width:900px)`。
 - 实现：`theme.rs`、`layout.rs`（无 900 断点）、`app.rs::render_sidebar` / `nav_item`。
