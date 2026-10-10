@@ -291,10 +291,15 @@ impl OupClient {
         while let Ok(msg) = self.rx.try_recv() {
             backlog.push(msg);
         }
-        for msg in backlog {
-            if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
+        // 两遍扫描（issue #16 收尾修复）：先收全本批所有 assistant_persisted，
+        // 再找终态——单遍提前 return 会在「persisted 与 completed 同批但排在
+        // 其后」（双通道排空顺序不保证全局时序）时丢失产物文本。
+        for msg in &backlog {
+            if let Some(text) = Self::match_assistant_persisted(msg, session_id, turn_id) {
                 *assistant_text = Some(text);
             }
+        }
+        for msg in backlog {
             if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
                 return Ok(Some(match outcome {
                     Ok(completed) => TurnTerminal::Completed(TurnOutcome {

@@ -11,3 +11,4 @@
 - [x] GUI attach_bridge 后账本重建：未完成派发标记「中断（进程重启）」并 tell/record
 - [x] aggregate_valid 纯函数提取（聚合校验，poll_swarm_task 改用，#23）
 - [x] UT-S17-25 / UT-S17-26 入账 reporter 并通过
+- [x] 附带修复：poll_turn_once 双通道同批乱序竞态（persisted 排在 completed 后时产物丢失，改为两遍扫描；拥塞期 ST-S17-19 曾因此假性失败；issue #16 产物读取收尾）
