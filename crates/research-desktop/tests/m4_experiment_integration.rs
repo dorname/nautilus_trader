@@ -18,6 +18,7 @@ use nautilus_research_desktop::workspace::Workspace;
 use nautilus_research_testkit::case;
 
 /// 轮询等真实终态（turn/completed 事件流口径），超时 panic。
+/// embed-octos-runtime：调用方预算由 300s 放宽（见各调用点注释）。
 fn wait_terminal(swarm: &mut SwarmBridge, timeout_secs: u64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     while swarm.is_active() {
@@ -91,7 +92,9 @@ fn st_m4_01_experiment_dispatch() {
 
     // 等真实终态（issue #12 修复口径）：Succeeded 且 output 非空；
     // 实验 prompt 为重量级产出，LLM 尾延迟时段放宽到 300s
-    wait_terminal(&mut swarm, 300);
+    // embed-octos-runtime：300s 在 verify 全套（前置 m2/m3 已耗时、API 拥挤尾延迟
+// 实测 631s 仍未达终态而单跑 131s 通过）下误杀，放宽到 600s 吸收波动。
+    wait_terminal(&mut swarm, 600);
     assert_eq!(swarm.state(), SwarmDispatchState::Completed);
     let r = &swarm.results()[0];
     assert_eq!(r.state, SubtaskState::Succeeded, "error: {:?}", r.error);
@@ -119,7 +122,9 @@ fn st_m4_02_experiment_version_freeze() {
     assert_eq!(swarm.results()[0].contract_id, "experiment");
 
     // 等真实终态，冻结版本引用的实验同样需产出非空文本
-    wait_terminal(&mut swarm, 300);
+    // embed-octos-runtime：300s 在 verify 全套（前置 m2/m3 已耗时、API 拥挤尾延迟
+// 实测 631s 仍未达终态而单跑 131s 通过）下误杀，放宽到 600s 吸收波动。
+    wait_terminal(&mut swarm, 600);
     assert_eq!(swarm.state(), SwarmDispatchState::Completed);
     assert!(
         swarm.results()[0]
