@@ -2,7 +2,7 @@
 
 - **类型**：UI 保真
 - **优先级**：P1
-- **状态**：实现与针对性测试已完成；GitHub #3 待全量验收后关闭（2026-10-11，issue-closure-rd003）
+- **状态**：实现与全量验收已完成；GitHub #3 待归档推送后关闭（2026-10-11，issue-closure-rd003）
 - **权威原型**：`core-05-ai-workspace-prototype.html`
 - **实现**：`theme.rs` / `layout.rs` / `icons.rs` / `app.rs`
 - **已归档相关**：`desktop-fidelity-visuals`（图标 / hero 双环 / empty 图标已补；净值曲线明确缩减）
