@@ -38,3 +38,10 @@
 
 - 终端输出（Wayland MESA 告警 / X11 xkb panic）见本次会话 `cargo run` 日志。
 - 进程存活时 fd 含 `wayland-*` memfd 与 `research.db`，说明事件循环与桥接层已起，显示合成仍异常。
+
+## 2026-10-11 复测注记
+
+- 系统已安装 `libxkbcommon-x11-0`；`WINIT_UNIX_BACKEND=x11` 不再因缺库 panic。
+- **关键环境变量**：须 `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir`（默认 `/run/user/0` 时 Wayland 报 compositor 缺失）。
+- 正确 runtime-dir 下 Wayland/X11 均可存活并打开 `research-workspace/research.db`。
+- 根窗口截屏仍为全黑；窗口枚举仍失败 → 详见 [RD-010](RD-010-gui-window-unverified.md)。

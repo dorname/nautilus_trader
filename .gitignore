@@ -211,5 +211,7 @@ __pycache__/
 /examples/tongxindadata/
 .git/cursor/
 /research-workspace/
+/.local-loop-ws/
+/.local-octos/
 .specstory/
 .cursorindexingignore

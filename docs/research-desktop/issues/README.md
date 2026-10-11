@@ -1,6 +1,6 @@
 # nautilus-research-desktop Issue 清单
 
-> 分支：`a-stock` · 记录日：2026-10-05  
+> 分支：`a-stock` · 记录日：2026-10-05（2026-10-11 增补 RD-009/010）  
 > 权威原型：`logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html`  
 > 设计规格：`core-05-ai-workspace-design.md` · 旧线框：`core-02-research-pages.md`  
 > 实现：`crates/research-desktop/`
@@ -17,6 +17,8 @@
 | RD-006 | [#6](https://github.com/dorname/nautilus_trader/issues/6) | [原生桌面页脚/文案仍泄漏「HTML 原型」语义](RD-006-footer-and-copy-prototype-leak.md) | 文案 | P3 |
 | RD-007 | [#7](https://github.com/dorname/nautilus_trader/issues/7) | [原型 ≤900px 布局与窄视口对照证据](RD-007-prototype-narrow-viewport.md) | 原型 / 证据 | P3 |
 | RD-008 | — | [主工作区 body 布局塌缩（画布竖排挤压 / 对话栏消失）](RD-008-body-layout-collapse.md) | bug / UI 布局 | P0 |
+| RD-009 | [#34](https://github.com/dorname/nautilus_trader/issues/34) | [本地 octos 接线缺口](RD-009-octos-local-wiring-gaps.md) | 环境 / 基建 | P1 |
+| RD-010 | [#35](https://github.com/dorname/nautilus_trader/issues/35) | [GUI 进程可起但窗口/截屏仍不可验收](RD-010-gui-window-unverified.md) | bug / 环境 | P1 |
 
 列表页：https://github.com/dorname/nautilus_trader/issues?q=is%3Aissue+label%3Aa-stock
 
@@ -25,3 +27,10 @@
 ## RD-003 关闭进度（2026-10-11）
 
 GitHub #3 已关闭；修复与全量验收已完成（137通过、0失败、4跳过），变更已归档并推送 `a-stock`。2026-10-11 关闭后复查全仓未关闭 Issue 为0。逐项证据见 [RD-003 关闭证据](RD-003-closure-evidence.md)。
+
+## 2026-10-11 本地闭环演练
+
+- **CLI 业务闭环（S21）**：已通——导入 → 股票池 → 双运行 → 比较（cost 差异）→ 计划生成/导出/备注。工作区 `.local-loop-ws/`，产物 `导出 目录/计划.csv`。
+- **octos**：项目内 `OCTOS_HOME=.local-octos` doctor 无 fatal；serve 缺 web/admin bundle → [RD-009](RD-009-octos-local-wiring-gaps.md)。
+- **GUI**：需 `XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir` 才存活；截屏全黑 → [RD-010](RD-010-gui-window-unverified.md)。
+- **GitHub Issue**：已提交 [#34](https://github.com/dorname/nautilus_trader/issues/34)（RD-009）、[#35](https://github.com/dorname/nautilus_trader/issues/35)（RD-010）。
