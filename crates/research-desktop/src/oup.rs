@@ -577,15 +577,21 @@ impl OupClient {
         }
     }
 
-    /// 若 `msg` 是本 turn 的 `assistant_persisted` 投影，返回持久化回复文本。
-    fn match_assistant_persisted(msg: &Value, session_id: &str, turn_id: &str) -> Option<String> {
+    /// 若 `msg` 是本会话的 `assistant_persisted` 投影，返回持久化回复文本。
+    ///
+    /// embed-octos-runtime 修正：匹配放宽到 **session 级**——服务端对
+    /// `projection/envelope` 的 `turn_id` 回显不稳定（实测同一二进制：新会话
+    /// echo 客户端 UUID，负载/复用路径下改用内部 thread id，且 v1 投影干脆
+    /// 不带 turn_id），按 UUID 严格匹配会静默丢产物（m3 pipeline 实例
+    /// ST-S18-16：LLM 回复完整、通知已发、客户端匹配不上）。桌面与 swarm
+    /// 均为单会话单活跃 turn（worker 单活跃口径、pipeline 串行），终态前的
+    /// persisted 即属于当前 turn；每 turn 开始时 pending 文本重置，上一轮
+    /// 迟到 persisted 不会串轮。`turn_id` 参数保留签名兼容，仅用于调试。
+    fn match_assistant_persisted(msg: &Value, session_id: &str, _turn_id: &str) -> Option<String> {
         if msg.get("method").and_then(|m| m.as_str()) != Some("projection/envelope") {
             return None;
         }
         let params = msg.get("params")?;
-        if params.get("turn_id").and_then(|t| t.as_str()) != Some(turn_id) {
-            return None;
-        }
         if params.get("session_id").and_then(|s| s.as_str()) != Some(session_id) {
             return None;
         }
@@ -707,7 +713,10 @@ mod tests {
         );
     }
 
-    /// UT-oup-05：user_message 投影 / turn_id 不匹配 / 非 envelope 均不提取。
+    /// UT-oup-05：user_message 投影 / session 不匹配 / 非 envelope 均不提取；
+    /// embed-octos-runtime 语义修订：turn_id 与请求不一致（服务端 echo 不稳定，
+    /// 可能改用内部 thread id 或缺失）但 session 匹配的 persisted **仍提取**
+    /// （单会话单活跃 turn 口径，详见 `match_assistant_persisted` 文档）。
     #[test]
     fn assistant_persisted_rejects_non_matching() {
         let user_msg = serde_json::json!({
@@ -724,12 +733,29 @@ mod tests {
             "method": "projection/envelope",
             "params": {
                 "session_id": "s1",
-                "turn_id": "t1",
+                "turn_id": "server-thread-id",
                 "payload": { "type": "assistant_persisted", "data": { "text": "ok" } }
             }
         });
-        assert_eq!(OupClient::match_assistant_persisted(&msg, "s1", "t2"), None);
-        assert_eq!(OupClient::match_assistant_persisted(&msg, "s2", "t1"), None);
+        // turn_id 为服务端内部 id（echo 失稳）：session 匹配即提取。
+        assert_eq!(
+            OupClient::match_assistant_persisted(&msg, "s1", "client-uuid"),
+            Some("ok".to_string())
+        );
+        // v1 投影无 turn_id 字段：session 匹配即提取。
+        let v1 = serde_json::json!({
+            "method": "projection/envelope",
+            "params": {
+                "session_id": "s1",
+                "payload": { "type": "assistant_persisted", "data": { "text": "ok" } }
+            }
+        });
+        assert_eq!(
+            OupClient::match_assistant_persisted(&v1, "s1", "client-uuid"),
+            Some("ok".to_string())
+        );
+        // session 不匹配：拒绝（跨会话隔离仍然严格）。
+        assert_eq!(OupClient::match_assistant_persisted(&msg, "s2", "server-thread-id"), None);
 
         let delta = serde_json::json!({
             "method": "message/delta",
