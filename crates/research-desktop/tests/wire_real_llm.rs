@@ -8,6 +8,9 @@
 //! 注意：ST 用例调用真实 LLM（moonshot-coding），会产生 API 调用。
 //! 用例 ID 对齐 logos/resources/test/core-S17-test-cases.md（wire-real-llm-oup delta）。
 
+#[path = "support/profile.rs"]
+mod test_profile;
+
 use nautilus_research_desktop::agent_bridge::{AgentBridge, AgentSessionConfig};
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_testkit::case;
@@ -29,10 +32,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
 
     // 复制真实 LLM profile（moonshot-coding）
     // issue #24：经 HOME 解析，禁止机器绝对路径硬编码
-    let profile_src = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|h| h.join(".octos/profiles/octos.json"))
-        .filter(|p| p.exists());
+    let profile_src = test_profile::configured_source();
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
     if let Some(profile_src) = profile_src {

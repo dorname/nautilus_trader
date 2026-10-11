@@ -3,6 +3,9 @@
 //! CPU 红线：Pipeline 串行执行，同一时间只有一个 sub-agent 活跃；
 //! 每个阶段最多等待 30 秒。
 
+#[path = "support/profile.rs"]
+mod test_profile;
+
 use nautilus_research_desktop::agent_bridge::AgentSessionConfig;
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
@@ -26,10 +29,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     std::fs::create_dir_all(&instance_dir).expect("create instance dir");
 
     // issue #24：经 HOME 解析，禁止机器绝对路径硬编码
-    let profile_src = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|h| h.join(".octos/profiles/octos.json"))
-        .filter(|p| p.exists());
+    let profile_src = test_profile::configured_source();
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
     if let Some(profile_src) = profile_src {

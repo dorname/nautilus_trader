@@ -3,6 +3,9 @@
 //! CTU 红线：每个测试用独立的临时数据目录，避免并发锁冲突；
 //! 测试完成后清理子进程，不留孤儿进程。
 
+#[path = "support/profile.rs"]
+mod test_profile;
+
 use nautilus_research_desktop::oup::{OupClient, OupConfig};
 
 fn temp_oup_config(tag: &str) -> OupConfig {
@@ -23,10 +26,7 @@ fn temp_oup_config(tag: &str) -> OupConfig {
 
     // 复制 profile 配置
     // issue #24：经 HOME 解析，禁止机器绝对路径硬编码
-    let profile_src = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|h| h.join(".octos/profiles/octos.json"))
-        .filter(|p| p.exists());
+    let profile_src = test_profile::configured_source();
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
     if let Some(profile_src) = profile_src {

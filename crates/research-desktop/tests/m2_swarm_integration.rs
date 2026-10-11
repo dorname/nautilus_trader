@@ -3,6 +3,9 @@
 //! CPU 红线：每个测试独立临时目录；并发上限 MAX_PARALLEL_DISPATCH=3；
 //! 测试完成后清理所有子进程。
 
+#[path = "support/profile.rs"]
+mod test_profile;
+
 use nautilus_research_desktop::agent_bridge::{AgentBridge, AgentError, AgentSessionConfig};
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
@@ -31,10 +34,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     std::fs::create_dir_all(&instance_dir).expect("create instance dir");
 
     // 复制 profile 配置（issue #24：经 HOME 解析，禁止机器绝对路径硬编码）
-    let profile_src = std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|h| h.join(".octos/profiles/octos.json"))
-        .filter(|p| p.exists());
+    let profile_src = test_profile::configured_source();
     let profile_dst_dir = data_dir.join("profiles");
     std::fs::create_dir_all(&profile_dst_dir).expect("create profiles dir");
     if let Some(src) = profile_src {

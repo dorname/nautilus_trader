@@ -1,6 +1,16 @@
 [
   {
+    "width": 880,
+    "height": 720,
+    "brand": "none",
+    "gradient": "linear-gradient(145deg, rgb(74, 222, 128), rgb(22, 163, 74))",
+    "glow": "rgba(34, 197, 94, 0.35) 0px 0px 14px 0px",
+    "overflow": false,
+    "active": "需求文档"
+  },
+  {
     "width": 900,
+    "height": 900,
     "brand": "none",
     "gradient": "linear-gradient(145deg, rgb(74, 222, 128), rgb(22, 163, 74))",
     "glow": "rgba(34, 197, 94, 0.35) 0px 0px 14px 0px",
@@ -9,6 +19,7 @@
   },
   {
     "width": 901,
+    "height": 900,
     "brand": "block",
     "gradient": "linear-gradient(145deg, rgb(74, 222, 128), rgb(22, 163, 74))",
     "glow": "rgba(34, 197, 94, 0.35) 0px 0px 14px 0px",
@@ -17,6 +28,7 @@
   },
   {
     "width": 1200,
+    "height": 900,
     "brand": "block",
     "gradient": "linear-gradient(145deg, rgb(74, 222, 128), rgb(22, 163, 74))",
     "glow": "rgba(34, 197, 94, 0.35) 0px 0px 14px 0px",
@@ -25,6 +37,7 @@
   },
   {
     "width": 1201,
+    "height": 900,
     "brand": "block",
     "gradient": "linear-gradient(145deg, rgb(74, 222, 128), rgb(22, 163, 74))",
     "glow": "rgba(34, 197, 94, 0.35) 0px 0px 14px 0px",

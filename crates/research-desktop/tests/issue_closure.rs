@@ -1,11 +1,17 @@
 //! RD-003 关闭证据：真实 egui 绘制、导航、字体与动态效果。
+#[path = "support/profile.rs"]
+mod test_profile;
+
 use egui_kittest::{Harness, kittest::Queryable};
 use nautilus_research_desktop::{app::ResearchApp, icons, layout, motion, nav::ALL_ROUTES, theme};
 use nautilus_research_testkit::case;
 
 fn harness(width: f32) -> Harness<'static, ResearchApp> {
     let mut h = Harness::builder()
-        .with_size(egui::vec2(width, if width == 880.0 {720.0} else {900.0}))
+        .with_size(egui::vec2(
+            width,
+            if width == 880.0 { 720.0 } else { 900.0 },
+        ))
         .build_ui_state(
             |ui, app: &mut ResearchApp| {
                 // kittest 的 UI 包装默认加 8px 外边距；原生入口直接使用完整根矩形。
@@ -34,7 +40,7 @@ fn frame(width: f32) -> Vec<egui::epaint::ClippedShape> {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(width, if width == 880.0 {720.0} else {900.0}),
+                    egui::vec2(width, if width == 880.0 { 720.0 } else { 900.0 }),
                 )),
                 ..Default::default()
             },
@@ -102,8 +108,11 @@ fn st_s15_16_boundary_render_evidence() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/research-desktop/screenshots/rd003");
         std::fs::create_dir_all(&dir).expect("创建证据目录");
-        assert!(theme::MIN_WINDOW.x <= layout::SLIM_MAX_W, "原生窗口必须可缩到图标档");
-        assert_eq!(theme::MIN_WINDOW, egui::vec2(880.0,720.0));
+        assert!(
+            theme::MIN_WINDOW.x <= layout::SLIM_MAX_W,
+            "原生窗口必须可缩到图标档"
+        );
+        assert_eq!(theme::MIN_WINDOW, egui::vec2(880.0, 720.0));
         for width in [880.0, 900.0, 901.0, 1200.0, 1201.0] {
             let shapes = frame(width);
             let texts: Vec<_> = shapes
@@ -216,6 +225,21 @@ fn spin(reduce: bool, time: f64) -> Vec<egui::Pos2> {
 #[test]
 fn ut_gui_06_motion_preference() {
     case("UT-GUI-06", || {
+        let root = std::env::temp_dir().join(format!("rd003-profile-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".octos/profiles")).expect("创建配置测试目录");
+        let default = root.join(".octos/profiles/octos.json");
+        let explicit = root.join("explicit.json");
+        std::fs::write(&default, "{}").expect("默认测试配置");
+        std::fs::write(&explicit, "{}").expect("显式测试配置");
+        assert_eq!(
+            test_profile::source(Some(explicit.clone()), Some(root.clone())),
+            Some(explicit)
+        );
+        assert_eq!(
+            test_profile::source(Some(root.join("missing")), Some(root)),
+            Some(default)
+        );
+        let _ = test_profile::configured_source();
         assert!(motion::reduce_from_enabled(None));
         assert!(motion::reduce_from_enabled(Some(false)));
         assert!(!motion::reduce_from_enabled(Some(true)));

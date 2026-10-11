@@ -89,7 +89,7 @@ pub fn workspace_width(window_w: f32, plan: LayoutPlan, focus: bool) -> f32 {
     avail.max(0.0)
 }
 
-/// 最小窗口（1100，窄档，含对话栏）下工作区仍有可用宽度（无水平溢出的下界自检）。
+/// 最小窗口（880，图标档，含对话栏）下工作区仍有可用宽度（无水平溢出的下界自检）。
 pub fn min_workspace_usable() -> bool {
     workspace_width(MIN_WINDOW.x, plan_for_width(MIN_WINDOW.x), false) > 0.0
 }
