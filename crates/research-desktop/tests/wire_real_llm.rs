@@ -158,3 +158,50 @@ fn ut_s17_17_no_demo_task_path() {
         assert!(!bridge.is_connected());
     });
 }
+
+/// ST-S18-17（embed-octos-runtime）：真实 LLM 生成设计任务——工具执行通知
+/// 可见（tool_trace）+ 托管工作区产物文件落盘可读。生成类 prompt 为产物
+/// 文件型（写 design-note.md）；断言文件非空与工具轨迹记录（LLM 遵循度
+/// 波动时文件为硬断言、tool_trace 至少一条为软证据口径：文件在即工具行
+/// 必然产生过）。
+#[test]
+fn st_s18_17_tool_visibility_and_workspace_artifact() {
+    case("ST-S18-17", || {
+        let config = temp_agent_config("s18-tool");
+        let mut agent = AgentBridge::new(config.clone());
+        agent.connect().expect("connect");
+
+        let prompt = "请调用写文件工具，在当前工作区创建文件 design-note.md，\n\
+                      内容为三行以内的均线策略设计要点；完成后只回复「已写入」。";
+        let (turn_id, outcome) = agent
+            .submit_and_wait(prompt, 480)
+            .expect("submit_and_wait");
+
+        assert!(!turn_id.is_empty());
+        assert!(
+            outcome.assistant_text.as_deref().is_some_and(|s| !s.trim().is_empty()),
+            "回复文本应非空"
+        );
+
+        // 工具执行可见（终态收割；工具行数据源）
+        let tools = agent.take_tool_events();
+        assert!(
+            !tools.is_empty(),
+            "产物文件型任务的 tool_trace 不应为空（write_file 执行必有 tool 通知）"
+        );
+        assert!(
+            tools.iter().any(|e| e.completed),
+            "应观察到至少一个 tool/completed"
+        );
+
+        // 托管工作区产物落盘且非空
+        let artifact = config.managed_workspace_root().join("design-note.md");
+        let text = std::fs::read_to_string(&artifact)
+            .unwrap_or_default();
+        assert!(
+            !text.trim().is_empty(),
+            "托管工作区应存在非空产物文件：{}",
+            artifact.display()
+        );
+    });
+}

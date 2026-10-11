@@ -101,7 +101,13 @@ fn walk_finished() {
         REMAINING_TESTS.store(planned_tests(), Ordering::SeqCst);
     }
     if REMAINING_TESTS.fetch_sub(1, Ordering::SeqCst) == 1 {
-        std::process::exit(0);
+        // exit 异步化（embed-octos-runtime 修正）：finish 在 case 闭包内执行，
+        // 直接 exit 会抢在 case() 的 report_result 之前（最后一个收尾测试的
+        // 上报丢失，实测 UT-S17-23）。延迟线程让闭包先返回完成上报，再退出。
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(800));
+            std::process::exit(0);
+        });
     }
 }
 

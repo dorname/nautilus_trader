@@ -525,10 +525,15 @@ impl OupClient {
                 return Err(OupError::Timeout);
             }
 
-            // 先排空已转发的通知，再试 rx（accepted 后事件留在 rx）
+            // 先排空已转发的通知，再试 rx（accepted 后事件留在 rx）。
+            // embed-octos-runtime：同步收集 tool/started|completed（与
+            // poll_turn_once 口径一致，submit_and_wait 路径的工具可见性）。
             if let Ok(msg) = self.notification_rx.try_recv() {
                 if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
                     assistant_text = Some(text);
+                }
+                if let Some(event) = Self::parse_tool_event(&msg) {
+                    self.pending_tool_events.push(event);
                 }
                 if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
                     return outcome.map(|completed| TurnOutcome { completed, assistant_text });
@@ -537,6 +542,9 @@ impl OupClient {
             if let Ok(msg) = self.rx.try_recv() {
                 if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
                     assistant_text = Some(text);
+                }
+                if let Some(event) = Self::parse_tool_event(&msg) {
+                    self.pending_tool_events.push(event);
                 }
                 if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
                     return outcome.map(|completed| TurnOutcome { completed, assistant_text });
@@ -763,6 +771,44 @@ mod tests {
         });
         assert_eq!(OupClient::match_assistant_persisted(&delta, "s1", "t1"), None);
     }
+    /// UT-S18-17（embed-octos-runtime）：工具通知解析——`tool/started`/
+    /// `tool/completed` 结构化（tool_call_id、名称、终态）；未知通知不 panic。
+    #[test]
+    fn tool_events_parse_structured() {
+        nautilus_research_testkit::case("UT-S18-17", || {
+            let started = serde_json::json!({
+                "method": "tool/started",
+                "params": { "session_id": "s1", "turn_id": "t1",
+                            "tool_call_id": "call_1", "tool": "write_file" }
+            });
+            let ev = OupClient::parse_tool_event(&started).expect("started 应解析");
+            assert_eq!(ev.session_id, "s1");
+            assert_eq!(ev.turn_id, "t1");
+            assert_eq!(ev.tool_call_id, "call_1");
+            assert_eq!(ev.name.as_deref(), Some("write_file"));
+            assert!(!ev.completed, "tool/started 的 completed=false");
+
+            let done = serde_json::json!({
+                "method": "tool/completed",
+                "params": { "session_id": "s1", "turn_id": "t1",
+                            "tool_call_id": "call_1", "name": "write_file" }
+            });
+            let ev2 = OupClient::parse_tool_event(&done).expect("completed 应解析");
+            assert!(ev2.completed, "tool/completed 的 completed=true");
+            // name 字段兼容（tool 或 name 键）
+            assert_eq!(ev2.name.as_deref(), Some("write_file"));
+
+            // 未知通知/缺失字段：None（不 panic、不中断读循环）
+            let other = serde_json::json!({
+                "method": "message/delta",
+                "params": { "session_id": "s1", "text": "x" }
+            });
+            assert_eq!(OupClient::parse_tool_event(&other), None);
+            let bad = serde_json::json!({ "method": "tool/started", "params": {} });
+            assert_eq!(OupClient::parse_tool_event(&bad), None);
+        });
+    }
+
     /// UT-S18-18（embed-octos-runtime）：闭环权限默认档——OupConfig 默认
     /// 携带 Workspace-Write（danger_full_access=false）；Full-Access 只能
     /// 由调用方显式置位（GUI 两段式确认）。
