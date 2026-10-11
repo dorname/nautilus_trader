@@ -312,6 +312,9 @@ fn st_gui_journey_real_llm() {
     // ---- ST-GUI-01：S17 确认需求派发三路多 Agent 分析（issue #26）
     case("ST-GUI-01", std::panic::AssertUnwindSafe(|| {
         goto(&mut w, Route::Requirements);
+        // 非交互固定输入与 ST-S17-19 一致，保留真实派发与产物挂载断言。
+        w.harness.state_mut().ai_req_text = "研究日线双均线策略在震荡市的表现：已有 OHLCV；使用三个固定合成标的；收盘形成信号、下一交易日开盘执行；投入上限100%，佣金万三，现金不足拒绝订单。这是非交互固定样本分析，所有前提已给定。各路直接用一到两句话返回分析；不要向用户提问，也不要调用任何工具。未知量列为限制即可。".into();
+        w.harness.run_steps(2);
         click_button(&mut w, "确认需求");
 
         // 派发后任务条出现三路进度行（多 Agent 分析 R1 · n/3 · Ns）
