@@ -39,6 +39,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     AgentSessionConfig {
         session_id: format!("m3-{tag}"),
         profile_id: "octos".into(),
+        profile_warning: None,
         oup: OupConfig {
             octos_bin: "octos".into(),
             data_dir: data_dir.to_string_lossy().into(),
@@ -46,6 +47,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
             // issue #24：禁止机器绝对路径；仓库根经 CARGO_MANIFEST_DIR 解析
             workspace_root: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").into(),
             extra_env: Vec::new(),
+            danger_full_access: false,
         },
     }
 }

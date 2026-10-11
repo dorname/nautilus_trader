@@ -6,6 +6,47 @@ use egui_kittest::{Harness, kittest::Queryable};
 use nautilus_research_desktop::{app::ResearchApp, icons, layout, motion, nav::ALL_ROUTES, theme};
 use nautilus_research_testkit::case;
 
+/// 剩余未收尾的测试数（本文件 4 个测试；embed-octos-runtime）。
+/// 与 gui_walkthrough 同款守卫：跑过 wgpu 软渲染（llvmpipe/LLVM JIT）的
+/// 线程在退出阶段存在 glibc TLS 析构竞态（SIGSEGV，Mesa/LLVM 层；断言与
+/// 截图均不受影响）；最后一个收尾者以 exit(0) 结束进程跳过线程清理
+/// （reporter 逐 case 即时落盘不受影响）。本套件截图为 rd003 验收必需
+/// 证据，不降级无渲染，仅靠守卫收尾。
+static REMAINING_TESTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+const TEST_NAMES: [&str; 4] = [
+    "ut_s15_12_brand_and_embedded_font",
+    "st_s15_16_boundary_render_evidence",
+    "ut_gui_05_slim_navigation",
+    "ut_gui_06_motion_preference",
+];
+
+fn planned_tests() -> usize {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    if filters.is_empty() {
+        return TEST_NAMES.len();
+    }
+    TEST_NAMES
+        .iter()
+        .filter(|n| filters.iter().any(|f| n.contains(f.as_str())))
+        .count()
+}
+
+fn walk_finished() {
+    use std::sync::atomic::Ordering;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    if REMAINING_TESTS.load(Ordering::SeqCst) == 0 {
+        REMAINING_TESTS.store(planned_tests(), Ordering::SeqCst);
+    }
+    if REMAINING_TESTS.fetch_sub(1, Ordering::SeqCst) == 1 {
+        std::process::exit(0);
+    }
+}
+
 fn harness(width: f32) -> Harness<'static, ResearchApp> {
     let mut h = Harness::builder()
         .with_size(egui::vec2(
@@ -100,6 +141,7 @@ fn ut_s15_12_brand_and_embedded_font() {
         assert!(theme::EMBEDDED_CJK_LICENSE.contains("SIL OPEN FONT LICENSE Version 1.1"));
         out.drop_without_applying_deltas();
     });
+    walk_finished();
 }
 
 #[test]
@@ -172,12 +214,34 @@ fn st_s15_16_boundary_render_evidence() {
                 h.state().test_current_route(),
                 nautilus_research_desktop::nav::Route::Requirements
             );
-            h.render()
-                .expect("必须取得 wgpu 离屏截图")
-                .save(dir.join(format!("egui-{}.png", width as u32)))
+            // embed-octos-runtime：wgpu 软渲染（llvmpipe/LLVM JIT）线程在退出
+            // 阶段有 glibc TLS 析构竞态——渲染移入「永不退出」的泄漏线程：
+            // 线程内自建 harness（Harness 非 Send）并重复同状态导航后渲染
+            // （确定性状态机，证据等价），结果经 channel 返回；线程 park
+            // 挂起，进程退出时被直接回收，不走线程清理路径。断言不变。
+            let (tx, rx) = std::sync::mpsc::channel();
+            let evidence_dir = dir.clone();
+            std::thread::spawn(move || {
+                let mut h2 = harness(width);
+                h2.get_by_role_and_label(egui::accesskit::Role::Button, "需求文档")
+                    .click_accesskit();
+                h2.run_steps(3);
+                let _ = tx.send(
+                    h2.render()
+                        .expect("必须取得 wgpu 离屏截图")
+                        .save(evidence_dir.join(format!("egui-{}.png", width as u32)))
+                        .map_err(|e| e.to_string()),
+                );
+                loop {
+                    std::thread::park();
+                }
+            });
+            rx.recv()
+                .expect("渲染线程应返回保存结果")
                 .expect("保存截图");
         }
     });
+    walk_finished();
 }
 
 #[test]
@@ -198,6 +262,7 @@ fn ut_gui_05_slim_navigation() {
             }
         }
     });
+    walk_finished();
 }
 
 fn spin(reduce: bool, time: f64) -> Vec<egui::Pos2> {
@@ -254,4 +319,5 @@ fn ut_gui_06_motion_preference() {
         h.run_steps(3);
         assert!(!h.state().reduce_motion, "可访问的显式选择生效");
     });
+    walk_finished();
 }

@@ -40,6 +40,11 @@ pub struct OupConfig {
     /// 额外注入子进程的环境变量（如 profile `config.env_vars` 的 LLM 凭据，
     /// 由 AgentBridge::connect 解析填充；禁止写仓库，issue #14）。
     pub extra_env: Vec<(String, String)>,
+    /// 闭环权限档（embed-octos-runtime）：默认 false = Workspace-Write
+    /// （工作区内免审批、文件系统仍沙箱）。true 追加
+    /// `--solo --danger-full-access`（沙箱禁用 + 审批永不提示）——
+    /// 仅允许人类在 GUI 显式二次确认后置 true，任何默认路径不得开启。
+    pub danger_full_access: bool,
 }
 
 impl Default for OupConfig {
@@ -51,6 +56,7 @@ impl Default for OupConfig {
             instance_dir: base.join("instance").to_string_lossy().into(),
             workspace_root: ".".into(),
             extra_env: Vec::new(),
+            danger_full_access: false,
         }
     }
 }
@@ -67,6 +73,9 @@ pub struct OupClient {
     notification_tx: mpsc::Sender<Value>,
     /// 请求计数器（生成唯一 ID）。
     counter: u64,
+    /// 积压的工具执行事件（embed-octos-runtime；poll_turn_once 收集，
+    /// take_tool_events 收割）。
+    pending_tool_events: Vec<ToolEvent>,
     /// 读线程句柄（drop 时等待退出）。
     reader_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -78,6 +87,22 @@ struct RpcRequest<'a> {
     id: String,
     method: &'a str,
     params: Value,
+}
+
+/// 工具执行事件（embed-octos-runtime）：`tool/started`/`tool/completed`
+/// 通知的结构化视图，供任务条呈现 agent 工具执行行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolEvent {
+    /// 所属会话。
+    pub session_id: String,
+    /// 所属 turn。
+    pub turn_id: String,
+    /// 工具调用 ID（started/completed 按 ID 配对；缺失为空串）。
+    pub tool_call_id: String,
+    /// 工具名（通知未携带时为 None，由上层与 started 事件合并）。
+    pub name: Option<String>,
+    /// `true` = tool/completed（执行完毕）；`false` = tool/started。
+    pub completed: bool,
 }
 
 /// JSON-RPC 响应（只关心 result/error）。
@@ -165,6 +190,19 @@ impl From<serde_json::Error> for OupError {
 impl OupClient {
     /// 启动 octos serve 子进程并建立 stdio 通道。
     pub fn spawn(config: &OupConfig) -> OupResult<Self> {
+        // embed-octos-runtime：spawn 前置 backend_ensure——三级解析
+        // （内嵌资源 → ~/.octos/bin → PATH）+ REQUIRED_OCTOS_RELEASE 版本 pin；
+        // 缺失/不匹配给出中文诊断并拒绝 spawn（不静默继续）。
+        let resolved = crate::backend_ensure::ensure()?;
+        if resolved.bin != config.octos_bin {
+            eprintln!(
+                "[oup] octos 来源：{}（{}）",
+                resolved.source.label(),
+                resolved.bin
+            );
+        }
+        let mut config = config.clone();
+        config.octos_bin = resolved.bin;
         // 确保目录存在
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::create_dir_all(&config.instance_dir)?;
@@ -184,6 +222,13 @@ impl OupClient {
                 "--instance-data-dir",
                 &config.instance_dir,
             ])
+            // embed-octos-runtime：Full-Access 权限档（人类显式决策项，
+            // 默认 Workspace-Write 免审批档不携带任何免沙箱标志）。
+            .args(if config.danger_full_access {
+                vec!["--solo", "--danger-full-access"]
+            } else {
+                Vec::<&str>::new()
+            })
             .env("OCTOS_HOME", &config.data_dir)
             // issue #14：workspace_root 作为子进程 cwd（原为未使用字段）
             .current_dir(&config.workspace_root)
@@ -220,6 +265,7 @@ impl OupClient {
         Ok(Self {
             child,
             stdin,
+            pending_tool_events: Vec::new(),
             rx,
             notification_rx,
             notification_tx,
@@ -277,6 +323,8 @@ impl OupClient {
     ///
     /// `assistant_text` 由调用方跨调用持有：本 turn 的 `assistant_persisted`
     /// 文本可能早于终态通知到达，逐次累积进该参数，终态时随 [`TurnOutcome`] 带出。
+    /// embed-octos-runtime：扫到 `tool/started`/`tool/completed` 时结构化积压，
+    /// 由 [`OupClient::take_tool_events`] 收割（agent 工具执行对 GUI 可见）。
     pub fn poll_turn_once(
         &mut self,
         session_id: &str,
@@ -298,6 +346,9 @@ impl OupClient {
             if let Some(text) = Self::match_assistant_persisted(msg, session_id, turn_id) {
                 *assistant_text = Some(text);
             }
+            if let Some(event) = Self::parse_tool_event(msg) {
+                self.pending_tool_events.push(event);
+            }
         }
         for msg in backlog {
             if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
@@ -311,6 +362,38 @@ impl OupClient {
             }
         }
         Ok(None)
+    }
+
+    /// 收割积压的工具执行事件（embed-octos-runtime）：非阻塞，取走即清。
+    pub fn take_tool_events(&mut self) -> Vec<ToolEvent> {
+        std::mem::take(&mut self.pending_tool_events)
+    }
+
+    /// 解析 `tool/started` / `tool/completed` 通知为结构化事件；
+    /// 其他消息返回 None（未知通知不 panic、不中断读循环）。
+    fn parse_tool_event(msg: &Value) -> Option<ToolEvent> {
+        let method = msg.get("method").and_then(|m| m.as_str())?;
+        let completed = match method {
+            "tool/started" => false,
+            "tool/completed" => true,
+            _ => return None,
+        };
+        let params = msg.get("params")?;
+        Some(ToolEvent {
+            session_id: params.get("session_id")?.as_str()?.into(),
+            turn_id: params.get("turn_id")?.as_str()?.into(),
+            tool_call_id: params
+                .get("tool_call_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            name: params
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .or_else(|| params.get("name").and_then(|v| v.as_str()))
+                .map(ToString::to_string),
+            completed,
+        })
     }
 
     /// 打开 session（OUP session/open）。
@@ -653,5 +736,15 @@ mod tests {
             "params": { "session_id": "s1", "turn_id": "t1", "text": "o" }
         });
         assert_eq!(OupClient::match_assistant_persisted(&delta, "s1", "t1"), None);
+    }
+    /// UT-S18-18（embed-octos-runtime）：闭环权限默认档——OupConfig 默认
+    /// 携带 Workspace-Write（danger_full_access=false）；Full-Access 只能
+    /// 由调用方显式置位（GUI 两段式确认）。
+    #[test]
+    fn default_config_is_workspace_write() {
+        nautilus_research_testkit::case("UT-S18-18", || {
+            let c = OupConfig::default();
+            assert!(!c.danger_full_access, "默认必须为 Workspace-Write 免审批档");
+        });
     }
 }

@@ -26,6 +26,90 @@ struct Walk {
     harness: Harness<'static, ResearchApp>,
 }
 
+/// 是否启用 wgpu 渲染截图（embed-octos-runtime）。
+///
+/// 串行模式（`RUST_TEST_THREADS=1` 或 `--test-threads=1`，openlogos verify
+/// 的固定跑法）自动降级为无渲染：跑过 wgpu 软渲染（llvmpipe/LLVM JIT）的
+/// 线程在退出阶段存在 glibc TLS 析构竞态（SIGSEGV，Mesa/LLVM 层，断言与
+/// AccessKit 布局均不受影响）；并行模式保留 best-effort 截图并经
+/// `walk_finished` 的 exit(0) 守卫收尾。截图是加分证据，断言是判定口径。
+fn render_enabled() -> bool {
+    if std::env::var_os("RESEARCH_GUI_WALK_RENDER")
+        .is_some_and(|v| v == "0")
+    {
+        return false;
+    }
+    if std::env::var_os("RUST_TEST_THREADS").is_some_and(|v| v == "1") {
+        return false;
+    }
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--test-threads") {
+        if args.get(i + 1).is_some_and(|v| v == "1") {
+            return false;
+        }
+    }
+    if args
+        .iter()
+        .any(|a| a.starts_with("--test-threads=1"))
+    {
+        return false;
+    }
+    true
+}
+
+/// 本文件全部测试函数名（计算计划跑数用，与下方 fn 声明保持同步）。
+const TEST_NAMES: [&str; 6] = [
+    "st_gui_journey_real_llm",
+    "ut_gui_01_render_and_nav",
+    "ut_gui_02_empty_state_gating",
+    "ut_gui_03_idle_no_taskbar",
+    "ut_gui_04_narrow_viewport_slim_sidebar",
+    "ut_s17_23_project_isolation",
+];
+
+/// 计划运行的测试数：无过滤词 = 全量；有过滤词按 libtest 子串匹配计数
+/// （支持单跑 `-- st_gui_journey` 与多过滤 `-- ut_gui` 等）。
+fn planned_tests() -> usize {
+    let filters: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    if filters.is_empty() {
+        return TEST_NAMES.len();
+    }
+    TEST_NAMES
+        .iter()
+        .filter(|n| filters.iter().any(|f| n.contains(f.as_str())))
+        .count()
+}
+
+/// 剩余未收尾的走查测试数（按计划跑数惰性初始化）。
+static REMAINING_TESTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// 走查收尾（embed-octos-runtime）：规避测试线程退出阶段 glibc
+/// `nptl_deallocate_tsd` 调用已释放 TLS 析构函数的竞态（2026-10-11 gdb 定位
+/// 为 SIGSEGV，根源在 Mesa/llvmpipe 软渲染层，功能断言与截图均不受影响）。
+/// 各测试必须以 `finish(walk)` / `walk_finished()` 收尾；最后一个收尾时以
+/// `exit(0)` 结束进程，跳过线程退出清理（reporter 逐 case 即时落盘，
+/// libtest 逐条 ok 输出均已打印，不受影响）。
+fn walk_finished() {
+    use std::sync::atomic::Ordering;
+    std::thread::sleep(Duration::from_millis(200));
+    // 惰性初始化计划数（0=未初始化；并发窗口下重复写入同值，幂等无害）
+    if REMAINING_TESTS.load(Ordering::SeqCst) == 0 {
+        REMAINING_TESTS.store(planned_tests(), Ordering::SeqCst);
+    }
+    if REMAINING_TESTS.fetch_sub(1, Ordering::SeqCst) == 1 {
+        std::process::exit(0);
+    }
+}
+
+fn finish(w: Walk) {
+    drop(w);
+    walk_finished();
+}
+
 fn temp_root(tag: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -112,6 +196,10 @@ fn pump_until(
 
 /// 尽力截图：wgpu 软件渲染成功则落盘 PNG，失败仅记录（不阻断走查判定）。
 fn snap(w: &mut Walk, name: &str) {
+    if !render_enabled() {
+        eprintln!("[gui-walkthrough] 串行/无渲染模式，跳过截图 {name}（布局断言仍有效）");
+        return;
+    }
     match w.harness.render() {
         Ok(img) => {
             let dir =
@@ -144,6 +232,7 @@ fn ut_gui_01_render_and_nav() {
         w.harness
             .get_by_role_and_label(egui::accesskit::Role::Button, "确认需求");
         snap(&mut w, "ut-gui-01-requirements");
+        finish(w);
     });
 }
 
@@ -171,6 +260,7 @@ fn ut_gui_02_empty_state_gating() {
                 .is_none(),
             "无实验时运行参数折叠区不应渲染（UI 既有口径）"
         );
+        finish(w);
     });
 }
 
@@ -191,6 +281,7 @@ fn ut_gui_03_idle_no_taskbar() {
                 .is_none(),
             "空闲态不应出现任务条取消按钮"
         );
+        finish(w);
     });
 }
 
@@ -237,7 +328,10 @@ fn ut_gui_04_narrow_viewport_slim_sidebar() {
             nav_wide.rect().width()
         );
 
-        // 截图证据落盘 docs（原型 ≤900px 对照）
+        // 截图证据落盘 docs（原型 ≤900px 对照；串行/无渲染模式跳过）
+        if !render_enabled() {
+            eprintln!("[gui-walkthrough] 串行/无渲染模式，跳过 UT-GUI-04 截图（布局断言仍有效）");
+        } else {
         match harness.render() {
             Ok(img) => {
                 let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -254,6 +348,11 @@ fn ut_gui_04_narrow_viewport_slim_sidebar() {
                 eprintln!("[gui-walkthrough] 无渲染后端，UT-GUI-04 截图跳过（布局断言仍有效）：{e}")
             }
         }
+        }
+        // embed-octos-runtime：本用例直接持有两个 Harness，显式释放后统一收尾。
+        drop(harness);
+        drop(wide);
+        walk_finished();
     });
 }
 
@@ -299,6 +398,7 @@ fn ut_s17_23_project_isolation() {
                 .is_some_and(|s| s.ends_with(&format!("-{new_id}"))),
             "重建 worker 应绑新项目 session：{a3:?}"
         );
+        finish(w);
     });
 }
 
@@ -409,4 +509,5 @@ fn st_gui_journey_real_llm() {
         );
         snap(&mut w, "st-gui-02-form-filled");
     }));
+    finish(w);
 }

@@ -152,6 +152,12 @@ pub struct EquityChartState {
 pub struct ResearchApp {
     /// 减少动态效果；原生入口按系统偏好初始化，可在运行记录中调整。
     pub reduce_motion: bool,
+    /// 闭环权限 Full-Access 授权（embed-octos-runtime）：仅人类两段式确认后
+    /// 为 true，影响**之后**惰性创建的 agent 会话 spawn 参数；默认
+    /// Workspace-Write 免审批档。
+    pub full_access_allow: bool,
+    /// 两段式确认的待确认状态（第一次点击 armed，再点一次才生效）。
+    full_access_armed: bool,
     /// 会话状态（当前路由、每路由滚动、字体提示）。
     pub session: Session,
     /// 协调器桥（打开失败时保留错误行，页面提示重试）。
@@ -340,6 +346,8 @@ impl ResearchApp {
             focus: false,
             show_logs: false,
             logs: Vec::new(),
+            full_access_allow: false,
+            full_access_armed: false,
             agent_worker: None,
             agent_task: None,
             agent_retry: None,
@@ -4575,11 +4583,41 @@ impl ResearchApp {
     fn render_windows(&mut self, ctx: &egui::Context) {
         // 运行记录（任务动作、依据和产物；不展示模型内部推理）
         let mut retry_click: Option<(String, AgentTaskKind, String)> = None;
+        // embed-octos-runtime：权限档两段式确认的运行记录（闭包内赋值、闭包外消费）。
+        let mut perm_notice: Option<&'static str> = None;
         egui::Window::new("运行记录与任务控制")
             .open(&mut self.show_logs)
             .default_width(520.0)
             .show(ctx, |ui| {
                 ui.checkbox(&mut self.reduce_motion, "减少动态效果");
+                // embed-octos-runtime：Full-Access 权限档两段式决策门——
+                // 第一次点击进入待确认（警示文案），再点一次才生效；关闭一步。
+                // 默认 Workspace-Write 免审批档，本开关只影响之后新建的会话。
+                // record 经 pending 延迟到闭包外（对齐 retry_click 借用模式）。
+                ui.horizontal(|ui| {
+                    let mut allow = self.full_access_allow;
+                    let label = if self.full_access_armed && !allow {
+                        "Full-Access 权限（沙箱禁用+免审批）——再点一次确认生效"
+                    } else {
+                        "Full-Access 权限（默认关闭；需二次确认，下次会话生效）"
+                    };
+                    if ui.checkbox(&mut allow, label).changed() {
+                        if allow {
+                            if self.full_access_armed {
+                                self.full_access_allow = true;
+                                self.full_access_armed = false;
+                                perm_notice = Some("权限 · Full-Access 已授权（下次新建会话生效）");
+                            } else {
+                                self.full_access_armed = true;
+                                perm_notice = Some("权限 · Full-Access 待确认（危险档，再点一次确认）");
+                            }
+                        } else {
+                            self.full_access_allow = false;
+                            self.full_access_armed = false;
+                            perm_notice = Some("权限 · 已回到默认 Workspace-Write 档");
+                        }
+                    }
+                });
                 ui.label(note(
                     "只记录任务动作、依据和产物，不展示模型内部推理。任务由真实 LLM（octos）执行。",
                 ));
@@ -4601,6 +4639,9 @@ impl ResearchApp {
                     }
                 }
             });
+        if let Some(notice) = perm_notice {
+            self.record(notice);
+        }
         if let Some((label, kind, prompt)) = retry_click {
             self.show_logs = false;
             self.start_agent_task(&label, kind, prompt);
@@ -5132,10 +5173,13 @@ impl ResearchApp {
         }
         if self.agent_worker.is_none() {
             let project_id = self.workspace.current().id.to_string();
-            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+            let mut config = crate::agent_bridge::AgentSessionConfig::desktop(
                 &Self::agent_data_dir(),
                 &project_id,
             );
+            // embed-octos-runtime：Full-Access 仅人类授权后带入（默认
+            // Workspace-Write 免审批档）。
+            config.oup.danger_full_access = self.full_access_allow;
             self.agent_worker = Some(crate::agent_bridge::AgentWorker::spawn(config));
         }
         self.agent_task_seq += 1;
@@ -5220,6 +5264,13 @@ impl ResearchApp {
             (Some(i), Some(o)) => format!("（tokens {i}/{o}）"),
             _ => String::new(),
         };
+        // embed-octos-runtime：agent 工具执行轨迹入运行记录（tool/started|completed
+        // 结构化事件按到达序；呈现动作与产物，不展示模型内部推理）。
+        for ev in &turn.tool_trace {
+            let state = if ev.completed { "完成" } else { "开始" };
+            let name = ev.name.clone().unwrap_or_else(|| ev.tool_call_id.clone());
+            self.record(&format!("{} · 工具 {name} {state}", task.label));
+        }
         match task.kind {
             AgentTaskKind::Design => {
                 self.ai_design_note = reply;
@@ -5579,10 +5630,13 @@ impl ResearchApp {
         }
         if self.swarm_worker.is_none() {
             let project_id = self.workspace.current().id.to_string();
-            let config = crate::agent_bridge::AgentSessionConfig::desktop(
+            let mut config = crate::agent_bridge::AgentSessionConfig::desktop(
                 &Self::agent_data_dir().join("swarm"),
                 &project_id,
             );
+            // embed-octos-runtime：Full-Access 仅人类授权后带入（默认
+            // Workspace-Write 免审批档）。
+            config.oup.danger_full_access = self.full_access_allow;
             self.swarm_worker = Some(crate::swarm_bridge::SwarmWorker::spawn(config));
         }
         self.swarm_task_seq += 1;

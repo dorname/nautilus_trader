@@ -40,6 +40,7 @@ fn temp_oup_config(tag: &str) -> OupConfig {
         // issue #24：禁止机器绝对路径；仓库根经 CARGO_MANIFEST_DIR 解析
         workspace_root: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").into(),
         extra_env: Vec::new(),
+        danger_full_access: false,
     }
 }
 

@@ -13,6 +13,7 @@
 
 pub mod agent_bridge;
 pub mod agent_defs;
+pub mod backend_ensure;
 pub mod ai;
 pub mod app;
 pub mod bridge;

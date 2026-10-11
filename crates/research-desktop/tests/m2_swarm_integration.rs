@@ -9,9 +9,9 @@ mod test_profile;
 use nautilus_research_desktop::agent_bridge::{AgentBridge, AgentError, AgentSessionConfig};
 use nautilus_research_desktop::oup::OupConfig;
 use nautilus_research_desktop::swarm_bridge::{
-    SwarmBridge, SwarmDispatchState, SwarmError, SwarmWorker, SubtaskContract, SubtaskResult,
-    SubtaskState, mark_cancel_outcomes, reduce_dispatch_terminal, s17_requirement_contracts,
-    summarize_swarm_results, aggregate_valid,
+    OutputSource, SwarmBridge, SwarmDispatchState, SwarmError, SwarmWorker, SubtaskContract,
+    SubtaskResult, SubtaskState, mark_cancel_outcomes, reduce_dispatch_terminal,
+    s17_requirement_contracts, summarize_swarm_results, aggregate_valid,
 };
 use nautilus_research_desktop::swarm_ledger::{LedgerState, SwarmLedger, recover_on_startup};
 use nautilus_research_desktop::workspace::Workspace;
@@ -44,6 +44,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
     AgentSessionConfig {
         session_id: format!("m2-{tag}"),
         profile_id: "octos".into(),
+        profile_warning: None,
         oup: OupConfig {
             octos_bin: "octos".into(),
             data_dir: data_dir.to_string_lossy().into(),
@@ -51,6 +52,7 @@ fn temp_agent_config(tag: &str) -> AgentSessionConfig {
             // issue #24：禁止机器绝对路径；仓库根经 CARGO_MANIFEST_DIR 解析
             workspace_root: concat!(env!("CARGO_MANIFEST_DIR"), "/../..").into(),
             extra_env: Vec::new(),
+            danger_full_access: false,
         },
     }
 }
@@ -249,9 +251,11 @@ fn ut_s17_20_cancel_interrupt_matrix() {
             contract_id: id.into(),
             state,
             output: None,
+            output_source: nautilus_research_desktop::swarm_bridge::OutputSource::Envelope,
             error: None,
             turn_id: format!("t-{id}"),
             final_prompt: String::new(),
+            tool_trace: Vec::new(),
         };
         // 全发出 → 全 Cancelled，missed=0
         let mut rs = vec![
@@ -677,9 +681,11 @@ fn ut_s17_26_aggregate_valid_matrix() {
             contract_id: "c".into(),
             state,
             output: output.map(str::to_string),
+            output_source: nautilus_research_desktop::swarm_bridge::OutputSource::Envelope,
             error: None,
             turn_id: "t".into(),
             final_prompt: String::new(),
+            tool_trace: Vec::new(),
         };
         // 全 Succeeded + 非空 output → 放行
         assert!(aggregate_valid(&[
@@ -699,5 +705,65 @@ fn ut_s17_26_aggregate_valid_matrix() {
         assert!(!aggregate_valid(&[mk(SubtaskState::Succeeded, Some("  "))]));
         // output None → 阻断
         assert!(!aggregate_valid(&[mk(SubtaskState::Succeeded, None)]));
+    });
+}
+
+/// ST-S17-23（embed-octos-runtime）：产物文件型契约 + 托管工作区回流——
+/// 三路真实 LLM（允许工具调用，默认 Workspace-Write 免审批档），终态后
+/// 至少一路从托管工作区回流文件产物（output_source=ManagedFile 且内容
+/// 与工作区文件一致）；envelope 降级路如实标注。真实 LLM 调用产生费用
+/// （prompt 已最小化）。
+#[test]
+fn st_s17_23_managed_workspace_file_roundtrip() {
+    case("ST-S17-23", || {
+        let config = temp_agent_config("s17-roundtrip");
+        let mut swarm = SwarmBridge::new();
+
+        // 不追加「禁用工具」——本用例验证的正是工具写文件与回流。
+        let contracts = s17_requirement_contracts(
+            "研究日线动量策略的数据可行性与约束（固定合成标的，OHLCV 已给定）。",
+        );
+        let turn_ids = swarm
+            .dispatch_parallel(&config, contracts)
+            .expect("dispatch_parallel");
+        assert_eq!(turn_ids.len(), 3);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        while swarm.is_active() {
+            assert!(std::time::Instant::now() < deadline, "600s 内未达终态");
+            swarm.poll_all().expect("poll_all");
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert_eq!(swarm.state(), SwarmDispatchState::Completed, "三路应全部成功");
+
+        let mut file_backed = 0;
+        for (i, r) in swarm.results().iter().enumerate() {
+            assert_eq!(r.state, SubtaskState::Succeeded, "{}（{:?}）", r.contract_id, r.error);
+            assert!(r.output.as_deref().is_some_and(|s| !s.trim().is_empty()));
+            if r.output_source == OutputSource::ManagedFile {
+                file_backed += 1;
+                let ws = swarm.agent_workspaces()[i].join(format!("{}-analysis.md", r.contract_id));
+                let disk = std::fs::read_to_string(&ws)
+                    .unwrap_or_default();
+                assert!(
+                    !disk.trim().is_empty(),
+                    "{} 工作区产物文件应为非空：{}",
+                    r.contract_id,
+                    ws.display()
+                );
+                assert_eq!(
+                    r.output.as_deref().map(str::trim),
+                    Some(disk.trim()),
+                    "{} 回流内容应与工作区文件一致",
+                    r.contract_id
+                );
+            }
+        }
+        assert!(
+            file_backed >= 1,
+            "至少一路应从托管工作区回流文件产物（实测 {file_backed}/3；             全 envelope 降级说明工具写文件未生效，需人工核查权限档）"
+        );
+
+        swarm.disconnect_all();
     });
 }

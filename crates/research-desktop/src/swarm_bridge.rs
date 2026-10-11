@@ -67,12 +67,27 @@ pub struct SubtaskResult {
     pub state: SubtaskState,
     /// 输出文本（成功时）。
     pub output: Option<String>,
+    /// 输出来源（embed-octos-runtime）：托管工作区产物文件优先，缺失降级
+    /// envelope 文本并如实标注（不冒充文件产物）。
+    pub output_source: OutputSource,
     /// 错误信息（失败时）。
     pub error: Option<String>,
     /// 本子任务的 turn ID（客户端生成的 UUID；未派发为空串）。
     pub turn_id: String,
     /// 实际发送给 agent 的最终 prompt（Pipeline 注入后口径，供注入断言）。
     pub final_prompt: String,
+    /// 工具执行轨迹（embed-octos-runtime；poll_all 随终态收割）。
+    pub tool_trace: Vec<crate::oup::ToolEvent>,
+}
+
+/// 子任务产出来源（embed-octos-runtime，诚实口径）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputSource {
+    /// 托管工作区产物文件（`<instance>/profiles/.../workspace/<contract>.md`）。
+    ManagedFile,
+    /// turn envelope 文本（assistant_persisted；文件缺失时的降级来源）。
+    #[default]
+    Envelope,
 }
 
 /// 依据各子任务 interrupt 是否真实发出归约取消结果（纯函数，UT-S17-20）：
@@ -185,6 +200,9 @@ pub enum SwarmDispatchState {
 pub struct SwarmBridge {
     /// 底层 Agent 桥接（每个 sub-agent 一个 session）。
     agents: Vec<AgentBridge>,
+    /// 各子 agent 的托管工作区根路径（embed-octos-runtime：终态产物回流读取位，
+    /// 与 agents 按下标一一对应）。
+    agent_workspaces: Vec<std::path::PathBuf>,
     /// 当前派发状态。
     state: SwarmDispatchState,
     /// 子任务结果。
@@ -240,6 +258,7 @@ impl SwarmBridge {
     pub fn new() -> Self {
         Self {
             agents: Vec::new(),
+            agent_workspaces: Vec::new(),
             state: SwarmDispatchState::Idle,
             results: Vec::new(),
         }
@@ -255,6 +274,12 @@ impl SwarmBridge {
         &self.results
     }
 
+    /// 各子 agent 托管工作区根路径（embed-octos-runtime；与 results 按下标
+    /// 对应，产物回流/测试断言读取位）。
+    pub fn agent_workspaces(&self) -> &[std::path::PathBuf] {
+        &self.agent_workspaces
+    }
+
     /// 测试可达：注入一个 Running 子任务（无对应 agent 连接；
     /// UT-S17-20 取消归约「中断发不出」分支用）。
     #[doc(hidden)]
@@ -263,9 +288,11 @@ impl SwarmBridge {
             contract_id: contract_id.into(),
             state: SubtaskState::Running,
             output: None,
+            output_source: OutputSource::Envelope,
             error: None,
             turn_id: turn_id.into(),
             final_prompt: String::new(),
+            tool_trace: Vec::new(),
         });
         let total = self.results.len();
         self.state = SwarmDispatchState::Active {
@@ -299,6 +326,7 @@ impl SwarmBridge {
         let mut turn_ids = Vec::new();
         let total = contracts.len();
         self.results.clear();
+        self.agent_workspaces.clear();
 
         for (i, contract) in contracts.iter().enumerate() {
             let mut agent_config = base_config.clone();
@@ -318,7 +346,7 @@ impl SwarmBridge {
                 SwarmError::Agent(AgentError::Oup(crate::oup::OupError::Io(e)))
             })?;
 
-            let mut agent = AgentBridge::new(agent_config);
+            let mut agent = AgentBridge::new(agent_config.clone());
             agent.connect()?;
 
             let turn_id = agent.submit_prompt(&contract.prompt)?;
@@ -328,11 +356,16 @@ impl SwarmBridge {
                 contract_id: contract.contract_id.clone(),
                 state: SubtaskState::Running,
                 output: None,
+                output_source: OutputSource::Envelope,
                 error: None,
                 turn_id,
                 final_prompt: contract.prompt.clone(),
+                tool_trace: Vec::new(),
             });
 
+            // embed-octos-runtime：记录该子 agent 的托管工作区根路径
+            // （终态产物回流的读取位，与 agents 按下标对应）。
+            self.agent_workspaces.push(agent_config.managed_workspace_root());
             self.agents.push(agent);
         }
 
@@ -369,6 +402,7 @@ impl SwarmBridge {
         let mut turn_ids = Vec::new();
         let total = contracts.len();
         self.results.clear();
+        self.agent_workspaces.clear();
         self.state = SwarmDispatchState::Active {
             dispatched: 0,
             total,
@@ -384,9 +418,11 @@ impl SwarmBridge {
                     contract_id: contract.contract_id.clone(),
                     state: SubtaskState::Cancelled,
                     output: None,
+                    output_source: OutputSource::Envelope,
                     error: Some("上游 stage 失败，未派发".into()),
                     turn_id: String::new(),
                     final_prompt: String::new(),
+                    tool_trace: Vec::new(),
                 });
                 continue;
             }
@@ -432,9 +468,11 @@ impl SwarmBridge {
                                 contract_id: contract.contract_id.clone(),
                                 state: SubtaskState::Succeeded,
                                 output: Some(text.clone()),
+                                output_source: OutputSource::Envelope,
                                 error: None,
                                 turn_id,
                                 final_prompt: prompt,
+                                tool_trace: Vec::new(),
                             });
                             previous_output = Some(text);
                         }
@@ -444,9 +482,11 @@ impl SwarmBridge {
                                 contract_id: contract.contract_id.clone(),
                                 state: SubtaskState::Failed,
                                 output: None,
+                                output_source: OutputSource::Envelope,
                                 error: Some("stage 无文本产物（assistant_persisted 为空）".into()),
                                 turn_id,
                                 final_prompt: prompt,
+                                tool_trace: Vec::new(),
                             });
                         }
                     }
@@ -457,9 +497,11 @@ impl SwarmBridge {
                         contract_id: contract.contract_id.clone(),
                         state: SubtaskState::Failed,
                         output: None,
+                        output_source: OutputSource::Envelope,
                         error: Some(e.to_string()),
                         turn_id: String::new(),
                         final_prompt: prompt,
+                        tool_trace: Vec::new(),
                     });
                 }
             }
@@ -500,7 +542,25 @@ impl SwarmBridge {
                     Ok(Some(TurnTerminal::Completed(outcome))) => {
                         if let Some(r) = self.results.get_mut(i) {
                             r.state = SubtaskState::Succeeded;
-                            r.output = outcome.assistant_text;
+                            // embed-octos-runtime：产物回流——托管工作区产物文件
+                            // 优先；缺失降级 envelope 文本并如实标注来源
+                            // （aggregate_valid 口径不变，不冒充文件产物）。
+                            let file = self
+                                .agent_workspaces
+                                .get(i)
+                                .map(|ws| ws.join(format!("{}-analysis.md", r.contract_id)))
+                                .and_then(|p| std::fs::read_to_string(p).ok())
+                                .filter(|s| !s.trim().is_empty());
+                            match file {
+                                Some(text) => {
+                                    r.output = Some(text);
+                                    r.output_source = OutputSource::ManagedFile;
+                                }
+                                None => {
+                                    r.output = outcome.assistant_text;
+                                    r.output_source = OutputSource::Envelope;
+                                }
+                            }
                         }
                     }
                     Ok(Some(TurnTerminal::Failed(err))) => {
@@ -515,6 +575,11 @@ impl SwarmBridge {
                         eprintln!("poll error: {e}");
                     }
                 }
+            }
+
+            // embed-octos-runtime：随轮询收割工具执行轨迹（与 agents 下标对应）
+            if let (Some(r), Some(a)) = (self.results.get_mut(i), self.agents.get_mut(i)) {
+                r.tool_trace.extend(a.take_tool_events());
             }
 
             // task/list 快照仅作观测（对齐 m2_05 的返回口径），不参与终态判定
@@ -620,13 +685,16 @@ pub fn s18_design_to_code_contracts(requirement_text: &str) -> Vec<SubtaskContra
 
 /// S17 需求分析的标准三并发契约。
 pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract> {
+    // embed-octos-runtime：产物文件型契约——每路提示把完整分析写入托管工作区
+    // 文件 `<contract_id>-analysis.md`（默认 Workspace-Write 档免审批可写），
+    // 桌面终态后从工作区回流（文件缺失降级 envelope 并如实标注来源）。
     vec![
         SubtaskContract {
             contract_id: "feasibility".into(),
             label: "数据可行性分析".into(),
             definition_id: Some("requirement-analyst".into()),
             prompt: format!(
-                "分析以下研究需求的数据可行性：{}\n\n评估：1) 所需数据是否可得 2) 数据质量要求 3) 潜在数据缺口",
+                "分析以下研究需求的数据可行性：{}\n\n评估：1) 所需数据是否可得 2) 数据质量要求 3) 潜在数据缺口\n\n交付要求：请务必调用写文件工具，将完整分析写入当前工作区的 feasibility-analysis.md（这是主要交付物）；写完后只回复一句确认。若写文件工具不可用，在回复第一行注明[文件写入失败]，再给出完整分析文本。",
                 requirement_text
             ),
         },
@@ -635,7 +703,7 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
             label: "反例检索".into(),
             definition_id: Some("requirement-analyst".into()),
             prompt: format!(
-                "针对以下研究需求检索反例和边界情况：{}\n\n找出：1) 类似研究失败案例 2) 常见陷阱 3) 约束条件冲突",
+                "针对以下研究需求检索反例和边界情况：{}\n\n找出：1) 类似研究失败案例 2) 常见陷阱 3) 约束条件冲突\n\n交付要求：请务必调用写文件工具，将完整分析写入当前工作区的 counterexample-analysis.md（这是主要交付物）；写完后只回复一句确认。若写文件工具不可用，在回复第一行注明[文件写入失败]，再给出完整分析文本。",
                 requirement_text
             ),
         },
@@ -644,7 +712,7 @@ pub fn s17_requirement_contracts(requirement_text: &str) -> Vec<SubtaskContract>
             label: "约束核对".into(),
             definition_id: Some("requirement-analyst".into()),
             prompt: format!(
-                "核对以下研究需求的约束条件：{}\n\n检查：1) 资源约束 2) 时间约束 3) 技术约束 4) 合规约束",
+                "核对以下研究需求的约束条件：{}\n\n检查：1) 资源约束 2) 时间约束 3) 技术约束 4) 合规约束\n\n交付要求：请务必调用写文件工具，将完整分析写入当前工作区的 constraint-analysis.md（这是主要交付物）；写完后只回复一句确认。若写文件工具不可用，在回复第一行注明[文件写入失败]，再给出完整分析文本。",
                 requirement_text
             ),
         },

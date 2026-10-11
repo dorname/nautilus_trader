@@ -11,8 +11,10 @@ use serde_json::Value;
 use crate::oup::{OupClient, OupConfig, OupError, TurnOutcome, TurnTerminal};
 
 /// 单 turn 默认超时。moonshot 拥塞期实测尾延迟 270s+（2026-10-09 验收窗口），
-/// 预算放宽到 420s：宁可慢等真实终态，不得把慢当作失败（诚实口径不变）。
-pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 420;
+/// 预算放宽到 480s（embed-octos-runtime：实测 API 尾延迟下 420s 偶发误杀，
+/// m3 串行 stage 全套时曾双双超时、单跑压线通过；worker 总预算 600s 内）：
+/// 宁可慢等真实终态，不得把慢当作失败（诚实口径不变）。
+pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 480;
 
 /// Agent 会话配置。
 #[derive(Debug, Clone)]
@@ -21,6 +23,9 @@ pub struct AgentSessionConfig {
     pub session_id: String,
     /// Profile ID（octos 运行时配置）。
     pub profile_id: String,
+    /// embed-octos-runtime：profile 解析/复制失败警告（构造仍成功；
+    /// connect 前置检查会把它升级为显式错误）。
+    pub profile_warning: Option<String>,
     /// OUP 客户端配置。
     pub oup: OupConfig,
 }
@@ -30,6 +35,7 @@ impl Default for AgentSessionConfig {
         Self {
             session_id: "research-default".into(),
             profile_id: "octos".into(),
+            profile_warning: None,
             oup: OupConfig::default(),
         }
     }
@@ -52,6 +58,10 @@ impl AgentSessionConfig {
     }
 
     /// 同 [`AgentSessionConfig::desktop`]，profile 来源显式给定（便于测试）。
+    ///
+    /// embed-octos-runtime：profile 复制失败不再 `let _` 吞错——失败写入
+    /// [`AgentSessionConfig::profile_warning`]（构造仍成功，便于空态引导），
+    /// [`AgentBridge::connect`] 前置检查 profile 存在，缺失即显式报错。
     pub fn desktop_with_profile(
         base_dir: &std::path::Path,
         project_id: &str,
@@ -60,17 +70,34 @@ impl AgentSessionConfig {
         let data_dir = base_dir.join("data");
         let instance_dir = base_dir.join("instance");
         let profile_dst_dir = data_dir.join("profiles");
-        let _ = std::fs::create_dir_all(&profile_dst_dir);
+        let mut profile_warning = None;
+        if let Err(e) = std::fs::create_dir_all(&profile_dst_dir) {
+            profile_warning = Some(format!("创建 profile 目录失败：{e}"));
+        }
         let _ = std::fs::create_dir_all(&instance_dir);
         let profile_dst = profile_dst_dir.join("octos.json");
         if !profile_dst.exists() {
-            if let Some(src) = profile_src {
-                let _ = std::fs::copy(src, &profile_dst);
+            match profile_src {
+                Some(src) => {
+                    if let Err(e) = std::fs::copy(src, &profile_dst) {
+                        profile_warning =
+                            Some(format!("复制 LLM profile 失败（{} → {}）：{e}", src.display(), profile_dst.display()));
+                    }
+                }
+                None => {
+                    profile_warning = Some(
+                        "未找到 LLM profile：已探测 RESEARCH_OCTOS_PROFILE 与 \
+                         $HOME/.octos/profiles/octos.json。请先创建 profile（可参考 \
+                         octoscode 引导），或以 RESEARCH_OCTOS_PROFILE 显式指定。"
+                            .into(),
+                    );
+                }
             }
         }
         Self {
             session_id: format!("research-{project_id}"),
             profile_id: "octos".into(),
+            profile_warning,
             oup: OupConfig {
                 octos_bin: "octos".into(),
                 data_dir: data_dir.to_string_lossy().into(),
@@ -78,9 +105,45 @@ impl AgentSessionConfig {
                 // issue #14：子进程 cwd 显式落在工作区根（原为占位 "."）
                 workspace_root: base_dir.to_string_lossy().into(),
                 extra_env: Vec::new(),
+                // embed-octos-runtime：默认 Workspace-Write 免审批档；
+                // Full-Access 仅人类显式决策后由调用方置 true。
+                danger_full_access: false,
             },
         }
     }
+
+    /// 本会话的 octos 托管工作区根路径（产物回流读取位，embed-octos-runtime）：
+    /// `<instance>/profiles/<profile>/data/users/<session_id>/workspace/`。
+    /// 2026-10-11 闭环探针实证：agent 工具写文件落盘于此（非子进程 cwd）。
+    pub fn managed_workspace_root(&self) -> std::path::PathBuf {
+        std::path::Path::new(&self.oup.instance_dir)
+            .join("profiles")
+            .join(&self.profile_id)
+            .join("data/users")
+            .join(&self.session_id)
+            .join("workspace")
+    }
+}
+
+/// profile 档位发现（embed-octos-runtime）：扫描 `data_dir/profiles/*.json`
+/// 列出可用模型档 ID（供会话选择；目录不存在/不可读返回空，不 panic）。
+pub fn discover_profiles(data_dir: &std::path::Path) -> Vec<String> {
+    let dir = data_dir.join("profiles");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            let ext_ok = p.extension().is_some_and(|x| x == "json");
+            let stem = p.file_stem()?.to_string_lossy().into_owned();
+            ext_ok.then_some(stem)
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 /// Agent 会话状态。
@@ -185,6 +248,23 @@ impl AgentBridge {
     pub fn connect(&mut self) -> AgentResult<()> {
         if self.state != AgentSessionState::Disconnected {
             return Ok(()); // 幂等
+        }
+
+        // embed-octos-runtime：profile 前置存在性检查——缺失即显式报错并附
+        // 构造期警告（不再起一个无凭据的子进程静默失败）。
+        let profile_path = std::path::Path::new(&self.config.oup.data_dir)
+            .join("profiles")
+            .join(format!("{}.json", self.config.profile_id));
+        if !profile_path.exists() {
+            let hint = self.config.profile_warning.clone().unwrap_or_else(|| {
+                "请先创建 LLM profile（$HOME/.octos/profiles/octos.json），或以 \
+                 RESEARCH_OCTOS_PROFILE 显式指定来源。"
+                    .into()
+            });
+            return Err(AgentError::Oup(crate::oup::OupError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("LLM profile 缺失：{}。{hint}", profile_path.display()),
+            ))));
         }
 
         // issue #14：显式把 profile `config.env_vars`（如 LLM API key）注入
@@ -294,6 +374,15 @@ impl AgentBridge {
                 Ok(None)
             }
         }
+    }
+
+    /// 收割工具执行事件（embed-octos-runtime）：透传 OUP 客户端积压的
+    /// `tool/started`/`tool/completed` 结构化事件，供任务条呈现工具行。
+    pub fn take_tool_events(&mut self) -> Vec<crate::oup::ToolEvent> {
+        self.client
+            .as_mut()
+            .map(OupClient::take_tool_events)
+            .unwrap_or_default()
     }
 
     /// 提交对话并等待完成（真实 LLM 调用）。
@@ -406,6 +495,9 @@ pub struct WorkerTurn {
     pub tokens_in: Option<u64>,
     /// 输出 token 数。
     pub tokens_out: Option<u64>,
+    /// 本 turn 的工具执行轨迹（embed-octos-runtime：tool/started|completed
+    /// 结构化事件按到达序累积，GUI 任务卡呈现 agent 工具执行行）。
+    pub tool_trace: Vec<crate::oup::ToolEvent>,
 }
 
 /// Worker 响应：任务 ID + 结果（Err 为可展示错误文本）。
@@ -502,6 +594,7 @@ impl AgentWorker {
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECS);
         let mut interrupted = false;
+        let mut tool_trace = Vec::new();
         loop {
             while let Ok(extra) = req_rx.try_recv() {
                 match extra {
@@ -520,11 +613,13 @@ impl AgentWorker {
             }
             match b.poll_turn_outcome() {
                 Ok(Some(TurnTerminal::Completed(out))) => {
+                    tool_trace.extend(b.take_tool_events());
                     return Ok(WorkerTurn {
                         turn_id,
                         reply: out.assistant_text,
                         tokens_in: out.completed.get("tokens_in").and_then(|v| v.as_u64()),
                         tokens_out: out.completed.get("tokens_out").and_then(|v| v.as_u64()),
+                        tool_trace,
                     });
                 }
                 Ok(Some(TurnTerminal::Failed(msg))) => {
@@ -534,7 +629,10 @@ impl AgentWorker {
                         msg
                     });
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    // embed-octos-runtime：turn 进行中间隙收割工具事件
+                    tool_trace.extend(b.take_tool_events());
+                }
                 Err(e) => return Err(e.to_string()),
             }
             if std::time::Instant::now() >= deadline {
@@ -689,5 +787,29 @@ mod tests {
         assert_eq!(cfg.session_id, "research-P2");
         assert!(!base.join("data/profiles/octos.json").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+    /// UT-S17-29（embed-octos-runtime）：profile 档位发现——列出 data_dir
+    /// profiles/*.json 的档位 ID；空/缺失目录返回空不 panic。
+    #[test]
+    fn discover_profiles_lists_ids() {
+        nautilus_research_testkit::case("UT-S17-29", || {
+            let base = std::env::temp_dir().join(format!(
+                "rd-profiles-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let dir = base.join("data");
+            std::fs::create_dir_all(dir.join("profiles")).expect("建目录");
+            std::fs::write(dir.join("profiles/octos.json"), "{}").expect("写档");
+            std::fs::write(dir.join("profiles/kimi.json"), "{}").expect("写档");
+            std::fs::write(dir.join("profiles/readme.txt"), "x").expect("写非档");
+            let ids = discover_profiles(&dir);
+            assert_eq!(ids, vec!["kimi".to_string(), "octos".to_string()]);
+            assert!(discover_profiles(&base.join("nonexistent")).is_empty());
+            let _ = std::fs::remove_dir_all(&base);
+        });
     }
 }
