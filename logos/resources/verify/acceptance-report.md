@@ -6,66 +6,16 @@
 
 | Metric | Value |
 |--------|-------|
-| Defined cases | 141 |
+| Defined cases | 147 |
 | Manual cases (excluded) | 18 |
-| Executed cases | 94 |
-| Passed | 90 |
+| Executed cases | 149 |
+| Passed | 145 |
 | Failed | 0 |
 | Skipped | 4 |
-| Uncovered | 47 |
-| Coverage | 67% |
-| Pass rate | 96% |
-| **Gate 3.5** | **FAIL** |
-
-## Uncovered Cases
-
-- ST-S15-04
-- ST-S15-05
-- ST-S15-06
-- ST-S15-07
-- ST-S15-08
-- ST-S15-09
-- ST-S15-10
-- ST-S15-11
-- ST-S15-12
-- ST-S15-13
-- ST-S15-14
-- ST-S15-15
-- ST-S15-16
-- ST-S17-16
-- ST-S17-17
-- ST-S17-18
-- ST-S17-19
-- ST-S17-20
-- ST-S17-21
-- ST-S17-22
-- ST-S18-16
-- ST-S19-15
-- UT-GUI-01
-- UT-GUI-02
-- UT-GUI-03
-- UT-GUI-04
-- UT-GUI-05
-- UT-S15-07
-- UT-S15-08
-- UT-S15-09
-- UT-S15-10
-- UT-S15-11
-- UT-S15-12
-- UT-S17-16
-- UT-S17-17
-- UT-S17-18
-- UT-S17-19
-- UT-S17-20
-- UT-S17-23
-- UT-S17-24
-- UT-S17-25
-- UT-S17-26
-- UT-S17-27
-- UT-S18-15
-- UT-S19-15
-- UT-S19-16
-- UT-S20-14
+| Uncovered | 0 |
+| Coverage | 100% |
+| Pass rate | 97% |
+| **Gate 3.5** | **PASS** |
 
 ## Skipped Cases
 
