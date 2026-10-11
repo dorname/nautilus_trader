@@ -366,7 +366,12 @@ fn st_s17_19_parallel_waits_real_terminal() {
         let config = temp_agent_config("s17-terminal");
         let mut swarm = SwarmBridge::new();
 
-        let contracts = s17_requirement_contracts("均线策略在震荡市的表现（一句话即可）");
+        let mut contracts = s17_requirement_contracts(
+            "研究日线双均线策略在震荡市的表现：已有 OHLCV；使用三个固定合成标的；收盘形成信号、下一交易日开盘执行；投入上限100%，佣金万三，现金不足拒绝订单。",
+        );
+        for contract in &mut contracts {
+            contract.prompt.push_str("\n这是非交互固定样本分析，所有前提已给定。直接用一到两句话返回你的分析；不要向用户提问，也不要调用任何工具。未知量列为限制即可。");
+        }
         let turn_ids = swarm
             .dispatch_parallel(&config, contracts)
             .expect("dispatch_parallel");
