@@ -112,7 +112,13 @@ fn walk_finished() {
 }
 
 fn finish(w: Walk) {
-    drop(w);
+    // fix-reallm-stability-20261012（issue #36）：泄漏替代 drop——渲染启用时
+    // Harness drop 释放 wgpu（llvmpipe/LLVM JIT）资源会触发 glibc
+    // nptl_deallocate_tsd TLS 析构竞态（SIGSEGV），且发生在 walk_finished 的
+    // exit(0) 守卫注册之前，守卫兜不住。泄漏后资源由 walk_finished 的异步
+    // exit(0) 进程终止统一回收，与 issue_closure.rs 泄漏线程修法同源。
+    // 测试进程短命，泄漏可控；业务断言与 reporter 落盘均不受影响。
+    std::mem::forget(w);
     walk_finished();
 }
 

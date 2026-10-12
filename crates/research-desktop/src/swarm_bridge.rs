@@ -483,7 +483,12 @@ impl SwarmBridge {
                                 state: SubtaskState::Failed,
                                 output: None,
                                 output_source: OutputSource::Envelope,
-                                error: Some("stage 无文本产物（assistant_persisted 为空）".into()),
+                                // issue #37 失败分类细化：与「turn/error 失败」和
+                                // 「上游未派发 Cancelled」可区分——turn 已完成但
+                                // 宽限窗口内无持久化文本（时序迟到或模型空回复）
+                                error: Some(format!(
+                                    "stage 无文本产物：turn/completed 已到但 assistant_persisted 宽限窗口内未到达（或模型空回复）"
+                                )),
                                 turn_id,
                                 final_prompt: prompt,
                                 tool_trace: Vec::new(),

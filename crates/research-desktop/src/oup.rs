@@ -536,7 +536,12 @@ impl OupClient {
                     self.pending_tool_events.push(event);
                 }
                 if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
-                    return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                    // issue #37：completed 但文本空时进宽限窗口收割迟到的 persisted
+                    let completed = outcome?;
+                    if assistant_text.is_none() {
+                        drain_persisted_grace(&self.rx, &self.notification_rx, &mut self.pending_tool_events, session_id, turn_id, &mut assistant_text, PERSISTED_GRACE);
+                    }
+                    return Ok(TurnOutcome { completed, assistant_text });
                 }
             }
             if let Ok(msg) = self.rx.try_recv() {
@@ -547,7 +552,12 @@ impl OupClient {
                     self.pending_tool_events.push(event);
                 }
                 if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
-                    return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                    // issue #37：completed 但文本空时进宽限窗口收割迟到的 persisted
+                    let completed = outcome?;
+                    if assistant_text.is_none() {
+                        drain_persisted_grace(&self.rx, &self.notification_rx, &mut self.pending_tool_events, session_id, turn_id, &mut assistant_text, PERSISTED_GRACE);
+                    }
+                    return Ok(TurnOutcome { completed, assistant_text });
                 }
             }
 
@@ -557,8 +567,16 @@ impl OupClient {
                     if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
                         assistant_text = Some(text);
                     }
+                    if let Some(event) = Self::parse_tool_event(&msg) {
+                        self.pending_tool_events.push(event);
+                    }
                     if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
-                        return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                        // issue #37：completed 但文本空时进宽限窗口
+                        let completed = outcome?;
+                        if assistant_text.is_none() {
+                            drain_persisted_grace(&self.rx, &self.notification_rx, &mut self.pending_tool_events, session_id, turn_id, &mut assistant_text, PERSISTED_GRACE);
+                        }
+                        return Ok(TurnOutcome { completed, assistant_text });
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -569,10 +587,18 @@ impl OupClient {
                             if let Some(text) = Self::match_assistant_persisted(&msg, session_id, turn_id) {
                                 assistant_text = Some(text);
                             }
+                            if let Some(event) = Self::parse_tool_event(&msg) {
+                                self.pending_tool_events.push(event);
+                            }
                             if let Some(outcome) =
                                 Self::match_turn_terminal(Some(msg), session_id, turn_id)?
                             {
-                                return outcome.map(|completed| TurnOutcome { completed, assistant_text });
+                                // issue #37：completed 但文本空时进宽限窗口
+                                let completed = outcome?;
+                                if assistant_text.is_none() {
+                                    drain_persisted_grace(&self.rx, &self.notification_rx, &mut self.pending_tool_events, session_id, turn_id, &mut assistant_text, PERSISTED_GRACE);
+                                }
+                                return Ok(TurnOutcome { completed, assistant_text });
                             }
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
@@ -657,6 +683,70 @@ impl OupClient {
     #[doc(hidden)]
     pub fn child_pid(&self) -> u32 {
         self.child.id()
+    }
+}
+
+/// `turn/completed` 到达但 `assistant_text` 为空时的宽限窗口
+///（fix-reallm-stability-20261012 / issue #37）：服务端可能先推
+/// `turn/completed`、后落盘再推 `assistant_persisted`，立即返回会静默丢产物
+///（m3 pipeline 偶发空产物的根因）。3s 覆盖本地观测到的落盘延迟，
+/// 且不显著拖慢真空回复场景。
+pub(crate) const PERSISTED_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 宽限收割（issue #37）：`turn/completed` 已到但 `assistant_text` 为空时，
+/// 在宽限窗口内继续泵 `rx` / `notification_rx`，收割迟到的
+/// `assistant_persisted`（同时收集 tool 事件，口径与主等待循环一致）。
+/// 文本到达、notification 通道断开（排空 rx 残余后）或期满即返回。
+///
+/// 独立为自由函数：UT 可直接注入 channel 验证，无需构造带子进程的
+/// [`OupClient`]。仅访问关联函数，不触碰子进程状态。
+fn drain_persisted_grace(
+    rx: &mpsc::Receiver<Value>,
+    notification_rx: &mpsc::Receiver<Value>,
+    pending_tool_events: &mut Vec<ToolEvent>,
+    session_id: &str,
+    turn_id: &str,
+    assistant_text: &mut Option<String>,
+    grace: std::time::Duration,
+) {
+    let deadline = std::time::Instant::now() + grace;
+    while assistant_text.is_none() {
+        let remain = deadline.saturating_duration_since(std::time::Instant::now());
+        if remain.is_zero() {
+            return;
+        }
+        // 分片等待（≤100ms）：期满检查及时，且给 rx 通道留泵入窗口
+        let slice = remain.min(std::time::Duration::from_millis(100));
+        match notification_rx.recv_timeout(slice) {
+            Ok(msg) => {
+                if let Some(text) = OupClient::match_assistant_persisted(&msg, session_id, turn_id) {
+                    *assistant_text = Some(text);
+                }
+                if let Some(event) = OupClient::parse_tool_event(&msg) {
+                    pending_tool_events.push(event);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        // 排空 rx 上积压（accepted 后到达的事件留在 rx，与主循环口径一致）
+        while let Ok(msg) = rx.try_recv() {
+            if let Some(text) = OupClient::match_assistant_persisted(&msg, session_id, turn_id) {
+                *assistant_text = Some(text);
+            }
+            if let Some(event) = OupClient::parse_tool_event(&msg) {
+                pending_tool_events.push(event);
+            }
+        }
+    }
+    // notification 断开或文本到达后，最后排空一次 rx 残余
+    while let Ok(msg) = rx.try_recv() {
+        if let Some(text) = OupClient::match_assistant_persisted(&msg, session_id, turn_id) {
+            *assistant_text = Some(text);
+        }
+        if let Some(event) = OupClient::parse_tool_event(&msg) {
+            pending_tool_events.push(event);
+        }
     }
 }
 
@@ -817,6 +907,83 @@ mod tests {
         nautilus_research_testkit::case("UT-S18-18", || {
             let c = OupConfig::default();
             assert!(!c.danger_full_access, "默认必须为 Workspace-Write 免审批档");
+        });
+    }
+
+    /// UT-S18-19（fix-reallm-stability-20261012 / issue #37）：completed 先到、
+    /// assistant_text 为空时，宽限窗口内收割迟到的 assistant_persisted；
+    /// 窗口内 tool 事件不丢失。
+    #[test]
+    fn ut_s18_19_grace_collects_late_persisted() {
+        nautilus_research_testkit::case("UT-S18-19", || {
+            let (_tx, rx) = mpsc::channel::<Value>();
+            let (ntx, nrx) = mpsc::channel::<Value>();
+            let mut tools = Vec::new();
+            let mut text: Option<String> = None;
+            // 模拟服务端时序：150ms 后迟到的 tool/completed + assistant_persisted
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = ntx.send(serde_json::json!({
+                    "method": "tool/completed",
+                    "params": { "session_id": "s1", "turn_id": "t1",
+                                "tool_call_id": "call_9", "name": "write_file" }
+                }));
+                let _ = ntx.send(serde_json::json!({
+                    "method": "projection/envelope",
+                    "params": {
+                        "session_id": "s1",
+                        "payload": { "type": "assistant_persisted",
+                                     "data": { "text": "迟到回复" } }
+                    }
+                }));
+            });
+            drain_persisted_grace(
+                &rx, &nrx, &mut tools, "s1", "t1", &mut text,
+                std::time::Duration::from_secs(3),
+            );
+            assert_eq!(text.as_deref(), Some("迟到回复"), "宽限窗口应收割迟到的 persisted");
+            assert!(
+                tools.iter().any(|e| e.completed && e.tool_call_id == "call_9"),
+                "宽限窗口内 tool 事件不应丢失"
+            );
+        });
+    }
+
+    /// UT-S18-20（fix-reallm-stability-20261012 / issue #37）：宽限期满仍无
+    /// persisted → 及时返回空文本；notification 通道断开 → 排空 rx 后提前
+    /// 结束（不等满整个宽限窗口）。
+    #[test]
+    fn ut_s18_20_grace_expires_empty() {
+        nautilus_research_testkit::case("UT-S18-20", || {
+            // 期满语义：无消息，grace=200ms 应及时返回且文本仍空
+            let (_tx, rx) = mpsc::channel::<Value>();
+            let (_ntx, nrx) = mpsc::channel::<Value>();
+            let mut tools = Vec::new();
+            let mut text: Option<String> = None;
+            let t0 = std::time::Instant::now();
+            drain_persisted_grace(
+                &rx, &nrx, &mut tools, "s1", "t1", &mut text,
+                std::time::Duration::from_millis(200),
+            );
+            let elapsed = t0.elapsed();
+            assert!(text.is_none(), "期满无 persisted 时文本仍为空");
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "期满应及时返回（不无限等待），实测 {elapsed:?}"
+            );
+
+            // 断开语义：notification 发送端断开 → 排空 rx 后立即结束
+            let (_tx2, rx2) = mpsc::channel::<Value>();
+            let (ntx2, nrx2) = mpsc::channel::<Value>();
+            drop(ntx2);
+            let t1 = std::time::Instant::now();
+            drain_persisted_grace(
+                &rx2, &nrx2, &mut tools, "s1", "t1", &mut text,
+                std::time::Duration::from_secs(3),
+            );
+            let d = t1.elapsed();
+            assert!(d < std::time::Duration::from_secs(1), "通道断开应提前结束，实测 {d:?}");
+            assert!(text.is_none());
         });
     }
 }
