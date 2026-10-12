@@ -26,4 +26,4 @@
 - [x] 回归：S17 确认需求三路 / ST-GUI-01/02 / wire_real_llm
 
 ### 闭环
-- [ ] 本批覆盖用例 ID 与 test delta 对齐；verify 全量 PASS（待用户授权运行 openlogos verify）
+- [x] 本批覆盖用例 ID 与 test delta 对齐；verify 全量 PASS（Gate 3.6，覆盖 100% 156/156，154 通过 0 失败 4 跳过；首跑 st_m4_02 偶发 LLM 超时，单独重跑 6/6 后全量复跑通过）
