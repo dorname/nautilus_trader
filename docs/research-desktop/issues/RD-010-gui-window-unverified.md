@@ -2,7 +2,7 @@
 
 - **类型**：bug / 环境
 - **优先级**：P1
-- **状态**：open
+- **状态**：resolved（2026-10-12 复测关闭：窗口可枚举 + 截屏非黑实证）
 - **关联**：RD-001（本条为 2026-10-11 复测续篇）
 - **GitHub**：[#35](https://github.com/dorname/nautilus_trader/issues/35)
 - **命令**：`research-desktop`（`cargo run -p nautilus-research-desktop`）
@@ -32,3 +32,33 @@
 
 - 启动日志打印实际使用的 `XDG_RUNTIME_DIR` 与 backend（wayland/x11）。
 - smoke：有显示时断言窗口标题或非黑离屏帧；无显示时 skip 并写明原因。
+
+## 2026-10-12 复测：关闭结论
+
+**启动命令（X11 路径，可复现）**：
+
+```bash
+env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir DISPLAY=:0 \
+  ./target/debug/research-desktop
+```
+
+注：winit 0.30 已移除 `WINIT_UNIX_BACKEND` 环境变量，强制 X11 需**去掉 `WAYLAND_DISPLAY`** 而非设变量。
+
+| 期望 | 结果 |
+|------|------|
+| 1. 窗口弹出且截屏非黑 | ✅ 窗口可枚举、窗口像素非黑（证据如下） |
+| 2. 文档写明 `XDG_RUNTIME_DIR` | ✅ 本节即归档；`/run/user/0` 无 wayland socket，必须用 `/mnt/wslg/runtime-dir` |
+| 3. 可选诊断 | 留作后续可选提案（启动日志打印 backend、smoke 非黑断言），非关闭阻塞项 |
+
+### 证据
+
+- **窗口可枚举**：`xwininfo -root -tree` 出现 `0xc00002 "研序 · 策略研究工作区" 1440x900+166+289`（2026-10-11 时枚举不到，当时进程可能处于 Wayland 路径或未完成 map）。
+- **截屏非黑**：python-xlib 对窗口 drawable 直接 `get_image`（非根窗口），1440×900 全幅平均亮度 **22.1/255**、非黑像素占比 **45.3%**（深色主题 UI 的正常分布）。证据图：[`../screenshots/local-loop-2026-10-12.png`](../screenshots/local-loop-2026-10-12.png)（界面完整：侧边栏 / 项目概览 / 研究助手面板）。
+- **scrot 全黑根因**：WSLg（Weston + XWayland）下根窗口合成不返回客户端像素，`scrot` 抓根窗口必得全黑；验收须对**窗口本身** `get_image`，或枚举窗口标题断言存在。
+- **资源占用**：静默 CPU 三次采样均 **0.9%**（启动预热峰值约 12%，一次性），满足静默零帧红线。
+
+### 验收方法备忘（后续 smoke 设计输入）
+
+1. `xwininfo -root -tree | grep "研序 · 策略研究工作区"` 断言窗口存在；
+2. python-xlib `get_image` 抓该窗口，断言非黑像素占比 > 5%；
+3. 无显示环境（无 `/mnt/wslg/runtime-dir/wayland-0` 且无 `DISPLAY`）skip 并写明原因。
