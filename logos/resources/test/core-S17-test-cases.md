@@ -215,3 +215,7 @@ fail 含 error，skip 不可计为通过。
 
 纯本地断言（tmp 目录隔离，无外部调用）；结果经共享 reporter 写入
 test-results.jsonl，fail 含 error，skip 不可计为通过。
+
+## 在线化口径注记（online-chat-llm-config-20261012）
+
+S17 的「离线预设意图」口径自 S22 起修订：意图路由的确定性业务动作（含本文件既有用例覆盖的确认需求三路、生成设计/代码、整理参数）不变；**自由问答兜底由 ai.rs 预设文案改为真实 LLM 经 octos 回复**（octos 不可用时才回退预设并如实标注）。本文件既有用例断言不涉及兜底文案，无需修改；在线对话与模型配置用例见 core-S22-test-cases.md。
