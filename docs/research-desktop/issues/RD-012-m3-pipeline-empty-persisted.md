@@ -2,9 +2,17 @@
 
 - **类型**：bug / 真实 LLM 稳定性
 - **优先级**：P2
-- **状态**：open（2026-10-12 全量多 Agent 测试记录）
+- **状态**：fixed（2026-10-12 fix-reallm-stability-20261012 修复，待 verify 验收）
 - **GitHub**：[#37](https://github.com/dorname/nautilus_trader/issues/37)
 - **命令**：`cargo test -p nautilus-research-desktop --test m3_pipeline_integration`
+
+## 修复（2026-10-12，fix-reallm-stability-20261012）
+
+- **根因**：`turn_wait_completed` 等到 `turn/completed` 即返回；服务端先推 completed、后落盘再推 `assistant_persisted` 时，迟到的 persisted 通知被错过（时序竞态，与同族 turn_id 回显不稳定同源）。
+- **修法**：`oup.rs` 新增 `drain_persisted_grace`（独立自由函数，UT 可 channel 注入）——completed 到达但文本空时进入 **3s 宽限窗口**继续收割迟到的 persisted（同步收集 tool 事件）；`recv_timeout`/`Disconnected` 路径补齐遗漏的 `parse_tool_event`。空产物失败消息细化为「turn/completed 已到但 assistant_persisted 宽限窗口内未到达（或模型空回复）」，与 turn/error、Cancelled 可区分（期望 2）。
+- **覆盖用例**：新增 UT-S18-19（宽限收割迟到 persisted + tool 事件不丢）、UT-S18-20（期满及时返回空 / 通道断开提前结束）。
+- **回归**：m3 全套件 5/5（含 st_m3_01、ST-S18-16，真实 LLM，366s）通过。
+- **未做（留后续提案）**：m3 契约对齐 m2 产物文件型（ManagedFile 回流）——pipeline 为链式文本传递语义；若宽限修复后仍偶发再立项。
 
 ## 现象
 

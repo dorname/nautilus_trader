@@ -2,9 +2,15 @@
 
 - **类型**：bug / 测试稳定性
 - **优先级**：P1
-- **状态**：open（2026-10-12 全量多 Agent 测试记录）
+- **状态**：fixed（2026-10-12 fix-reallm-stability-20261012 修复，待 verify 验收）
 - **GitHub**：[#36](https://github.com/dorname/nautilus_trader/issues/36)
 - **命令**：`cargo test -p nautilus-research-desktop --test gui_walkthrough`
+
+## 修复（2026-10-12，fix-reallm-stability-20261012）
+
+- **根因确认**（复现矩阵）：串行无渲染（`--test-threads=1`）235.75s 通过；渲染启用（`--exact`）必崩。触发链：渲染启用 → `snap()` 走 wgpu 软渲染（llvmpipe/LLVM JIT）→ 渲染后端在 `finish(w)` 的 `drop(w)` 及进程收尾阶段触发 glibc `nptl_deallocate_tsd` TLS 析构竞态。`walk_finished` 的 exit(0) 守卫注册于 `drop(w)` **之后**，兜不住 drop 路径的提前崩溃。
+- **修法**：`finish(w)` 改为 `std::mem::forget(w)` + `walk_finished()`——泄漏 Harness/wgpu 资源，由异步 exit(0) 进程终止统一回收（与 issue_closure.rs 泄漏线程修法同源），彻底消除 drop 路径触发面。
+- **验证**：渲染模式单跑 `st_gui_journey_real_llm` **119.11s ok，正常退出**（原必崩）；ST-GUI-01 三路多 Agent 派发 + ST-GUI-02 AI 整理参数断言全过。
 
 ## 现象
 
