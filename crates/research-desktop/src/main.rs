@@ -16,9 +16,9 @@ const FIRST_FRAME_WATCHDOG_SECS: u64 = 15;
 /// 首帧看门狗超时退出码（与启动失败 4 区分）。
 const EXIT_FIRST_FRAME_TIMEOUT: i32 = 5;
 
-/// 启动里程碑日志（stderr，不污染 stdout）。
+/// 启动里程碑日志（stderr + logs/ 会话文件双写，local-launch-logs-20261012）。
 fn milestone(msg: &str) {
-    eprintln!("[research-desktop] {msg}");
+    nautilus_research_desktop::logging::logline(&format!("[research-desktop] {msg}"));
 }
 
 /// 首帧探针包装：首个 ui() 帧到达时置位看门狗标志（issue #32：
@@ -38,6 +38,12 @@ impl eframe::App for FirstFrameProbe {
 }
 
 fn main() {
+    // 文件日志初始化（local-launch-logs-20261012）：RESEARCH_DESKTOP_LOG_DIR
+    // 或默认 ./logs；目录不可写时仅 stderr，不影响启动。
+    match nautilus_research_desktop::logging::init_file_logger() {
+        Some(path) => milestone(&format!("日志文件：{}", path.display())),
+        None => milestone("日志目录不可写，仅 stderr 输出（可用 RESEARCH_DESKTOP_LOG_DIR 指定）"),
+    }
     milestone(&format!(
         "启动 · DISPLAY={:?} WAYLAND_DISPLAY={:?} WGPU_BACKEND={:?} WINIT_UNIX_BACKEND={:?} LIBGL_ALWAYS_SOFTWARE={:?}",
         std::env::var_os("DISPLAY"),

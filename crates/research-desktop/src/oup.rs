@@ -195,11 +195,11 @@ impl OupClient {
         // 缺失/不匹配给出中文诊断并拒绝 spawn（不静默继续）。
         let resolved = crate::backend_ensure::ensure()?;
         if resolved.bin != config.octos_bin {
-            eprintln!(
+            crate::logging::logline(&format!(
                 "[oup] octos 来源：{}（{}）",
                 resolved.source.label(),
                 resolved.bin
-            );
+            ));
         }
         let mut config = config.clone();
         config.octos_bin = resolved.bin;

@@ -20,6 +20,7 @@ pub mod bridge;
 pub mod demo_sim;
 pub mod icons;
 pub mod layout;
+pub mod logging;
 pub mod motion;
 pub mod nav;
 pub mod oup;

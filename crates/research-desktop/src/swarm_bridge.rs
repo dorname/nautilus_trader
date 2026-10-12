@@ -577,7 +577,7 @@ impl SwarmBridge {
                     Ok(None) => {}
                     Err(e) => {
                         // 记录错误但继续轮询其他 agent；本子任务保持 Running
-                        eprintln!("poll error: {e}");
+                        crate::logging::logline(&format!("[swarm] poll error: {e}"));
                     }
                 }
             }
@@ -590,7 +590,7 @@ impl SwarmBridge {
             // task/list 快照仅作观测（对齐 m2_05 的返回口径），不参与终态判定
             match self.agents[i].poll_tasks() {
                 Ok(tasks) => snapshots.push(tasks),
-                Err(e) => eprintln!("poll error: {e}"),
+                Err(e) => crate::logging::logline(&format!("[swarm] poll error: {e}")),
             }
         }
 
@@ -816,7 +816,7 @@ impl SwarmWorker {
             let ledger_path =
                 std::path::Path::new(&config.oup.data_dir).join("swarm-ledger.redb");
             let mut ledger = crate::swarm_ledger::SwarmLedger::open(&ledger_path)
-                .map_err(|e| eprintln!("[swarm-ledger] 账本打开失败（派发继续）：{e}"))
+                .map_err(|e| crate::logging::logline(&format!("[swarm-ledger] 账本打开失败（派发继续）：{e}")))
                 .ok();
             let ledger_id = format!(
                 "{}-{id}",
@@ -831,7 +831,7 @@ impl SwarmWorker {
                 let turn_ids: Vec<String> =
                     swarm.results().iter().map(|r| r.turn_id.clone()).collect();
                 if let Err(e) = l.record_dispatch(&ledger_id, contracts, turn_ids) {
-                    eprintln!("[swarm-ledger] 派发记录失败（派发继续）：{e}");
+                    crate::logging::logline(&format!("[swarm-ledger] 派发记录失败（派发继续）：{e}"));
                 }
             }
             // 终态入账助手：Completed→Completed，其余→Failed（不得吞为成功）
@@ -844,7 +844,7 @@ impl SwarmWorker {
                             crate::swarm_ledger::LedgerState::Failed
                         };
                         if let Err(e) = l.record_terminal(&ledger_id, ls) {
-                            eprintln!("[swarm-ledger] 终态入账失败（忽略）：{e}");
+                            crate::logging::logline(&format!("[swarm-ledger] 终态入账失败（忽略）：{e}"));
                         }
                     }
                 };

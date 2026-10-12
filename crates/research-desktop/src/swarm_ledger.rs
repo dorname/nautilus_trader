@@ -158,12 +158,12 @@ pub fn recover_on_startup(path: &Path) -> usize {
         Ok(mut ledger) => match ledger.mark_unfinished_interrupted() {
             Ok(n) => n,
             Err(e) => {
-                eprintln!("[swarm-ledger] 恢复标记失败（忽略）：{e}");
+                crate::logging::logline(&format!("[swarm-ledger] 恢复标记失败（忽略）：{e}"));
                 0
             }
         },
         Err(e) => {
-            eprintln!("[swarm-ledger] 账本打开失败（忽略）：{e}");
+            crate::logging::logline(&format!("[swarm-ledger] 账本打开失败（忽略）：{e}"));
             0
         }
     }
