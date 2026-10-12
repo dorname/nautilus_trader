@@ -138,6 +138,50 @@ pub fn reply(text: &str) -> String {
     }
 }
 
+/// 自由对话派发决策（S22，online-chat-llm-config-20261012）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatDispatch {
+    /// 确定性业务动作：本地执行，不经 LLM。
+    LocalAction,
+    /// 自由问答：派发真实 LLM turn（经 octos）。
+    LlmChat,
+    /// octos 不可用：诚实降级为离线预设回复（UI 需如实标注）。
+    OfflinePreset,
+}
+
+/// 意图路由兜底改道（UT-S22-02 纯函数锚点）：
+/// 未知意图在 octos 可用时派发真实 LLM 对话；不可用时降级离线预设；
+/// 其余确定性意图一律本地动作（含既有的设计/代码生成 LLM 任务路径，
+/// 由调用方在 match 显式分支中处理，不经本函数）。
+pub fn decide_chat_dispatch(intent: &Intent, octos_available: bool) -> ChatDispatch {
+    match intent {
+        Intent::Unknown => {
+            if octos_available {
+                ChatDispatch::LlmChat
+            } else {
+                ChatDispatch::OfflinePreset
+            }
+        }
+        _ => ChatDispatch::LocalAction,
+    }
+}
+
+/// 自由对话 prompt 模板（S22）：项目上下文 + 用户消息 + 诚实边界约束
+/// （不编造实验数值——数值只来自协调器任务）。
+pub fn chat_prompt(
+    project_name: &str,
+    req_summary: &str,
+    design_summary: &str,
+    user_text: &str,
+) -> String {
+    format!(
+        "你是量化研究桌面「AI 工作台」的中文助手，正在协助用户做量化策略研究。\n\
+         当前项目：{project_name}\n当前需求摘要：{req_summary}\n当前设计摘要：{design_summary}\n\
+         请结合项目上下文简洁、诚实地用中文回答；不要编造实验数值\
+         （实验数值只来自协调器任务）。\n\n用户消息：{user_text}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +230,50 @@ mod tests {
         ] {
             assert!(reply(t).len() > 8, "每个意图都有预设回复：{t}");
         }
+    }
+
+    /// UT-S22-02（online-chat-llm-config-20261012）：意图路由兜底改道——
+    /// 未知意图在 octos 可用时派发真实 LLM 对话；不可用时降级离线预设；
+    /// 确定性动作意图仍路由本地动作。
+    #[test]
+    fn ut_s22_02_decide_chat_dispatch() {
+        nautilus_research_testkit::case("UT-S22-02", || {
+            // 未知意图：可用 → LLM 对话派发（非预设兜底文案）
+            assert_eq!(
+                decide_chat_dispatch(&route("今天天气怎么样"), true),
+                ChatDispatch::LlmChat
+            );
+            // 未知意图：octos 不可用 → 诚实降级离线预设
+            assert_eq!(
+                decide_chat_dispatch(&Intent::Unknown, false),
+                ChatDispatch::OfflinePreset
+            );
+            // 确定性业务动作意图：一律本地动作，不经 LLM 对话
+            for intent in [
+                Intent::ConfirmRequirement,
+                Intent::DraftRequirement,
+                Intent::NewProject,
+                Intent::SwitchProject,
+                Intent::SaveVersion,
+                Intent::RunExperiment,
+                Intent::CompareExperiments,
+                Intent::MakeReport,
+                Intent::ExplainBoundary,
+                Intent::PlanGenerate,
+                Intent::PlanCheck,
+                Intent::PlanExport,
+            ] {
+                assert_eq!(
+                    decide_chat_dispatch(&intent, true),
+                    ChatDispatch::LocalAction,
+                    "{intent:?} 应路由本地动作"
+                );
+                assert_eq!(
+                    decide_chat_dispatch(&intent, false),
+                    ChatDispatch::LocalAction,
+                    "{intent:?} 离线时仍为本地动作"
+                );
+            }
+        });
     }
 }

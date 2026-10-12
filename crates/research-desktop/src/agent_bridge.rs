@@ -286,6 +286,12 @@ impl AgentBridge {
         self.client.as_ref().map(|c| c.child_pid())
     }
 
+    /// LLM 配置操作的客户端访问(online-chat-llm-config-20261012 / FR-R22):
+    /// 仅 worker 线程在已连接后调用。
+    pub(crate) fn client_mut(&mut self) -> Option<&mut OupClient> {
+        self.client.as_mut()
+    }
+
     /// 测试可达：connect 解析注入的环境变量键名（不含值，防泄漏）。
     #[doc(hidden)]
     pub fn test_extra_env_keys(&self) -> Vec<String> {
@@ -484,10 +490,24 @@ impl Drop for AgentBridge {
     }
 }
 
+/// 惰性连接保障（Submit 与 LlmOp 共用）：未连接时建立会话，
+/// 失败回中文错误文本（调用方回传给 GUI）。
+fn ensure_connected(
+    config: &AgentSessionConfig,
+    bridge: &mut Option<AgentBridge>,
+) -> Result<(), String> {
+    if bridge.is_none() {
+        let mut b = AgentBridge::new(config.clone());
+        b.connect()
+            .map_err(|e| format!("连接 octos 失败：{e}"))?;
+        *bridge = Some(b);
+    }
+    Ok(())
+}
+
 /// Worker 单 turn 结果（GUI 展示口径）。
 #[derive(Debug, Clone)]
-pub struct WorkerTurn {
-    /// 合法 UUID turn_id。
+pub struct WorkerTurn {    /// 合法 UUID turn_id。
     pub turn_id: String,
     /// assistant_persisted 回复文本（模型未产出文本时为 None）。
     pub reply: Option<String>,
@@ -500,13 +520,49 @@ pub struct WorkerTurn {
     pub tool_trace: Vec<crate::oup::ToolEvent>,
 }
 
+/// LLM 配置操作（online-chat-llm-config-20261012 / FR-R22）：
+/// 经 worker 线程复用已连接的 OupClient 执行（单活跃口径天然）。
+#[derive(Debug, Clone)]
+pub enum LlmOp {
+    /// 拉取 provider/模型目录。
+    Catalog,
+    /// 已配置列表（primary + fallbacks）。
+    List,
+    /// 写入/更新 provider；api_key 仅内存传输。
+    Upsert {
+        selection: crate::oup::LlmSelectionInput,
+        api_key: Option<String>,
+        set_primary: bool,
+    },
+    /// 切换主模型。
+    Select { family_id: String, model_id: String },
+    /// 连通测试（不写 profile）。
+    Test {
+        selection: crate::oup::LlmSelectionInput,
+        api_key: Option<String>,
+    },
+}
+
+/// Worker 结果载荷。
+#[derive(Debug)]
+pub enum WorkerResult {
+    /// 对话/生成 turn 结果。
+    Turn(WorkerTurn),
+    /// LLM 目录。
+    Catalog(Vec<crate::oup::LlmFamilyEntry>),
+    /// 已配置列表。
+    List(crate::oup::LlmListView),
+    /// upsert/select/test 的原始 RPC result。
+    LlmRpc(serde_json::Value),
+}
+
 /// Worker 响应：任务 ID + 结果（Err 为可展示错误文本）。
 #[derive(Debug)]
 pub struct WorkerResponse {
     /// 提交时分配的任务序号（过期结果由调用方比对丢弃）。
     pub id: u64,
-    /// turn 结果或错误文本。
-    pub result: Result<WorkerTurn, String>,
+    /// turn/LLM 操作结果或错误文本。
+    pub result: Result<WorkerResult, String>,
 }
 
 /// Worker 请求。
@@ -516,6 +572,8 @@ enum WorkerRequest {
     Submit { id: u64, prompt: String },
     /// 中断进行中的 turn（按任务 ID 对齐；issue #19 真实 turn/interrupt）。
     Cancel { id: u64 },
+    /// LLM 配置操作（FR-R22；与 Submit 串行同通道）。
+    LlmOp { id: u64, op: LlmOp },
 }
 
 /// 后台 Agent worker：独立线程持有 AgentBridge（含 octos serve 子进程），
@@ -555,30 +613,76 @@ impl AgentWorker {
     ) {
         let mut bridge: Option<AgentBridge> = None;
         while let Ok(req) = req_rx.recv() {
-            let WorkerRequest::Submit { id, prompt } = req else {
-                // 空闲期收到的 Cancel 无作用对象，忽略
-                continue;
-            };
-            if bridge.is_none() {
-                let mut b = AgentBridge::new(config.clone());
-                match b.connect() {
-                    Ok(()) => bridge = Some(b),
-                    Err(e) => {
-                        let _ = resp_tx.send(WorkerResponse {
-                            id,
-                            result: Err(format!("连接 octos 失败：{e}")),
-                        });
+            match req {
+                WorkerRequest::Cancel { .. } => {
+                    // 空闲期收到的 Cancel 无作用对象，忽略
+                    continue;
+                }
+                WorkerRequest::Submit { id, prompt } => {
+                    if let Err(e) = ensure_connected(&config, &mut bridge) {
+                        let _ = resp_tx.send(WorkerResponse { id, result: Err(e) });
                         continue;
+                    }
+                    let b = bridge.as_mut().expect("bridge 已在上方建立");
+                    let result = Self::run_turn(b, id, &prompt, &req_rx, &resp_tx)
+                        .map(WorkerResult::Turn);
+                    if resp_tx.send(WorkerResponse { id, result }).is_err() {
+                        return;
+                    }
+                }
+                WorkerRequest::LlmOp { id, op } => {
+                    if let Err(e) = ensure_connected(&config, &mut bridge) {
+                        let _ = resp_tx.send(WorkerResponse { id, result: Err(e) });
+                        continue;
+                    }
+                    let b = bridge.as_mut().expect("bridge 已在上方建立");
+                    let result = Self::run_llm_op(b, op);
+                    if resp_tx.send(WorkerResponse { id, result }).is_err() {
+                        return;
                     }
                 }
             }
-            let b = bridge.as_mut().expect("bridge 已在上方建立");
-            let result =
-                Self::run_turn(b, id, &prompt, &req_rx, &resp_tx);
-            if resp_tx.send(WorkerResponse { id, result }).is_err() {
-                return;
-            }
         }
+    }
+
+    /// 执行 LLM 配置操作（FR-R22）：复用已连接 client，与 turn 串行。
+    fn run_llm_op(b: &mut AgentBridge, op: LlmOp) -> Result<WorkerResult, String> {
+        let client = b
+            .client_mut()
+            .expect("ensure_connected 后 client 必存在");
+        match op {
+            LlmOp::Catalog => client
+                .llm_catalog()
+                .map(WorkerResult::Catalog)
+                .map_err(|e| e.to_string()),
+            LlmOp::List => client
+                .llm_list()
+                .map(WorkerResult::List)
+                .map_err(|e| e.to_string()),
+            LlmOp::Upsert {
+                selection,
+                api_key,
+                set_primary,
+            } => client
+                .llm_upsert(&selection, api_key.as_deref(), set_primary)
+                .map(WorkerResult::LlmRpc)
+                .map_err(|e| e.to_string()),
+            LlmOp::Select { family_id, model_id } => client
+                .llm_select(&family_id, &model_id)
+                .map(WorkerResult::LlmRpc)
+                .map_err(|e| e.to_string()),
+            LlmOp::Test { selection, api_key } => client
+                .llm_test(&selection, api_key.as_deref())
+                .map(WorkerResult::LlmRpc)
+                .map_err(|e| e.to_string()),
+        }
+    }
+
+    /// 提交 LLM 配置操作（FR-R22；返回 false = worker 已停）。
+    pub fn submit_llm_op(&self, id: u64, op: LlmOp) -> bool {
+        self.tx
+            .as_ref()
+            .is_some_and(|tx| tx.send(WorkerRequest::LlmOp { id, op }).is_ok())
     }
 
     /// 执行单个 turn：非阻塞提交后轮询终态；轮询间隙处理 Cancel
@@ -607,6 +711,12 @@ impl AgentWorker {
                         let _ = resp_tx.send(WorkerResponse {
                             id: sid,
                             result: Err("另一任务进行中，本次提交被拒绝".into()),
+                        });
+                    }
+                    WorkerRequest::LlmOp { id: lid, .. } => {
+                        let _ = resp_tx.send(WorkerResponse {
+                            id: lid,
+                            result: Err("对话进行中，请稍后再操作模型设置".into()),
                         });
                     }
                 }

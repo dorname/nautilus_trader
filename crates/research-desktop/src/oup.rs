@@ -670,6 +670,62 @@ impl OupClient {
         Ok(Some(Ok(params.clone())))
     }
 
+    /// ── AppUI LLM 配置方法族（online-chat-llm-config-20261012 / FR-R22）──
+    /// 契约对齐 octos ui_protocol_transport（#2166 严格字段校验，未知字段
+    /// typed error 拒绝）：只发送契约内字段；api_key 仅内存传输，不写盘、
+    /// 不进日志。
+
+    /// 拉取 provider/模型目录（model_catalog SSOT 投影）。
+    pub fn llm_catalog(&mut self) -> OupResult<Vec<LlmFamilyEntry>> {
+        let v = self.call("profile/llm/catalog", serde_json::json!({}))?;
+        Ok(parse_llm_catalog(&v))
+    }
+
+    /// 已配置列表（primary + fallbacks 投影）。
+    pub fn llm_list(&mut self) -> OupResult<LlmListView> {
+        let v = self.call("profile/llm/list", serde_json::json!({}))?;
+        Ok(parse_llm_list(&v))
+    }
+
+    /// 写入/更新 provider（selection + 可选 api_key + 是否设主）。
+    /// api_key 空白视为 None（不发送该字段）。
+    pub fn llm_upsert(
+        &mut self,
+        selection: &LlmSelectionInput,
+        api_key: Option<&str>,
+        set_primary: bool,
+    ) -> OupResult<Value> {
+        let mut params = serde_json::json!({
+            "selection": selection,
+            "set_primary": set_primary,
+        });
+        if let Some(k) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
+            params["api_key"] = serde_json::json!(k);
+        }
+        self.call("profile/llm/upsert", params)
+    }
+
+    /// 切换主模型（已配置项间切换）。
+    pub fn llm_select(&mut self, family_id: &str, model_id: &str) -> OupResult<Value> {
+        self.call(
+            "profile/llm/select",
+            serde_json::json!({ "family_id": family_id, "model_id": model_id }),
+        )
+    }
+
+    /// 连通测试（给定 selection + 可选 api_key 试调，不写 profile）。
+    pub fn llm_test(
+        &mut self,
+        selection: &LlmSelectionInput,
+        api_key: Option<&str>,
+    ) -> OupResult<Value> {
+        let mut params = serde_json::json!({ "selection": selection });
+        if let Some(k) = api_key.map(str::trim).filter(|k| !k.is_empty()) {
+            params["api_key"] = serde_json::json!(k);
+        }
+        self.call("profile/llm/test", params)
+    }
+
     /// 关闭子进程。
     pub fn shutdown(&mut self) {
         let _ = self.child.kill();
@@ -683,6 +739,143 @@ impl OupClient {
     #[doc(hidden)]
     pub fn child_pid(&self) -> u32 {
         self.child.id()
+    }
+}
+
+/// LLM route 配置输入（online-chat-llm-config-20261012 / FR-R22）。
+/// 契约字段子集（octos #2166 严格校验）：空字段不序列化，不发送未知键。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LlmRouteInput {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub route_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_type: Option<String>,
+}
+
+impl LlmRouteInput {
+    /// 全空判定（空 route 不序列化，由服务端按 family 默认路由）。
+    pub fn is_empty(&self) -> bool {
+        self.route_id.trim().is_empty()
+            && self.label.as_deref().is_none_or(str::is_empty)
+            && self.base_url.as_deref().is_none_or(str::is_empty)
+            && self.api_key_env.as_deref().is_none_or(str::is_empty)
+            && self.api_type.as_deref().is_none_or(str::is_empty)
+    }
+}
+
+/// LLM 选择输入（family + model + 可选 route 覆盖）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct LlmSelectionInput {
+    pub family_id: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "LlmRouteInput::is_empty")]
+    pub route: LlmRouteInput,
+}
+
+/// catalog family 投影：`{"families": {"<family>": {"env": ..., "models": [{"id"}]}}}`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LlmFamilyEntry {
+    /// family 规范 ID（registry 名）。
+    pub family_id: String,
+    /// 该 family 的 API key 环境变量名（keyless 时为 None）。
+    pub key_env: Option<String>,
+    /// 可选模型 ID 列表。
+    pub models: Vec<String>,
+}
+
+/// 已配置 provider 投影（list 响应的 primary/fallbacks 项）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredLlm {
+    pub family_id: String,
+    pub model_id: String,
+    pub label: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    /// 服务端判定：对应 api_key_env 的环境变量非空。
+    pub has_api_key: bool,
+}
+
+/// `profile/llm/list` 视图。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LlmListView {
+    pub primary: Option<ConfiguredLlm>,
+    pub fallbacks: Vec<ConfiguredLlm>,
+}
+
+/// catalog 响应解析（自由函数，UT 可测）。
+fn parse_llm_catalog(v: &Value) -> Vec<LlmFamilyEntry> {
+    let mut out = Vec::new();
+    let Some(families) = v.get("families").and_then(|f| f.as_object()) else {
+        return out;
+    };
+    let mut entries: Vec<_> = families.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (family_id, entry) in entries {
+        let key_env = entry
+            .get("env")
+            .and_then(|e| e.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let models = entry
+            .get("models")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(LlmFamilyEntry {
+            family_id: family_id.clone(),
+            key_env,
+            models,
+        });
+    }
+    out
+}
+
+/// list 响应单项解析。
+fn parse_configured_llm(v: &Value) -> Option<ConfiguredLlm> {
+    let family_id = v.get("family_id").and_then(|s| s.as_str())?.to_string();
+    let model_id = v.get("model_id").and_then(|s| s.as_str())?.to_string();
+    let route = v.get("route");
+    Some(ConfiguredLlm {
+        family_id,
+        model_id,
+        label: route
+            .and_then(|r| r.get("label"))
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
+        base_url: v
+            .get("base_url")
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
+        api_key_env: v
+            .get("api_key_env")
+            .and_then(|s| s.as_str())
+            .map(str::to_string),
+        has_api_key: v
+            .get("has_api_key")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false),
+    })
+}
+
+/// list 响应解析（自由函数，UT 可测）。
+fn parse_llm_list(v: &Value) -> LlmListView {
+    LlmListView {
+        primary: v.get("primary").and_then(parse_configured_llm),
+        fallbacks: v
+            .get("fallbacks")
+            .and_then(|f| f.as_array())
+            .map(|arr| arr.iter().filter_map(parse_configured_llm).collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -984,6 +1177,89 @@ mod tests {
             let d = t1.elapsed();
             assert!(d < std::time::Duration::from_secs(1), "通道断开应提前结束，实测 {d:?}");
             assert!(text.is_none());
+        });
+    }
+
+    /// UT-S22-01（online-chat-llm-config-20261012 / FR-R22）：AppUI LLM 方法族
+    /// 请求序列化与响应解析——upsert params 仅含契约字段；catalog/list 响应
+    /// 类型化投影；api_key 空白不发送。
+    #[test]
+    fn ut_s22_01_llm_rpc_shapes() {
+        nautilus_research_testkit::case("UT-S22-01", || {
+            // selection 序列化：route 全空时不出现 route 键
+            let bare = LlmSelectionInput {
+                family_id: "zai-coding".into(),
+                model_id: "glm-5.3".into(),
+                route: LlmRouteInput::default(),
+            };
+            let v = serde_json::to_value(&bare).expect("serialize");
+            assert_eq!(v["family_id"], "zai-coding");
+            assert_eq!(v["model_id"], "glm-5.3");
+            assert!(v.get("route").is_none(), "空 route 不应序列化");
+
+            // 带 route：仅契约字段（route_id/label/base_url/api_key_env/api_type）
+            let routed = LlmSelectionInput {
+                family_id: "moonshot-coding".into(),
+                model_id: "k3".into(),
+                route: LlmRouteInput {
+                    route_id: "moonshot-coding".into(),
+                    label: Some("Kimi Coding Plan".into()),
+                    base_url: Some("https://api.kimi.com/coding/v1".into()),
+                    api_key_env: Some("KIMI_API_KEY".into()),
+                    api_type: Some("openai".into()),
+                },
+            };
+            let v = serde_json::to_value(&routed).expect("serialize");
+            let route = v["route"].as_object().expect("route object");
+            let mut keys: Vec<&str> = route.keys().map(String::as_str).collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                ["api_key_env", "api_type", "base_url", "label", "route_id"],
+                "route 仅契约字段（#2166 服务端 deny_unknown_fields）"
+            );
+
+            // catalog 解析：families 投影 + keyless（env 空串→None）+ 按 ID 排序
+            let catalog = serde_json::json!({
+                "families": {
+                    "zai": { "env": "ZAI_API_KEY", "models": [{"id": "glm-5.3"}, {"id": "glm-5.2"}] },
+                    "ollama": { "env": "", "models": [{"id": "qwen3"}] }
+                }
+            });
+            let fams = parse_llm_catalog(&catalog);
+            assert_eq!(fams.len(), 2);
+            assert_eq!(fams[0].family_id, "ollama");
+            assert_eq!(fams[0].key_env, None, "空 env 视为 keyless");
+            assert_eq!(fams[1].family_id, "zai");
+            assert_eq!(fams[1].key_env.as_deref(), Some("ZAI_API_KEY"));
+            assert_eq!(fams[1].models, vec!["glm-5.3", "glm-5.2"]);
+
+            // list 解析：primary + fallbacks 投影（label 取 route.label）
+            let list = serde_json::json!({
+                "profile_id": "octos",
+                "primary": {
+                    "family_id": "zai-coding", "model_id": "glm-5.3",
+                    "route": { "route_id": "zai-coding", "label": "GLM Coding Plan" },
+                    "base_url": "https://api.z.ai/api/anthropic",
+                    "api_key_env": "ZAI_API_KEY", "has_api_key": true
+                },
+                "fallbacks": [{
+                    "family_id": "moonshot-coding", "model_id": "k3",
+                    "route": { "route_id": "moonshot-coding", "label": "Kimi Coding Plan" },
+                    "has_api_key": false
+                }]
+            });
+            let view = parse_llm_list(&list);
+            let primary = view.primary.expect("primary 应解析");
+            assert_eq!(primary.family_id, "zai-coding");
+            assert_eq!(primary.label.as_deref(), Some("GLM Coding Plan"));
+            assert!(primary.has_api_key);
+            assert_eq!(view.fallbacks.len(), 1);
+            assert!(!view.fallbacks[0].has_api_key);
+
+            // 残缺响应不 panic：空对象 → 空视图
+            assert_eq!(parse_llm_list(&serde_json::json!({})), LlmListView::default());
+            assert!(parse_llm_catalog(&serde_json::json!({})).is_empty());
         });
     }
 }

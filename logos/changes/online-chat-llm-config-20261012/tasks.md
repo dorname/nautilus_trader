@@ -11,19 +11,19 @@
 ## [code] 代码实现
 
 ### ① 自由对话接 octos
-- [ ] `app.rs`：意图路由兜底改真实 LLM 对话派发（任务条进度行 + 回复入消息流 + 项目上下文 prompt）
-- [ ] 诚实降级：octos 不可用回退 ai.rs 预设；底部标注双态（在线/离线）
-- [ ] 日志脱敏：对话内容/key 不进 logs
+- [x] `app.rs`：意图路由兜底改真实 LLM 对话派发（任务条进度行 + 回复入消息流 + 项目上下文 prompt）
+- [x] 诚实降级：octos 不可用回退 ai.rs 预设；底部标注双态（在线/离线）
+- [x] 日志脱敏：对话内容/key 不进 logs
 
 ### ② LLM provider 配置
-- [ ] `oup.rs`：AppUI 方法族封装（catalog/list/upsert/select/test，类型化 params/result）
-- [ ] `app.rs`：顶栏「模型设置」按钮 + 浮层（primary 展示、catalog 下拉、route 表单、保存/测试）
-- [ ] api_key 安全口径：仅 RPC 内存传输，不落盘不进日志
+- [x] `oup.rs`：AppUI 方法族封装（catalog/list/upsert/select/test，类型化 params/result）
+- [x] `app.rs`：顶栏「模型设置」按钮 + 浮层（primary 展示、catalog 下拉、route 表单、保存/测试）
+- [x] api_key 安全口径：仅 RPC 内存传输，不落盘不进日志
 
 ### 测试
-- [ ] UT：OUP AppUI 序列化/解析、兜底改道、浮层校验与脱敏（reporter 入账）
-- [ ] ST：真实 LLM 自由对话 + provider upsert/list/test 闭环（reporter 入账）
-- [ ] 回归：S17 确认需求三路 / ST-GUI-01/02 / wire_real_llm
+- [x] UT：OUP AppUI 序列化/解析、兜底改道、浮层校验与脱敏（reporter 入账）
+- [x] ST：真实 LLM 自由对话 + provider upsert/list/test 闭环（reporter 入账）
+- [x] 回归：S17 确认需求三路 / ST-GUI-01/02 / wire_real_llm
 
 ### 闭环
-- [ ] 本批覆盖用例 ID 与 test delta 对齐；verify 全量 PASS
+- [ ] 本批覆盖用例 ID 与 test delta 对齐；verify 全量 PASS（待用户授权运行 openlogos verify）

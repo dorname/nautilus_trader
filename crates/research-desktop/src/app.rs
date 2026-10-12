@@ -93,6 +93,8 @@ enum AgentTaskKind {
     /// 整理实验参数（S19，issue #15：LLM 只整理 JSON 表单参数，校验通过后
     /// 填入运行表单等用户二次确认；实验数值只来自协调器任务）。
     ExperimentParams,
+    /// 自由对话（S22）：未命中确定性意图的问答经真实 LLM turn 回复。
+    ChatFree,
 }
 
 /// 进行中的真实 LLM 任务（AgentWorker 后台线程执行，帧循环轮询结果）。
@@ -115,6 +117,114 @@ struct SwarmTask {
     started: std::time::Instant,
     /// 最近一次进度事件的子任务快照（三路状态卡数据源）。
     results: Vec<crate::swarm_bridge::SubtaskResult>,
+}
+
+/// LLM 配置操作类别（S22 ②；pending 结果按类别归约展示文案）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LlmOpTag {
+    Catalog,
+    List,
+    Upsert,
+    Test,
+    Select,
+}
+
+impl LlmOpTag {
+    fn label(self) -> &'static str {
+        match self {
+            LlmOpTag::Catalog => "加载目录",
+            LlmOpTag::List => "读取配置",
+            LlmOpTag::Upsert => "保存配置",
+            LlmOpTag::Test => "连通测试",
+            LlmOpTag::Select => "切换主模型",
+        }
+    }
+}
+
+/// 合法 api_type 枚举（与 octos registry 对齐；空 = 按 family 默认推断）。
+const LLM_API_TYPES: &[&str] = &["", "openai", "anthropic", "responses"];
+
+/// 模型设置浮层按钮动作（两段式：闭包内收集、闭包外消费）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LlmUiAction {
+    Save,
+    Test,
+    Refresh,
+    SelectPrimary(String, String),
+}
+
+/// 空白裁剪：空白 → None（RPC 空字段不发送）。
+fn nonblank(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// 模型设置浮层状态（S22 ② / FR-R22）。
+/// api_key 仅内存暂存：派发后立即清空，不回显、不进日志、不入运行记录。
+#[derive(Debug, Default)]
+struct ModelSettingsState {
+    open: bool,
+    /// provider 目录（catalog 响应投影）。
+    catalog: Vec<crate::oup::LlmFamilyEntry>,
+    /// 当前已配置（primary + fallbacks 展示）。
+    list: Option<crate::oup::LlmListView>,
+    form_family: String,
+    form_model: String,
+    form_label: String,
+    form_base_url: String,
+    /// 仅内存暂存，派发即清空（脱敏口径）。
+    form_api_key: String,
+    form_api_key_env: String,
+    /// "" = 自动（family 默认）。
+    form_api_type: String,
+    set_primary: bool,
+    /// 操作结果提示（成功 / octos 中文诊断原样透传）。
+    notice: Option<String>,
+    /// 有进行中操作（禁用保存/测试按钮）。
+    busy: bool,
+}
+
+impl ModelSettingsState {
+    /// 初始默认值：set_primary 默认勾选（首次配置即生效）。
+    fn fresh() -> Self {
+        Self {
+            set_primary: true,
+            ..Default::default()
+        }
+    }
+
+    /// 保存成功后表单复位（UT-S22-03）：清空敏感与输入字段，保留目录/列表。
+    fn reset_form(&mut self) {
+        self.form_family.clear();
+        self.form_model.clear();
+        self.form_label.clear();
+        self.form_base_url.clear();
+        self.form_api_key.clear();
+        self.form_api_key_env.clear();
+        self.form_api_type.clear();
+        self.set_primary = true;
+    }
+}
+
+/// UT-S22-03 锚点：模型设置保存前表单校验（纯函数，中文提示）。
+fn validate_llm_form(family: &str, model: &str, base_url: &str, api_type: &str) -> Result<(), String> {
+    if family.trim().is_empty() {
+        return Err("请先从目录选择 provider family".into());
+    }
+    if model.trim().is_empty() {
+        return Err("请选择或填写模型 ID".into());
+    }
+    if base_url.trim().is_empty() {
+        return Err("请填写 base_url（provider 端点地址）".into());
+    }
+    if !LLM_API_TYPES.contains(&api_type.trim()) {
+        return Err("api_type 须为 openai / anthropic / responses 之一（或留空自动）".into());
+    }
+    Ok(())
 }
 
 /// 去掉模型回复可能携带的 Markdown 代码围栏（```lang ... ```）。
@@ -238,6 +348,13 @@ pub struct ResearchApp {
     /// 可重试的上次 LLM 任务（label, kind, prompt）。
     agent_retry: Option<(String, AgentTaskKind, String)>,
     agent_task_seq: u64,
+    /// 自由对话在线态（S22）：首个真实 LLM 对话 turn 成功后置 true，
+    /// 驱动底部「在线/离线」双态标注；失败降级不影响已确认态。
+    chat_online: bool,
+    /// 模型设置浮层（S22 ② / FR-R22）。
+    model_settings: ModelSettingsState,
+    /// 进行中的 LLM 配置操作（id + 类别；id 与对话任务共用 agent_task_seq）。
+    llm_op_pending: Option<(u64, LlmOpTag)>,
     /// 多 Agent 分析后台 worker（惰性启动；确认需求后派发 S17 三契约）。
     swarm_worker: Option<crate::swarm_bridge::SwarmWorker>,
     /// 进行中的多 Agent 分析派发（关联需求版本，三路状态卡数据源）。
@@ -352,6 +469,9 @@ impl ResearchApp {
             agent_task: None,
             agent_retry: None,
             agent_task_seq: 0,
+            chat_online: false,
+            model_settings: ModelSettingsState::fresh(),
+            llm_op_pending: None,
             swarm_worker: None,
             swarm_task: None,
             swarm_task_seq: 0,
@@ -1015,6 +1135,16 @@ impl ResearchApp {
             self.show_logs = true;
         }
         right.add_space(8.0);
+        // S22 ②：模型设置入口（打开时惰性拉取 catalog；list 随 catalog 到达后顺带拉取）
+        if right.add(theme::small_ghost_button("模型设置")).clicked() {
+            self.model_settings.open = true;
+            if self.model_settings.catalog.is_empty() && self.llm_op_pending.is_none() {
+                self.submit_llm_op(LlmOpTag::Catalog, crate::agent_bridge::LlmOp::Catalog);
+            } else if self.model_settings.list.is_none() && self.llm_op_pending.is_none() {
+                self.submit_llm_op(LlmOpTag::List, crate::agent_bridge::LlmOp::List);
+            }
+        }
+        right.add_space(8.0);
         theme::tag_live_ui(&mut right, "演示环境");
     }
 
@@ -1580,7 +1710,11 @@ impl ResearchApp {
                             Layout::centered_and_justified(egui::Direction::TopDown),
                             |ui| {
                                 ui.label(lbl(
-                                    "离线预设交互 · 计算来自合成样本 · 未接入模型",
+                                    if self.chat_online {
+                                        "在线模型交互 · 计算来自合成样本"
+                                    } else {
+                                        "离线预设交互 · 计算来自合成样本 · 未接入模型"
+                                    },
                                     9.0,
                                     theme::FAINT,
                                 ));
@@ -4647,6 +4781,244 @@ impl ResearchApp {
             self.start_agent_task(&label, kind, prompt);
         }
 
+        // 模型设置浮层（S22 ② / FR-R22）：provider 目录 + 当前配置 + 表单。
+        // api_key 仅内存暂存（password 输入），派发即清空；不回显已存 key。
+        {
+            let mut ms_open = self.model_settings.open;
+            let mut llm_action: Option<LlmUiAction> = None;
+            egui::Window::new("模型设置（LLM provider）")
+                .open(&mut ms_open)
+                .default_width(560.0)
+                .show(ctx, |ui| {
+                    let st = &mut self.model_settings;
+                    ui.label(note(
+                        "配置 octos 的 LLM provider（与 octoscode 同一后端）。api_key 仅经 RPC 内存传输：不写盘、不进日志、不回显。保存后对新会话生效。",
+                    ));
+                    ui.add_space(8.0);
+
+                    // ---- 当前配置
+                    ui.label(lbl("当前配置", 12.0, theme::TEXT));
+                    ui.add_space(4.0);
+                    match &st.list {
+                        None => {
+                            ui.label(note("尚未读取：点「刷新」拉取已配置列表"));
+                        }
+                        Some(view) => {
+                            match &view.primary {
+                                Some(p) => {
+                                    ui.label(mono(
+                                        format!(
+                                            "主模型 · {}/{} · {}",
+                                            p.family_id,
+                                            p.model_id,
+                                            p.base_url.as_deref().unwrap_or("（family 默认端点）")
+                                        ),
+                                        11.0,
+                                        theme::TEXT,
+                                    ));
+                                    ui.label(lbl(
+                                        if p.has_api_key {
+                                            "API key：已配置（不回显）"
+                                        } else {
+                                            "API key：未配置"
+                                        },
+                                        10.0,
+                                        theme::MUTED,
+                                    ));
+                                }
+                                None => {
+                                    ui.label(note("尚未配置主模型"));
+                                }
+                            }
+                            for fb in &view.fallbacks {
+                                ui.horizontal(|ui| {
+                                    ui.label(mono(
+                                        format!(
+                                            "备用 · {}/{} · {}",
+                                            fb.family_id,
+                                            fb.model_id,
+                                            fb.base_url.as_deref().unwrap_or("（family 默认端点）")
+                                        ),
+                                        11.0,
+                                        theme::TEXT2,
+                                    ));
+                                    if ui
+                                        .add_enabled(
+                                            !st.busy,
+                                            theme::small_ghost_button("设为主模型"),
+                                        )
+                                        .clicked()
+                                    {
+                                        llm_action = Some(LlmUiAction::SelectPrimary(
+                                            fb.family_id.clone(),
+                                            fb.model_id.clone(),
+                                        ));
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    // ---- 新增 / 修改表单
+                    ui.label(lbl("新增 / 修改 provider", 12.0, theme::TEXT));
+                    ui.add_space(4.0);
+                    egui::Grid::new("llm-form")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(field("provider family"));
+                            egui::ComboBox::from_id_salt("llm-family")
+                                .selected_text(if st.form_family.is_empty() {
+                                    "请选择".to_string()
+                                } else {
+                                    st.form_family.clone()
+                                })
+                                .show_ui(ui, |ui| {
+                                    for fam in &st.catalog {
+                                        if ui
+                                            .selectable_label(
+                                                st.form_family == fam.family_id,
+                                                &fam.family_id,
+                                            )
+                                            .clicked()
+                                        {
+                                            st.form_family = fam.family_id.clone();
+                                            // 预填该 family 的 key 环境变量名
+                                            if st.form_api_key_env.is_empty() {
+                                                st.form_api_key_env =
+                                                    fam.key_env.clone().unwrap_or_default();
+                                            }
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label(field("模型 ID"));
+                            let models: Vec<String> = st
+                                .catalog
+                                .iter()
+                                .find(|f| f.family_id == st.form_family)
+                                .map(|f| f.models.clone())
+                                .unwrap_or_default();
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut st.form_model)
+                                        .desired_width(200.0),
+                                );
+                                if !models.is_empty() {
+                                    egui::ComboBox::from_id_salt("llm-model")
+                                        .selected_text("目录")
+                                        .show_ui(ui, |ui| {
+                                            for m in &models {
+                                                if ui
+                                                    .selectable_label(st.form_model == *m, m)
+                                                    .clicked()
+                                                {
+                                                    st.form_model = m.clone();
+                                                }
+                                            }
+                                        });
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label(field("显示名（可选）"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.form_label)
+                                    .desired_width(200.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(field("base_url"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.form_base_url)
+                                    .desired_width(320.0)
+                                    .hint_text("https://..."),
+                            );
+                            ui.end_row();
+
+                            ui.label(field("api_key 环境变量"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.form_api_key_env)
+                                    .desired_width(200.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(field("api_type"));
+                            egui::ComboBox::from_id_salt("llm-api-type")
+                                .selected_text(if st.form_api_type.is_empty() {
+                                    "自动（family 默认）".to_string()
+                                } else {
+                                    st.form_api_type.clone()
+                                })
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(st.form_api_type.is_empty(), "自动（family 默认）")
+                                        .clicked()
+                                    {
+                                        st.form_api_type.clear();
+                                    }
+                                    for t in ["openai", "anthropic", "responses"] {
+                                        if ui.selectable_label(st.form_api_type == t, t).clicked()
+                                        {
+                                            st.form_api_type = t.to_string();
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+
+                            ui.label(field("api_key"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut st.form_api_key)
+                                    .desired_width(320.0)
+                                    .password(true)
+                                    .hint_text("仅内存传输，不回显已存 key"),
+                            );
+                            ui.end_row();
+
+                            ui.label(field("设为主模型"));
+                            ui.checkbox(&mut st.set_primary, "保存后作为主模型生效");
+                            ui.end_row();
+                        });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!st.busy, theme::small_default_button("测试连通"))
+                            .clicked()
+                        {
+                            llm_action = Some(LlmUiAction::Test);
+                        }
+                        if ui
+                            .add_enabled(!st.busy, theme::small_default_button("保存"))
+                            .clicked()
+                        {
+                            llm_action = Some(LlmUiAction::Save);
+                        }
+                        if ui
+                            .add_enabled(!st.busy, theme::small_ghost_button("刷新"))
+                            .clicked()
+                        {
+                            llm_action = Some(LlmUiAction::Refresh);
+                        }
+                        if st.busy {
+                            ui.label(note("操作进行中…"));
+                        }
+                    });
+                    if let Some(n) = &st.notice {
+                        ui.add_space(6.0);
+                        ui.label(note(n));
+                    }
+                });
+            self.model_settings.open = ms_open;
+            if let Some(action) = llm_action {
+                self.run_llm_ui_action(action);
+            }
+        }
+
         // 股票池样本详情（原型 data-stock modal）
         if let Some(idx) = self.pool_stock_detail {
             if let Some(row) = crate::demo_sim::FIXTURE.get(idx) {
@@ -4971,9 +5343,40 @@ impl ResearchApp {
                 self.new_project_open = true;
                 self.append_intent_reply(&text, intent);
             }
-            _ => self.append_intent_reply(&text, intent),
+            _ => {
+                // S22 兜底改道：未知意图 → 真实 LLM 自由对话（octos 不可用
+                // 时在结果回调里诚实降级离线预设）；其余意图维持预设回复。
+                match ai::decide_chat_dispatch(&intent, true) {
+                    ai::ChatDispatch::LlmChat => self.do_chat_free(&text),
+                    _ => self.append_intent_reply(&text, intent),
+                }
+            }
         }
         self.chat_pin = true;
+    }
+
+    /// 自由对话派发（S22）：携带项目上下文的真实 LLM turn。
+    fn do_chat_free(&mut self, text: &str) {
+        let prompt = self.chat_free_prompt(text);
+        self.start_agent_task("对话回复", AgentTaskKind::ChatFree, prompt);
+    }
+
+    /// 自由对话 prompt：项目名 + 当前需求/设计摘要 + 用户消息；
+    /// 模板在 ai::chat_prompt（S22，ST-S22-01 复用同一模板）。
+    fn chat_free_prompt(&self, text: &str) -> String {
+        let p = self.workspace.current();
+        let clip = |s: &str| -> String { s.chars().take(200).collect() };
+        let req = p
+            .active_req
+            .and_then(|rid| p.reqs.get(rid - 1))
+            .map(|r| clip(&r.text))
+            .unwrap_or_else(|| "（尚未确认需求版本）".into());
+        let design = p
+            .active_design
+            .and_then(|did| p.designs.get(did - 1))
+            .map(|d| clip(&d.note))
+            .unwrap_or_else(|| "（尚未保存设计版本）".into());
+        ai::chat_prompt(&p.name, &req, &design, text)
     }
 
     fn append_intent_reply(&mut self, text: &str, intent: ai::Intent) {
@@ -5165,12 +5568,9 @@ impl ResearchApp {
         );
     }
 
-    /// 启动真实 LLM 任务（惰性创建 AgentWorker，避免无头测试拉起 octos）。
-    fn start_agent_task(&mut self, label: &str, kind: AgentTaskKind, prompt: String) {
-        if self.agent_task.is_some() {
-            self.ai_notice = Some("当前任务正在执行，请等待或取消".into());
-            return;
-        }
+    /// 惰性创建 AgentWorker（对话任务与 LLM 配置操作共用；
+    /// 避免无头测试拉起 octos）。
+    fn ensure_agent_worker(&mut self) {
         if self.agent_worker.is_none() {
             let project_id = self.workspace.current().id.to_string();
             let mut config = crate::agent_bridge::AgentSessionConfig::desktop(
@@ -5182,6 +5582,15 @@ impl ResearchApp {
             config.oup.danger_full_access = self.full_access_allow;
             self.agent_worker = Some(crate::agent_bridge::AgentWorker::spawn(config));
         }
+    }
+
+    /// 启动真实 LLM 任务（惰性创建 AgentWorker，避免无头测试拉起 octos）。
+    fn start_agent_task(&mut self, label: &str, kind: AgentTaskKind, prompt: String) {
+        if self.agent_task.is_some() {
+            self.ai_notice = Some("当前任务正在执行，请等待或取消".into());
+            return;
+        }
+        self.ensure_agent_worker();
         self.agent_task_seq += 1;
         let id = self.agent_task_seq;
         let worker = self.agent_worker.as_ref().expect("worker 已在上方建立");
@@ -5227,6 +5636,12 @@ impl ResearchApp {
             responses.push(resp);
         }
         for resp in responses {
+            // LLM 配置操作结果（模型设置浮层）优先按 pending id 消费
+            if self.llm_op_pending.map(|(pid, _)| pid) == Some(resp.id) {
+                let (_, tag) = self.llm_op_pending.take().expect("上方已比对");
+                self.apply_llm_op_result(tag, resp.result);
+                continue;
+            }
             if self.agent_task.as_ref().map(|t| t.id) != Some(resp.id) {
                 // 已取消或被替换的任务：丢弃过期结果
                 self.record("过期任务结果已丢弃");
@@ -5234,16 +5649,30 @@ impl ResearchApp {
             }
             let task = self.agent_task.take().expect("上方已比对为当前任务");
             match resp.result {
-                Ok(turn) => {
+                Ok(crate::agent_bridge::WorkerResult::Turn(turn)) => {
                     self.apply_agent_result(&task, turn);
                     self.agent_retry = None;
                 }
+                Ok(_) => {
+                    // 对话任务不应返回非 Turn 结果（worker 分类保证）；防御记录
+                    self.record(&format!("{} · 结果类型不匹配（已忽略）", task.label));
+                }
                 Err(e) => {
-                    self.tell(
-                        format!("{}失败：{e}。没有提交新产物，可以重试。", task.label),
-                        None,
-                    );
-                    self.record(&format!("{} · 失败", task.label));
+                    if task.kind == AgentTaskKind::ChatFree {
+                        // S22 诚实降级：octos 不可用 → 回退离线预设并如实标注
+                        self.record(&format!("{} · 失败（{e}），回退离线预设", task.label));
+                        let fallback = ai::reply("");
+                        self.tell(
+                            format!("{fallback}\n\n（本次提问未能接入模型：{e}；以上为离线预设回复）"),
+                            None,
+                        );
+                    } else {
+                        self.tell(
+                            format!("{}失败：{e}。没有提交新产物，可以重试。", task.label),
+                            None,
+                        );
+                        self.record(&format!("{} · 失败", task.label));
+                    }
                 }
             }
         }
@@ -5326,8 +5755,157 @@ impl ResearchApp {
                     }
                 }
             }
+            AgentTaskKind::ChatFree => {
+                // S22：回复直接入消息流，不跳转路由；确认在线态（双态标注）。
+                self.chat_online = true;
+                self.tell(reply, None);
+            }
         }
         self.record(&format!("{} · 完成{tokens}", task.label));
+    }
+
+    /// 模型设置浮层动作消费（闭包外）：校验 → 组装契约字段 → 派发。
+    /// api_key 取出即清空（std::mem::take），不留置于浮层状态。
+    fn run_llm_ui_action(&mut self, action: LlmUiAction) {
+        match action {
+            LlmUiAction::Refresh => {
+                // catalog 到达后会顺带拉取 list（apply_llm_op_result）
+                self.submit_llm_op(LlmOpTag::Catalog, crate::agent_bridge::LlmOp::Catalog);
+            }
+            LlmUiAction::SelectPrimary(family_id, model_id) => {
+                self.submit_llm_op(
+                    LlmOpTag::Select,
+                    crate::agent_bridge::LlmOp::Select { family_id, model_id },
+                );
+            }
+            LlmUiAction::Save | LlmUiAction::Test => {
+                let (selection, api_key, set_primary) = {
+                    let st = &mut self.model_settings;
+                    if let Err(msg) = validate_llm_form(
+                        &st.form_family,
+                        &st.form_model,
+                        &st.form_base_url,
+                        &st.form_api_type,
+                    ) {
+                        st.notice = Some(msg);
+                        self.record("模型设置 · 表单校验未通过");
+                        return;
+                    }
+                    let selection = crate::oup::LlmSelectionInput {
+                        family_id: st.form_family.trim().to_string(),
+                        model_id: st.form_model.trim().to_string(),
+                        route: crate::oup::LlmRouteInput {
+                            route_id: String::new(),
+                            label: nonblank(&st.form_label),
+                            base_url: nonblank(&st.form_base_url),
+                            api_key_env: nonblank(&st.form_api_key_env),
+                            api_type: nonblank(&st.form_api_type),
+                        },
+                    };
+                    // api_key 取出即清空：仅本次 RPC 内存传输
+                    let api_key = nonblank(&st.form_api_key);
+                    st.form_api_key.clear();
+                    (selection, api_key, st.set_primary)
+                };
+                match action {
+                    LlmUiAction::Save => self.submit_llm_op(
+                        LlmOpTag::Upsert,
+                        crate::agent_bridge::LlmOp::Upsert {
+                            selection,
+                            api_key,
+                            set_primary,
+                        },
+                    ),
+                    _ => self.submit_llm_op(
+                        LlmOpTag::Test,
+                        crate::agent_bridge::LlmOp::Test { selection, api_key },
+                    ),
+                }
+            }
+        }
+    }
+
+    /// 提交 LLM 配置操作（S22 ②）：经既有 AgentWorker 的 OUP 通道。
+    /// api_key 仅随 RPC params 内存传输，不进日志/运行记录。
+    fn submit_llm_op(&mut self, tag: LlmOpTag, op: crate::agent_bridge::LlmOp) {
+        self.ensure_agent_worker();
+        let Some(worker) = &self.agent_worker else {
+            return;
+        };
+        // id 与对话任务共用 agent_task_seq 计数器，避免跨类 id 碰撞误消费
+        self.agent_task_seq += 1;
+        let id = self.agent_task_seq;
+        if worker.submit_llm_op(id, op) {
+            self.llm_op_pending = Some((id, tag));
+            self.model_settings.busy = true;
+            self.record(&format!("模型设置 · {} 已提交", tag.label()));
+        } else {
+            self.model_settings.notice = Some("操作提交失败：后台 worker 已停止".into());
+            self.record(&format!("模型设置 · {} 提交失败", tag.label()));
+        }
+    }
+
+    /// LLM 配置操作结果归约（pending 回调）：类型化结果入浮层状态；
+    /// octos 诊断原样透传；api_key 字段无论成败即清空（脱敏口径）。
+    fn apply_llm_op_result(
+        &mut self,
+        tag: LlmOpTag,
+        result: Result<crate::agent_bridge::WorkerResult, String>,
+    ) {
+        use crate::agent_bridge::WorkerResult as WR;
+        let mut refresh_list = false;
+        {
+            let st = &mut self.model_settings;
+            st.busy = false;
+            match (tag, result) {
+                (LlmOpTag::Catalog, Ok(WR::Catalog(entries))) => {
+                    let n = entries.len();
+                    st.catalog = entries;
+                    st.notice = Some(format!("provider 目录已加载（{n} 个 family）"));
+                    // 首次打开：目录到达后顺带拉取已配置列表
+                    refresh_list = st.list.is_none();
+                }
+                (LlmOpTag::List, Ok(WR::List(view))) => {
+                    st.list = Some(view);
+                }
+                (LlmOpTag::Upsert, Ok(WR::LlmRpc(_))) => {
+                    st.notice = Some("配置已保存并写入 profile（后续新会话生效）".into());
+                    st.reset_form();
+                    refresh_list = true;
+                }
+                (LlmOpTag::Select, Ok(WR::LlmRpc(_))) => {
+                    st.notice = Some("主模型已切换（后续新会话生效）".into());
+                    refresh_list = true;
+                }
+                (LlmOpTag::Test, Ok(WR::LlmRpc(v))) => {
+                    // 契约（octos ui_protocol_transport profile_llm_test_result）：
+                    // applied=连通成败；message=诊断；error=失败详情（可选）。
+                    let ok = v.get("applied").and_then(|b| b.as_bool()).unwrap_or(false);
+                    let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                    let err = v.get("error").and_then(|m| m.as_str());
+                    st.notice = Some(if ok {
+                        format!("连通测试成功：{msg}")
+                    } else if let Some(e) = err {
+                        format!("连通测试失败：{msg}（{e}）")
+                    } else {
+                        format!("连通测试失败：{msg}")
+                    });
+                    st.form_api_key.clear();
+                }
+                (_, Err(e)) => {
+                    // octos 严格校验的 typed error 原样透传（#2166 中文诊断）
+                    st.notice = Some(format!("{}失败：{e}", tag.label()));
+                    st.form_api_key.clear();
+                }
+                _ => {
+                    st.notice = Some("操作结果类型不匹配（已忽略）".into());
+                    st.form_api_key.clear();
+                }
+            }
+        }
+        if refresh_list {
+            self.submit_llm_op(LlmOpTag::List, crate::agent_bridge::LlmOp::List);
+        }
     }
 
     // ---- 数据中心
@@ -5616,6 +6194,11 @@ impl ResearchApp {
         }
         if self.swarm_task.take().is_some() {
             self.record("项目切换 · 在途多 Agent 分析引用已放弃（不迁移到新项目）");
+        }
+        // S22：在途模型设置操作引用一并放弃（worker 已随项目隔离销毁）
+        if self.llm_op_pending.take().is_some() {
+            self.model_settings.busy = false;
+            self.model_settings.notice = Some("项目切换：操作已中断，请重试".into());
         }
         self.agent_retry = None;
         self.record("项目切换 · agent 会话已重置（项目隔离）");
@@ -7049,5 +7632,82 @@ mod tests {
         // 缺失末行围栏：只去首行
         let open = "```python\nx = 1";
         assert_eq!(strip_code_fence(open), "x = 1");
+    }
+
+    /// UT-S22-03（online-chat-llm-config-20261012）：模型设置浮层表单校验与脱敏——
+    /// base_url 空 / api_type 非枚举 / family 未选时保存被阻断并给中文提示；
+    /// api_key 不回显、不出现在运行记录与提示串；保存后浮层状态复位。
+    #[test]
+    fn ut_s22_03_model_settings_validation_and_masking() {
+        nautilus_research_testkit::case("UT-S22-03", || {
+            // ---- 校验纯函数：三类阻断各给中文提示
+            assert_eq!(
+                validate_llm_form("", "m", "https://x", ""),
+                Err("请先从目录选择 provider family".to_string())
+            );
+            assert_eq!(
+                validate_llm_form("fam", "m", "", ""),
+                Err("请填写 base_url（provider 端点地址）".to_string())
+            );
+            assert_eq!(
+                validate_llm_form("fam", "m", "  ", ""),
+                Err("请填写 base_url（provider 端点地址）".to_string())
+            );
+            assert_eq!(
+                validate_llm_form("fam", "", "https://x", ""),
+                Err("请选择或填写模型 ID".to_string())
+            );
+            assert!(validate_llm_form("fam", "m", "https://x", "openai-chat").is_err());
+            assert!(validate_llm_form("fam", "m", "https://x", "bogus").is_err());
+            // 合法：枚举内值或留空自动
+            for t in ["", "openai", "anthropic", "responses"] {
+                assert!(validate_llm_form("fam", "m", "https://x", t).is_ok(), "{t} 应合法");
+            }
+
+            // ---- 校验失败阻断派发（不拉起 worker），提示不含 api_key
+            let mut app = ResearchApp::new(false);
+            app.model_settings.form_family = "fam".into();
+            app.model_settings.form_model = "m".into();
+            app.model_settings.form_base_url.clear(); // 空 → 阻断
+            app.model_settings.form_api_key = "sk-secret-ut22".into();
+            app.run_llm_ui_action(LlmUiAction::Save);
+            assert!(app.llm_op_pending.is_none(), "校验失败不得派发");
+            assert!(app.agent_worker.is_none(), "校验失败不得拉起 worker");
+            let notice = app.model_settings.notice.clone().expect("应有中文提示");
+            assert!(notice.contains("base_url"));
+            assert!(!notice.contains("sk-secret-ut22"), "提示不得含 api_key");
+
+            // ---- 脱敏：操作结果归约后 api_key 字段清空，运行记录不含密钥
+            app.model_settings.form_api_key = "sk-secret-ut22".into();
+            app.apply_llm_op_result(
+                LlmOpTag::Test,
+                Ok(crate::agent_bridge::WorkerResult::LlmRpc(serde_json::json!({
+                    "applied": true,
+                    "message": "Provider connection verified"
+                }))),
+            );
+            assert!(app.model_settings.form_api_key.is_empty(), "派发后 api_key 即清空");
+            let joined = app.logs.join("\n") + &app.model_settings.notice.clone().unwrap_or_default();
+            assert!(!joined.contains("sk-secret-ut22"), "运行记录/提示不得含 api_key");
+            assert!(app.model_settings.notice.as_deref().unwrap_or("").contains("连通测试成功"));
+
+            // ---- 保存后表单复位（reset_form：字段清空、set_primary 回默认 true）
+            let mut st = ModelSettingsState {
+                form_family: "fam".into(),
+                form_model: "m".into(),
+                form_label: "lab".into(),
+                form_base_url: "https://x".into(),
+                form_api_key: "sk-secret-ut22".into(),
+                form_api_key_env: "FAM_API_KEY".into(),
+                form_api_type: "openai".into(),
+                set_primary: false,
+                ..Default::default()
+            };
+            st.reset_form();
+            assert!(st.form_family.is_empty() && st.form_model.is_empty());
+            assert!(st.form_base_url.is_empty() && st.form_api_key.is_empty());
+            assert!(st.form_api_key_env.is_empty() && st.form_api_type.is_empty());
+            assert!(st.set_primary, "复位后 set_primary 回默认 true");
+        });
     }
 }
