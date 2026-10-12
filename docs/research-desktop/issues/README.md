@@ -40,3 +40,9 @@ GitHub #3 已关闭；修复与全量验收已完成（137通过、0失败、4�
 - **Agent 闭环已通**：`embed-octos-runtime` 提案验收 Gate 3.6 PASS（147 用例 100% 覆盖、0 失败）——ST-S17-17（真实 LLM 单路 turn）、ST-S17-23（三路并行 + 托管工作区产物回流）、ST-S18-17（工具可见性 + 产物落盘）实证 OUP stdio 接线全链路。
 - **GUI 可视闭环已通**：`xwininfo` 可枚举「研序 · 策略研究工作区」窗口（1440×900），python-xlib 窗口级截屏非黑（亮度 22.1/255、非黑 45.3%），静默 CPU 0.9%；证据 [`../screenshots/local-loop-2026-10-12.png`](../screenshots/local-loop-2026-10-12.png)。**RD-010 / [#35](https://github.com/dorname/nautilus_trader/issues/35) 关闭**。
 - **octos 接线缺口收敛**：`gh` 鉴权已恢复；bundle 缺失根因定位为 bare-binary 安装（dashboard / octos-web 经 rust_embed 构建期烘焙，运行时无法补齐）；desktop 交付不依赖 App/Admin UI，验收以 `serve` 监听 + `doctor` 无 fatal + OUP stdio 闭环为准。**RD-009 / [#34](https://github.com/dorname/nautilus_trader/issues/34) 关闭**。
+
+## 2026-10-12 下午复测（纠正误 reopen）
+
+- **Agent/CLI**：`ST-S17-17` ✅ 12.4s；`ST-S17-23` ✅ 405s；`ST-S17-16` ✅；`ST-S21-01` ✅。
+- **误 reopen**：曾因 Wayland + 根窗口 `scrot` 全黑、以及 bundle 503，误 reopen #34/#35。
+- **纠正**：按既定口径复测——X11（`env -u WAYLAND_DISPLAY`）窗口可枚举，窗口 `get_image` 非黑 **98.3%**；stdio Agent 闭环不依赖 web/admin bundle。**#34/#35 重新关闭**。证据 [`../screenshots/local-loop-2026-10-12-pm-x11.png`](../screenshots/local-loop-2026-10-12-pm-x11.png)。

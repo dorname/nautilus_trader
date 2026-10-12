@@ -56,3 +56,13 @@ OCTOS_HOME=$OCTOS_HOME octos serve --cwd /home/kyle/nautilus_trader \
 ### 复测环境
 
 WSL2 · `octos` v2.0.3-rc.9（`/root/.cargo/bin/octos`）· `gh` 已鉴权 · a-stock @ `034088cc2d`。
+
+## 2026-10-12 下午：误 reopen 纠正
+
+| 项 | 结果 |
+|----|------|
+| 误 reopen 原因 | 将 `admin_bundle_missing` / `web_bundle_missing` 再次视为阻塞，忽略本条「否则分支」验收口径 |
+| `OCTOS_HOME=.local-octos octos doctor` | No fatal |
+| `octos serve` | 仍缺 web/admin bundle（bare-binary，预期） |
+| Agent stdio 闭环 | `ST-S17-17` ✅ 12.4s；`ST-S17-23` ✅ 405s |
+| 处置 | 按既定口径**重新关闭** [#34](https://github.com/dorname/nautilus_trader/issues/34)（评论 15:36） |

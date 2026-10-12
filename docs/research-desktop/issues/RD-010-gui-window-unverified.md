@@ -62,3 +62,14 @@ env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir DISPLAY=:0 \
 1. `xwininfo -root -tree | grep "研序 · 策略研究工作区"` 断言窗口存在；
 2. python-xlib `get_image` 抓该窗口，断言非黑像素占比 > 5%；
 3. 无显示环境（无 `/mnt/wslg/runtime-dir/wayland-0` 且无 `DISPLAY`）skip 并写明原因。
+
+## 2026-10-12 下午：误 reopen 纠正 + X11 复测
+
+| 项 | 结果 |
+|----|------|
+| 误 reopen 原因 | 保留 `WAYLAND_DISPLAY` + `scrot` 抓**根窗口**（WSLg 下必得全黑），违反本条关闭证据口径 |
+| 正确启动 | `env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir DISPLAY=:0 ./target/debug/research-desktop` |
+| `xwininfo` | `0xc00002 "研序 · 策略研究工作区" 1440x900` |
+| 窗口 `get_image` | avg **21.9/255**，非黑 **98.3%**，`dark_ratio=0.017` |
+| 证据 | [`../screenshots/local-loop-2026-10-12-pm-x11.png`](../screenshots/local-loop-2026-10-12-pm-x11.png) |
+| 处置 | **重新关闭** [#35](https://github.com/dorname/nautilus_trader/issues/35)（评论 15:36） |

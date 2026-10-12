@@ -148,3 +148,11 @@
 {"duration_ms":153815,"id":"ST-S17-18","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-449540-1791747136104948291","scenario":"S17","status":"pass","timestamp":"2026-10-11T19:34:49Z"}
 {"duration_ms":30942,"id":"ST-S18-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-449540-1791747136104948291","scenario":"S18","status":"pass","timestamp":"2026-10-11T19:35:20Z"}
 {"duration_ms":13,"id":"UT-S17-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-449540-1791747136104948291","scenario":"S17","status":"pass","timestamp":"2026-10-11T19:35:20Z"}
+{"duration_ms":12675,"id":"ST-S17-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-506283-1791770053342065068","scenario":"S17","status":"pass","timestamp":"2026-10-12T01:54:13Z"}
+{"duration_ms":448,"id":"ST-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-506887-1791770063317402988","scenario":"S21","status":"pass","timestamp":"2026-10-12T01:54:23Z"}
+{"duration_ms":203934,"id":"ST-S17-23","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-506696-1791770266071313368","scenario":"S17","status":"pass","timestamp":"2026-10-12T01:57:46Z"}
+{"duration_ms":305,"id":"ST-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-510684-1791770400603538318","scenario":"S17","status":"pass","timestamp":"2026-10-12T02:00:00Z"}
+{"duration_ms":12379,"id":"ST-S17-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-558464-1791788028198233488","scenario":"S17","status":"pass","timestamp":"2026-10-12T06:53:48Z"}
+{"duration_ms":477,"id":"ST-S21-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-558787-1791788029140382152","scenario":"S21","status":"pass","timestamp":"2026-10-12T06:53:49Z"}
+{"duration_ms":414,"id":"ST-S17-16","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-558821-1791788029994232971","scenario":"S17","status":"pass","timestamp":"2026-10-12T06:53:49Z"}
+{"duration_ms":405067,"id":"ST-S17-23","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-558549-1791788420728686088","scenario":"S17","status":"pass","timestamp":"2026-10-12T07:00:20Z"}
