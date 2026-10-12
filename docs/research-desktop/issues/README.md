@@ -19,6 +19,8 @@
 | RD-008 | — | [主工作区 body 布局塌缩（画布竖排挤压 / 对话栏消失）](RD-008-body-layout-collapse.md) | bug / UI 布局 | P0 |
 | RD-009 | [#34](https://github.com/dorname/nautilus_trader/issues/34) | [本地 octos 接线缺口](RD-009-octos-local-wiring-gaps.md) | 环境 / 基建 | P1 |
 | RD-010 | [#35](https://github.com/dorname/nautilus_trader/issues/35) | [GUI 进程可起但窗口/截屏仍不可验收](RD-010-gui-window-unverified.md) | bug / 环境 | P1 |
+| RD-011 | [#36](https://github.com/dorname/nautilus_trader/issues/36) | [gui_walkthrough ST-GUI 旅程后 SIGSEGV](RD-011-gui-walkthrough-sigsegv.md) | bug / 测试 | P1 |
+| RD-012 | [#37](https://github.com/dorname/nautilus_trader/issues/37) | [st_m3_01 design stage 空 assistant_persisted](RD-012-m3-pipeline-empty-persisted.md) | bug / 稳定性 | P2 |
 
 列表页：https://github.com/dorname/nautilus_trader/issues?q=is%3Aissue+label%3Aa-stock
 
@@ -46,3 +48,11 @@ GitHub #3 已关闭；修复与全量验收已完成（137通过、0失败、4�
 - **Agent/CLI**：`ST-S17-17` ✅ 12.4s；`ST-S17-23` ✅ 405s；`ST-S17-16` ✅；`ST-S21-01` ✅。
 - **误 reopen**：曾因 Wayland + 根窗口 `scrot` 全黑、以及 bundle 503，误 reopen #34/#35。
 - **纠正**：按既定口径复测——X11（`env -u WAYLAND_DISPLAY`）窗口可枚举，窗口 `get_image` 非黑 **98.3%**；stdio Agent 闭环不依赖 web/admin bundle。**#34/#35 重新关闭**。证据 [`../screenshots/local-loop-2026-10-12-pm-x11.png`](../screenshots/local-loop-2026-10-12-pm-x11.png)。
+
+## 2026-10-12 全功能 / 全流程 / 多 Agent 业务测试
+
+**通过**：CLI S21 8/8；OUP M1 5/5；S17–S20 工作台 6/6；S15 L2/L3 17/17；wire_real_llm 4/4；**m2 Swarm 15/15**；m4 6/6；原生 GUI X11 非黑 98.3%；gui_walkthrough `--test-threads=1`（无渲染）6/6。
+
+**失败 → Issue**：
+- [RD-011](RD-011-gui-walkthrough-sigsegv.md) / [#36](https://github.com/dorname/nautilus_trader/issues/36)：默认渲染路径 ST-GUI 旅程后 SIGSEGV
+- [RD-012](RD-012-m3-pipeline-empty-persisted.md) / [#37](https://github.com/dorname/nautilus_trader/issues/37)：`st_m3_01` 偶发空 `assistant_persisted`（同套件 ST-S18-16 通过）
