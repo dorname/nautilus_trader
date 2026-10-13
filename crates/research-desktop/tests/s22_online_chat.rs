@@ -185,3 +185,76 @@ fn st_s22_02_llm_provider_config_loop() {
         assert!(now.has_api_key, "环境变量 key 应被服务端判定为已配置");
     });
 }
+
+/// ST-S22-03（fix-issues-40-41-20261013 / issue #41）：真实 LLM 自由对话
+/// 流式观察——记录 message/delta 帧计数与预览增长；终态文本以持久化产物
+/// 为准；该 profile 未发 delta（计数 0）时如实标注降级，不计失败。
+#[test]
+fn st_s22_03_streaming_delta_observation() {
+    case("ST-S22-03", || {
+        let dirs = TempDirs::new("stream");
+        let config = AgentSessionConfig {
+            session_id: "s22-stream".into(),
+            profile_id: "octos".into(),
+            profile_warning: None,
+            oup: dirs.oup_config(),
+        };
+        let mut bridge = AgentBridge::new(config);
+        bridge.connect().expect("connect to octos serve");
+
+        let prompt = nautilus_research_desktop::ai::chat_prompt(
+            "S22 验收项目",
+            "（尚未确认需求版本）",
+            "（尚未保存设计版本）",
+            "用三句话解释什么是移动平均策略",
+        );
+        let turn_id = bridge.submit_prompt(&prompt).expect("submit prompt");
+        let mut preview = nautilus_research_desktop::oup::DeltaPreview::new(&turn_id);
+        let mut len_hist: Vec<usize> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(420);
+        let terminal = loop {
+            // poll_turn_once 内部解析 message/delta 入积压；先泵再收割
+            if let Some(t) = bridge.poll_turn_outcome().expect("poll turn") {
+                break t;
+            }
+            for d in bridge.take_deltas() {
+                if preview.push(&d) {
+                    len_hist.push(preview.text().chars().count());
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "turn 超时（420s 未达终态）"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        // 收割终态同批到达的残余 delta
+        for d in bridge.take_deltas() {
+            if preview.push(&d) {
+                len_hist.push(preview.text().chars().count());
+            }
+        }
+
+        let out = match terminal {
+            nautilus_research_desktop::oup::TurnTerminal::Completed(o) => o,
+            nautilus_research_desktop::oup::TurnTerminal::Failed(e) => {
+                panic!("turn 应成功终态，实际失败：{e}")
+            }
+        };
+        // 终态文本与持久化产物一致且非空（assistant_text 即 assistant_persisted
+        // 提取结果；预览不参与拼接——RD-018）
+        let reply = out.assistant_text.unwrap_or_default();
+        assert!(!reply.trim().is_empty(), "持久化回复应非空");
+        assert!(
+            len_hist.windows(2).all(|w| w[0] <= w[1]),
+            "预览应按增量单调增长，实际：{len_hist:?}"
+        );
+        if preview.frames() > 0 {
+            assert!(!preview.text().is_empty(), "有 delta 帧则预览非空");
+            println!("ST-S22-03 delta_frames={}", preview.frames());
+        } else {
+            // 该 profile 未发 delta：诚实标注降级为一次性回显（不计失败）
+            println!("ST-S22-03 delta_frames=0（本 profile 未发 message/delta，降级一次性回显）");
+        }
+    });
+}

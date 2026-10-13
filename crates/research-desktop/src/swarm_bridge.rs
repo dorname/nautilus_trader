@@ -128,6 +128,43 @@ fn validate_contract_definitions(contracts: &[SubtaskContract]) -> SwarmResult<(
 /// 聚合校验（core-06 M4.3 validator 语义，issue #23；UT-S17-26）：
 /// 仅当全部子任务 Succeeded 且 output 非空白时才允许产物挂载（true）；
 /// 其余一律阻断（false）。空结果集不算成功。
+/// 子任务短标签（issue #41 任务条进度细化）：contract_id → 画布展示短名。
+pub fn subtask_short_label(contract_id: &str) -> &str {
+    match contract_id {
+        "feasibility" => "可行性",
+        "counterexample" => "反例",
+        "constraint" => "约束",
+        other => other,
+    }
+}
+
+/// 子任务状态中文标签（issue #41 任务条进度细化）。
+pub fn subtask_state_label(state: &SubtaskState) -> &'static str {
+    match state {
+        SubtaskState::Queued => "排队",
+        SubtaskState::Running => "执行中",
+        SubtaskState::Succeeded => "已完成",
+        SubtaskState::Failed => "失败",
+        SubtaskState::Cancelled => "已取消",
+    }
+}
+
+/// 每路子任务状态明细（issue #41）：`可行性:已完成 反例:执行中 约束:排队`。
+/// 结果集为空时返回空串（任务条仅显示 0/3 终态计数）。
+pub fn swarm_progress_detail(results: &[SubtaskResult]) -> String {
+    results
+        .iter()
+        .map(|r| {
+            format!(
+                "{}:{}",
+                subtask_short_label(&r.contract_id),
+                subtask_state_label(&r.state)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn aggregate_valid(results: &[SubtaskResult]) -> bool {
     !results.is_empty()
         && results.iter().all(|r| {

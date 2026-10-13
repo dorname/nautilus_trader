@@ -58,13 +58,14 @@ fn render_enabled() -> bool {
 }
 
 /// 本文件全部测试函数名（计算计划跑数用，与下方 fn 声明保持同步）。
-const TEST_NAMES: [&str; 6] = [
+const TEST_NAMES: [&str; 7] = [
     "st_gui_journey_real_llm",
     "ut_gui_01_render_and_nav",
     "ut_gui_02_empty_state_gating",
     "ut_gui_03_idle_no_taskbar",
     "ut_gui_04_narrow_viewport_slim_sidebar",
     "ut_s17_23_project_isolation",
+    "ut_s15_13_route_canvas_isolation",
 ];
 
 /// 计划运行的测试数：无过滤词 = 全量；有过滤词按 libtest 子串匹配计数
@@ -522,4 +523,98 @@ fn st_gui_journey_real_llm() {
         snap(&mut w, "st-gui-02-form-filled");
     }));
     finish(w);
+}
+
+/// UT-S15-13（fix-issues-40-41-20261013 / issue #40）：路由画布状态隔离——
+/// 源码静态检查（ScrollArea id_salt 按路由命名 + 画布内多行 TextEdit 显式
+/// 唯一 id）+ kittest 需求页→实验页往返泄漏防御断言。
+#[test]
+fn ut_s15_13_route_canvas_isolation() {
+    case("UT-S15-13", || {
+        // —— 静态检查：ID 命名空间（泄漏的主要修复面；真实 GPU 路径的
+        //    渲染残留无头不可复现，静态口径是判定依据）——
+        let app_src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
+        )
+        .expect("read app.rs");
+        assert!(
+            !app_src.contains(".id_salt(\"canvas-scroll\")"),
+            "禁止全路由共用裸 canvas-scroll id_salt"
+        );
+        assert!(
+            app_src.contains("canvas-scroll-{route:?}"),
+            "ScrollArea id_salt 应按路由命名"
+        );
+        // 画布内多行 TextEdit 显式唯一 id（路由命名空间）
+        for salt in [
+            "req/draft-text",
+            "req/acceptance",
+            "develop/code-editor",
+            "plan/holdings-json",
+            "experiments/import-paths",
+            "pool/rule-json",
+        ] {
+            assert!(
+                app_src.contains(&format!(".id_salt(\"{salt}\")")),
+                "缺少显式 TextEdit id：{salt}"
+            );
+        }
+
+        // —— 无头往返防御断言（共享 egui Context 保留跨帧 widget 持久化
+        //    状态，对齐泄漏发生的内存条件；shape 文本含 TextEdit 内容，
+        //    比 AccessKit label 树覆盖更全）——
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        let collect_texts = |ctx: &egui::Context, app: &mut ResearchApp| {
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+                shapes = std::mem::take(&mut full.shapes);
+                full.drop_without_applying_deltas();
+            }
+            shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(ts) => Some(ts.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+        };
+        let marker = "收盘后筛选流动性充足";
+        // 需求页：草稿 TextEdit 实例化且默认文本渲染（前置条件）
+        app.session.navigate(Route::Requirements, 0.0);
+        let texts = collect_texts(&ctx, &mut app);
+        assert!(
+            texts.iter().any(|t| t.contains(marker)),
+            "需求页应渲染草稿默认文本（前置条件）"
+        );
+        // 切实验页：空态正常渲染，且无草稿文本泄漏
+        app.session.navigate(Route::Experiments, 0.0);
+        let texts = collect_texts(&ctx, &mut app);
+        assert!(
+            texts.iter().any(|t| t.contains("准备你的第一次实验")),
+            "实验页空态应正常渲染"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains(marker)),
+            "实验页不得残留需求草稿文本（issue #40）"
+        );
+        // 往返一次再查
+        app.session.navigate(Route::Requirements, 0.0);
+        let _ = collect_texts(&ctx, &mut app);
+        app.session.navigate(Route::Experiments, 0.0);
+        let texts = collect_texts(&ctx, &mut app);
+        assert!(
+            !texts.iter().any(|t| t.contains(marker)),
+            "往返后实验页仍不得残留需求草稿文本"
+        );
+        walk_finished();
+    });
 }

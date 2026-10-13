@@ -76,6 +76,9 @@ pub struct OupClient {
     /// 积压的工具执行事件（embed-octos-runtime；poll_turn_once 收集，
     /// take_tool_events 收割）。
     pending_tool_events: Vec<ToolEvent>,
+    /// 积压的 message/delta 增量帧（issue #41；poll_turn_once 收集，
+    /// take_deltas 收割）。
+    pending_deltas: Vec<TurnDelta>,
     /// 读线程句柄（drop 时等待退出）。
     reader_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -103,6 +106,60 @@ pub struct ToolEvent {
     pub name: Option<String>,
     /// `true` = tool/completed（执行完毕）；`false` = tool/started。
     pub completed: bool,
+}
+
+/// `message/delta` 增量帧（issue #41 流式预览，fix-issues-40-41-20261013）。
+/// 仅用于展示层实时预览；持久化/落盘仍只取 assistant_persisted（RD-018 不变）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnDelta {
+    /// 所属会话。
+    pub session_id: String,
+    /// 所属 turn（通知未携带时为空串，归集时按空串隔离）。
+    pub turn_id: String,
+    /// 增量文本。
+    pub text: String,
+}
+
+/// message/delta 归集器（issue #41）：按 turn_id 累积增量文本，纯展示预览用途。
+/// 异 turn_id 帧不混入，空增量忽略；终态文本由 assistant_persisted 持久化产物
+/// 替换落定，禁止以本归集结果拼接落盘（RD-018）。
+#[derive(Debug, Default)]
+pub struct DeltaPreview {
+    turn_id: String,
+    buf: String,
+    /// 已并入的非空增量帧数（ST-S22-03 delta 计数口径）。
+    frames: u64,
+}
+
+impl DeltaPreview {
+    /// 绑定当前活跃 turn。
+    pub fn new(turn_id: &str) -> Self {
+        Self {
+            turn_id: turn_id.to_string(),
+            buf: String::new(),
+            frames: 0,
+        }
+    }
+
+    /// 并入一帧增量：异 turn_id 或空文本不混入（返回 false）。
+    pub fn push(&mut self, delta: &TurnDelta) -> bool {
+        if delta.turn_id != self.turn_id || delta.text.is_empty() {
+            return false;
+        }
+        self.buf.push_str(&delta.text);
+        self.frames += 1;
+        true
+    }
+
+    /// 当前累积预览文本。
+    pub fn text(&self) -> &str {
+        &self.buf
+    }
+
+    /// 已并入的非空增量帧数。
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
 }
 
 /// JSON-RPC 响应（只关心 result/error）。
@@ -292,6 +349,7 @@ impl OupClient {
             child,
             stdin,
             pending_tool_events: Vec::new(),
+            pending_deltas: Vec::new(),
             rx,
             notification_rx,
             notification_tx,
@@ -375,6 +433,10 @@ impl OupClient {
             if let Some(event) = Self::parse_tool_event(msg) {
                 self.pending_tool_events.push(event);
             }
+            // issue #41：message/delta 增量帧积压供展示层预览收割
+            if let Some(delta) = Self::parse_message_delta(msg) {
+                self.pending_deltas.push(delta);
+            }
         }
         for msg in backlog {
             if let Some(outcome) = Self::match_turn_terminal(Some(msg), session_id, turn_id)? {
@@ -393,6 +455,33 @@ impl OupClient {
     /// 收割积压的工具执行事件（embed-octos-runtime）：非阻塞，取走即清。
     pub fn take_tool_events(&mut self) -> Vec<ToolEvent> {
         std::mem::take(&mut self.pending_tool_events)
+    }
+
+    /// 收割积压的 message/delta 增量帧（issue #41）：非阻塞，取走即清。
+    pub fn take_deltas(&mut self) -> Vec<TurnDelta> {
+        std::mem::take(&mut self.pending_deltas)
+    }
+
+    /// 解析 `message/delta` 通知为增量帧（issue #41）；
+    /// 缺 text 或其他消息返回 None（未知通知不 panic、不中断读循环）。
+    fn parse_message_delta(msg: &Value) -> Option<TurnDelta> {
+        if msg.get("method").and_then(|m| m.as_str())? != "message/delta" {
+            return None;
+        }
+        let params = msg.get("params")?;
+        Some(TurnDelta {
+            session_id: params
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            turn_id: params
+                .get("turn_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            text: params.get("text")?.as_str()?.into(),
+        })
     }
 
     /// 解析 `tool/started` / `tool/completed` 通知为结构化事件；
@@ -1286,6 +1375,103 @@ mod tests {
             // 残缺响应不 panic：空对象 → 空视图
             assert_eq!(parse_llm_list(&serde_json::json!({})), LlmListView::default());
             assert!(parse_llm_catalog(&serde_json::json!({})).is_empty());
+        });
+    }
+
+    /// UT-S17-33（fix-issues-40-41-20261013 / issue #41）：message/delta 归集
+    /// 纯函数——按 turn_id 累积增量、异 turn 不混入、空增量忽略、帧解析
+    /// 缺失字段不 panic。
+    #[test]
+    fn ut_s17_33_delta_preview_accumulation() {
+        nautilus_research_testkit::case("UT-S17-33", || {
+            let base = TurnDelta {
+                session_id: "s1".into(),
+                turn_id: "t1".into(),
+                text: "你好".into(),
+            };
+            let mut p = DeltaPreview::new("t1");
+            assert!(p.push(&base));
+            assert!(p.push(&TurnDelta {
+                text: "，世界".into(),
+                ..base.clone()
+            }));
+            // 异 turn_id 不混入
+            assert!(!p.push(&TurnDelta {
+                turn_id: "t2".into(),
+                text: "异turn".into(),
+                ..base.clone()
+            }));
+            // 空增量忽略
+            assert!(!p.push(&TurnDelta {
+                text: String::new(),
+                ..base.clone()
+            }));
+            assert_eq!(p.text(), "你好，世界");
+            assert_eq!(p.frames(), 2, "只计并入的非空增量帧");
+
+            // message/delta 帧解析：正常帧 / 缺 text / 非 delta method
+            let ok = serde_json::json!({
+                "method": "message/delta",
+                "params": { "session_id": "s1", "turn_id": "t1", "text": "ab" }
+            });
+            let parsed = OupClient::parse_message_delta(&ok).expect("delta 应解析");
+            assert_eq!(parsed.text, "ab");
+            assert_eq!(parsed.turn_id, "t1");
+            let no_text = serde_json::json!({
+                "method": "message/delta",
+                "params": { "session_id": "s1", "turn_id": "t1" }
+            });
+            assert_eq!(OupClient::parse_message_delta(&no_text), None);
+            let other = serde_json::json!({"method": "turn/completed", "params": {}});
+            assert_eq!(OupClient::parse_message_delta(&other), None);
+        });
+    }
+
+    /// UT-S17-34（fix-issues-40-41-20261013 / issue #41）：源码静态检查——
+    /// message/delta 仅流入展示预览通道；持久化/落盘路径（WorkerTurn.reply）
+    /// 仍只取 assistant_persisted，不含 delta 拼接。
+    #[test]
+    fn ut_s17_34_delta_display_only_static_check() {
+        nautilus_research_testkit::case("UT-S17-34", || {
+            let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+            let bridge_src =
+                std::fs::read_to_string(src.join("agent_bridge.rs")).expect("read agent_bridge");
+            let app_src = std::fs::read_to_string(src.join("app.rs")).expect("read app");
+
+            // WorkerTurn 构造块：reply 只来自 out.assistant_text，不引用 preview
+            let wt_pos = bridge_src
+                .find("Ok(WorkerTurn {")
+                .expect("run_turn 应有 WorkerTurn 构造");
+            let wt_block = &bridge_src[wt_pos..wt_pos + 400.min(bridge_src.len() - wt_pos)];
+            assert!(
+                wt_block.contains("reply: out.assistant_text"),
+                "WorkerTurn.reply 必须来自 assistant_persisted（RD-018）"
+            );
+            assert!(
+                !wt_block.contains("preview"),
+                "WorkerTurn 构造不得引用 delta 预览：{wt_block}"
+            );
+
+            // delta 快照发送处：携带的是 preview 字段（展示通道），不进 WorkerTurn
+            assert!(
+                bridge_src.contains("delta_tx.send(WorkerDelta"),
+                "run_turn 应经 WorkerDelta 通道推送预览"
+            );
+
+            // GUI 落产物路径：apply_agent_result 只读 turn.reply，不读 preview
+            let fn_pos = app_src
+                .find("fn apply_agent_result")
+                .expect("app 应有 apply_agent_result");
+            let fn_block = &app_src[fn_pos..fn_pos + 1200.min(app_src.len() - fn_pos)];
+            assert!(
+                fn_block.contains("turn.reply"),
+                "落产物必须读 turn.reply（持久化产物）"
+            );
+            assert!(
+                !fn_block.contains("preview"),
+                "落产物路径不得引用预览缓冲：{}",
+                &fn_block[..200.min(fn_block.len())]
+            );
         });
     }
 }

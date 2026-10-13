@@ -12,18 +12,18 @@
 ## [code] 代码实现
 
 ### ① #40 路由状态隔离
-- [ ] `app.rs`：ScrollArea id_salt 按路由隔离；画布内 TextEdit 显式唯一 ID
-- [ ] 路由状态隔离回归 UT（reporter 入账）
+- [x] `app.rs`：ScrollArea id_salt 按路由隔离；画布内 TextEdit 显式唯一 ID
+- [x] 路由状态隔离回归 UT（UT-S15-13，reporter 入账）
 
 ### ② #41 流式 delta 渲染
-- [ ] `oup.rs`：解析 message/delta 帧按 turn_id 累积增量
-- [ ] `agent_bridge.rs`：run_turn 边收 delta 边推送 GUI
-- [ ] `app.rs`：右栏消息流实时预览 + 终态以持久化产物替换；任务条流式进度
-- [ ] 流式 UT（delta 累积/终态替换/降级）+ ST（真实 LLM 流式，reporter 入账）
+- [x] `oup.rs`：解析 message/delta 帧按 turn_id 累积增量（TurnDelta/DeltaPreview/take_deltas）
+- [x] `agent_bridge.rs`：run_turn 边收 delta 边推送 GUI（WorkerDelta 快照通道）
+- [x] `app.rs`：右栏消息流实时预览 + 终态以持久化产物替换；任务条流式进度
+- [x] 流式 UT（UT-S17-33 归集 / UT-S17-34 静态 / UT-S22-04 状态机）+ ST-S22-03（真实 LLM 流式，delta_frames=129，reporter 入账）
 
 ### ③ #41 进度细化
-- [ ] `app.rs`：多 Agent 任务条显示每路子任务状态
-- [ ] 进度细化 UT（reporter 入账）
+- [x] `app.rs` + `swarm_bridge.rs`：多 Agent 任务条显示每路子任务状态（swarm_progress_detail）；对话任务条「接收中 · 已收 N 字」（agent_task_label）
+- [x] 进度细化 UT（UT-S22-05，reporter 入账）
 
 ### 回归
-- [ ] lib 全量 + gui_walkthrough + s22_online_chat + wire_real_llm 回归通过（CPU 红线达标）
+- [x] lib 全量 58/58 + gui_walkthrough 7/7 + s22_online_chat 3/3 + wire_real_llm 4/4 回归通过（串行口径）

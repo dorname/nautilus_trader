@@ -108,6 +108,9 @@ struct AgentTask {
     label: String,
     kind: AgentTaskKind,
     started: std::time::Instant,
+    /// 流式预览快照（issue #41）：worker 推送的 message/delta 累积文本，
+    /// 仅展示；任务终态后随 AgentTask 一并丢弃，回复以持久化产物落定。
+    preview: String,
 }
 
 /// 进行中的多 Agent 分析派发（SwarmWorker 后台线程执行，帧循环轮询进度）。
@@ -1281,7 +1284,11 @@ impl ResearchApp {
             let route = self.session.route;
             let restore = self.last_route != Some(route);
             self.last_route = Some(route);
-            let mut sa = egui::ScrollArea::vertical().id_salt("canvas-scroll");
+            // issue #40：ScrollArea id_salt 按路由隔离——全路由共用同一
+            // id_salt 会让 egui 持久化状态（滚动偏移/子 widget 状态）跨路由
+            // 共享，需求页草稿文本曾因此泄漏到实验页画布。
+            let mut sa =
+                egui::ScrollArea::vertical().id_salt(format!("canvas-scroll-{route:?}"));
             if restore {
                 sa = sa.vertical_scroll_offset(self.session.scroll_of(route));
             }
@@ -1450,6 +1457,25 @@ impl ResearchApp {
                             for (is_user, text, card) in &msgs {
                                 self.render_message(ui, *is_user, text, card.clone());
                             }
+                            // issue #41：流式预览气泡（message/delta 累积快照，
+                            // 标记「生成中」）；终态后由持久化回复替换（RD-018）。
+                            // 需求草稿（S23）为结构化结果一次性入框，不逐字预览。
+                            let preview = self
+                                .agent_task
+                                .as_ref()
+                                .filter(|t| {
+                                    t.kind != AgentTaskKind::RequirementDraft
+                                        && !t.preview.is_empty()
+                                })
+                                .map(|t| t.preview.clone());
+                            if let Some(p) = preview {
+                                self.render_message(
+                                    ui,
+                                    false,
+                                    &format!("{p}\n\n（生成中 · 等待终态落定）"),
+                                    None,
+                                );
+                            }
                             if self.chat_pin {
                                 ui.scroll_to_cursor(Some(Align::BOTTOM));
                             }
@@ -1470,22 +1496,31 @@ impl ResearchApp {
             let coord = self
                 .active_task()
                 .map(|(id, label, key)| (id.to_string(), label, key));
-            let agent_label = self
-                .agent_task
-                .as_ref()
-                .map(|t| format!("{} · {}s", t.label, t.started.elapsed().as_secs()));
+            let agent_label = self.agent_task.as_ref().map(|t| {
+                agent_task_label(
+                    &t.label,
+                    t.started.elapsed().as_secs(),
+                    t.preview.chars().count(),
+                )
+            });
             let swarm_label = self.swarm_task.as_ref().map(|t| {
                 let done = t
                     .results
                     .iter()
                     .filter(|r| r.state == crate::swarm_bridge::SubtaskState::Succeeded)
                     .count();
-                format!(
+                let detail = crate::swarm_bridge::swarm_progress_detail(&t.results);
+                let mut line = format!(
                     "多 Agent 分析 R{} · {}/3 · {}s",
                     t.req_id,
                     done,
                     t.started.elapsed().as_secs()
-                )
+                );
+                if !detail.is_empty() {
+                    line.push_str(" · ");
+                    line.push_str(&detail);
+                }
+                line
             });
             let retry = self
                 .agent_retry
@@ -2306,7 +2341,12 @@ impl ResearchApp {
                 ui.add_space(7.0);
                 let mut text = self.ai_req_text.clone();
                 if ui
-                    .add(area_edit(&mut text).desired_rows(4).desired_width(ui.available_width()))
+                    .add(
+                        area_edit(&mut text)
+                            .id_salt("req/draft-text")
+                            .desired_rows(4)
+                            .desired_width(ui.available_width()),
+                    )
                     .changed()
                 {
                     self.ai_req_text = text;
@@ -2316,7 +2356,12 @@ impl ResearchApp {
                 ui.add_space(7.0);
                 let mut acc = self.ai_req_acceptance.clone();
                 if ui
-                    .add(area_edit(&mut acc).desired_rows(3).desired_width(ui.available_width()))
+                    .add(
+                        area_edit(&mut acc)
+                            .id_salt("req/acceptance")
+                            .desired_rows(3)
+                            .desired_width(ui.available_width()),
+                    )
                     .changed()
                 {
                     self.ai_req_acceptance = acc;
@@ -2708,6 +2753,7 @@ impl ResearchApp {
                         }
                         let mut src = self.ai_code_source.clone();
                         let te = egui::TextEdit::multiline(&mut src)
+                            .id_salt("develop/code-editor")
                             .desired_rows(16)
                             .desired_width(ui.available_width())
                             .font(FontId::monospace(theme::fs(11.0)))
@@ -4190,6 +4236,7 @@ impl ResearchApp {
             if ui
                 .add(
                     egui::TextEdit::multiline(&mut holdings)
+                        .id_salt("plan/holdings-json")
                         .desired_rows(3)
                         .desired_width(ui.available_width())
                         .font(FontId::monospace(theme::fs(12.0))),
@@ -4332,6 +4379,7 @@ impl ResearchApp {
                 let mut edited = self.import_form.paths.join("\n");
                 let response = ui.add(
                     egui::TextEdit::multiline(&mut edited)
+                        .id_salt("experiments/import-paths")
                         .desired_rows(3)
                         .desired_width(ui.available_width()),
                 );
@@ -4539,6 +4587,7 @@ impl ResearchApp {
                 if ui
                     .add(
                         egui::TextEdit::multiline(&mut rule)
+                            .id_salt("pool/rule-json")
                             .desired_rows(4)
                             .desired_width(ui.available_width())
                             .font(FontId::monospace(theme::fs(12.0))),
@@ -5640,6 +5689,7 @@ impl ResearchApp {
             label: label.to_string(),
             kind,
             started: std::time::Instant::now(),
+            preview: String::new(),
         });
         self.record(&format!("{label} · 已启动（真实 LLM）"));
     }
@@ -5666,9 +5716,15 @@ impl ResearchApp {
         let Some(worker) = &self.agent_worker else {
             return;
         };
+        // issue #41：先收割流式预览快照（快照语义直接替换预览缓冲；
+        // 仅当前任务生效，过期任务快照丢弃），再处理终态响应。
+        let deltas = worker.try_recv_deltas();
         let mut responses = Vec::new();
         while let Some(resp) = worker.try_recv() {
             responses.push(resp);
+        }
+        for d in deltas {
+            self.apply_stream_snapshot(d.id, d.preview);
         }
         for resp in responses {
             // LLM 配置操作结果（模型设置浮层）优先按 pending id 消费
@@ -5725,6 +5781,21 @@ impl ResearchApp {
                 }
             }
         }
+    }
+
+    /// 应用一条流式预览快照（issue #41，UT-S22-04）：仅当前任务生效
+    /// （过期任务快照丢弃），快照语义直接替换预览缓冲；有新预览即 pin
+    /// 到底部跟随增量增长。返回是否实际更新。
+    fn apply_stream_snapshot(&mut self, id: u64, preview: String) -> bool {
+        if self.agent_task.as_ref().map(|t| t.id) != Some(id) {
+            return false;
+        }
+        if let Some(t) = self.agent_task.as_mut() {
+            t.preview = preview;
+            self.chat_pin = true;
+            return true;
+        }
+        false
     }
 
     /// 任务成功：把模型回复落到对应产物（设计说明 / 代码编辑器）。
@@ -6811,6 +6882,16 @@ fn field(text: impl Into<String>) -> egui::RichText {
     lbl(text, 12.0, theme::TEXT2)
 }
 
+/// 对话任务条标签（issue #41 进度细化）：流式期间显示「接收中」与已收
+/// 增量字数；无增量时维持原「label · Ns」口径。纯函数，UT-S22-05 承载。
+fn agent_task_label(label: &str, secs: u64, preview_chars: usize) -> String {
+    if preview_chars > 0 {
+        format!("{label} · 接收中 · {secs}s · 已收 {preview_chars} 字")
+    } else {
+        format!("{label} · {secs}s")
+    }
+}
+
 fn field_label(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(field(text));
     ui.add_space(7.0);
@@ -7596,6 +7677,7 @@ mod tests {
                     label: "生成策略设计".into(),
                     kind: AgentTaskKind::Design,
                     started: std::time::Instant::now(),
+                    preview: String::new(),
                 });
                 let mut frames = Vec::new();
                 for time in [0.0, 0.2] {
@@ -7738,6 +7820,7 @@ mod tests {
                 label: "生成需求草稿".into(),
                 kind: AgentTaskKind::RequirementDraft,
                 started: std::time::Instant::now(),
+                preview: String::new(),
             };
             app.apply_agent_result(
                 &task,
@@ -7850,6 +7933,117 @@ mod tests {
             assert!(st.form_base_url.is_empty() && st.form_api_key.is_empty());
             assert!(st.form_api_key_env.is_empty() && st.form_api_type.is_empty());
             assert!(st.set_primary, "复位后 set_primary 回默认 true");
+        });
+    }
+
+    /// UT-S22-04（fix-issues-40-41-20261013 / issue #41）：流式预览状态机——
+    /// delta 快照更新预览并 pin 底部；快照语义直接替换（worker 端已归集）；
+    /// 过期任务快照丢弃；turn 终态后以持久化回复落定（RD-018：不拼接 delta）。
+    #[test]
+    fn ut_s22_04_streaming_preview_state_machine() {
+        nautilus_research_testkit::case("UT-S22-04", || {
+            let mut app = ResearchApp::new(false);
+            app.chat_pin = false;
+            app.agent_task = Some(AgentTask {
+                id: 7,
+                label: "对话回复".into(),
+                kind: AgentTaskKind::ChatFree,
+                started: std::time::Instant::now(),
+                preview: String::new(),
+            });
+            // delta 快照到达 → 预览更新并 pin 底部
+            assert!(app.apply_stream_snapshot(7, "你好".into()));
+            assert_eq!(app.agent_task.as_ref().expect("任务在").preview, "你好");
+            assert!(app.chat_pin, "流式期间应 pin 到底部");
+            // 快照语义：直接替换（增量增长由 worker 侧归集保证）
+            assert!(app.apply_stream_snapshot(7, "你好，世界".into()));
+            assert_eq!(
+                app.agent_task.as_ref().expect("任务在").preview,
+                "你好，世界"
+            );
+            // 过期任务快照（异任务 ID）丢弃
+            assert!(!app.apply_stream_snapshot(99, "过期快照".into()));
+            assert_eq!(
+                app.agent_task.as_ref().expect("任务在").preview,
+                "你好，世界"
+            );
+            // 无 delta（全程无预览）时终态一次性回显（诚实降级路径）
+            // ——预览缓冲保持为空，终态仍正常落定（下方一并覆盖）。
+
+            // 终态：持久化回复替换预览落定（不拼接 delta 预览）
+            let task = app.agent_task.clone().expect("任务在");
+            let before = app.workspace.current().messages.len();
+            app.apply_agent_result(
+                &task,
+                crate::agent_bridge::WorkerTurn {
+                    turn_id: "t1".into(),
+                    reply: Some("持久化完整回复".into()),
+                    tokens_in: None,
+                    tokens_out: None,
+                    tool_trace: Vec::new(),
+                },
+            );
+            app.agent_task = None; // poll_agent_task 终态语义：任务随响应清除
+            let msgs = &app.workspace.current().messages;
+            assert_eq!(msgs.len(), before + 1, "终态应新增一条助手消息");
+            let last = msgs.last().expect("消息在");
+            assert_eq!(
+                last.text, "持久化完整回复",
+                "终态文本必须等于持久化产物，不得与预览拼接"
+            );
+            assert!(
+                !last.text.contains("你好，世界"),
+                "预览文本不得混入终态消息"
+            );
+            assert!(app.agent_task.is_none(), "终态后预览随任务清除");
+        });
+    }
+
+    /// UT-S22-05（fix-issues-40-41-20261013 / issue #41）：任务条进度细化
+    /// 纯函数——流式中对话任务条含「接收中」与已收字数；多 Agent 每路子
+    /// 任务状态明细（含失败即时可见）。
+    #[test]
+    fn ut_s22_05_taskbar_progress_detail() {
+        nautilus_research_testkit::case("UT-S22-05", || {
+            // 对话任务条：无增量维持原口径；流式中含「接收中 · Ns · 已收 M 字」
+            assert_eq!(agent_task_label("对话回复", 3, 0), "对话回复 · 3s");
+            assert_eq!(
+                agent_task_label("对话回复", 3, 12),
+                "对话回复 · 接收中 · 3s · 已收 12 字"
+            );
+
+            // 多 Agent 每路状态明细
+            use crate::swarm_bridge::{
+                OutputSource, SubtaskResult, SubtaskState, swarm_progress_detail,
+            };
+            let mk = |id: &str, state: SubtaskState| SubtaskResult {
+                contract_id: id.into(),
+                state,
+                output: None,
+                output_source: OutputSource::Envelope,
+                error: None,
+                turn_id: String::new(),
+                final_prompt: String::new(),
+                tool_trace: Vec::new(),
+            };
+            let results = vec![
+                mk("feasibility", SubtaskState::Succeeded),
+                mk("counterexample", SubtaskState::Running),
+                mk("constraint", SubtaskState::Queued),
+            ];
+            let detail = swarm_progress_detail(&results);
+            assert!(detail.contains("可行性:已完成"), "实际：{detail}");
+            assert!(detail.contains("反例:执行中"), "实际：{detail}");
+            assert!(detail.contains("约束:排队"), "实际：{detail}");
+
+            // 单路失败即时可见（不等全批完成）
+            let mut failed = results.clone();
+            failed[1].state = SubtaskState::Failed;
+            let detail2 = swarm_progress_detail(&failed);
+            assert!(detail2.contains("反例:失败"), "实际：{detail2}");
+
+            // 空结果集：明细为空（任务条仅显示 0/3 计数）
+            assert!(swarm_progress_detail(&[]).is_empty());
         });
     }
 }

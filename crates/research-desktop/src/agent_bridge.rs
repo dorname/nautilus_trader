@@ -400,6 +400,15 @@ impl AgentBridge {
             .unwrap_or_default()
     }
 
+    /// 收割 message/delta 增量帧（issue #41）：透传 OUP 客户端积压，
+    /// 供 run_turn 实时推送 GUI 预览（仅展示，不落入持久化产物）。
+    pub fn take_deltas(&mut self) -> Vec<crate::oup::TurnDelta> {
+        self.client
+            .as_mut()
+            .map(OupClient::take_deltas)
+            .unwrap_or_default()
+    }
+
     /// 提交对话并等待完成（真实 LLM 调用）。
     ///
     /// 返回 (turn_id, TurnOutcome)。阻塞直到 turn/completed 或超时；
@@ -574,6 +583,18 @@ pub struct WorkerResponse {
     pub result: Result<WorkerResult, String>,
 }
 
+/// 流式预览快照（issue #41）：worker 在 turn 执行期间按任务 ID 推送
+/// 当前 turn 的 message/delta 累积文本（快照语义，GUI 直接替换预览缓冲，
+/// 不依赖帧序）。仅用于展示；终态文本仍以 WorkerTurn.reply
+/// （assistant_persisted 持久化产物）为准（RD-018）。
+#[derive(Debug, Clone)]
+pub struct WorkerDelta {
+    /// 提交时分配的任务序号（过期快照由调用方比对丢弃）。
+    pub id: u64,
+    /// 当前 turn 的 delta 累积预览文本（快照）。
+    pub preview: String,
+}
+
 /// Worker 请求。
 #[derive(Debug)]
 enum WorkerRequest {
@@ -593,6 +614,8 @@ pub struct AgentWorker {
     handle: Option<std::thread::JoinHandle<()>>,
     /// 构造时绑定的会话 ID（含项目 ID；项目切换校验用，issue #27）。
     session_id: String,
+    /// 流式预览快照接收端（issue #41；GUI 帧循环排空）。
+    delta_rx: std::sync::mpsc::Receiver<WorkerDelta>,
 }
 
 impl AgentWorker {
@@ -601,12 +624,14 @@ impl AgentWorker {
         let session_id = config.session_id.clone();
         let (req_tx, req_rx) = std::sync::mpsc::channel::<WorkerRequest>();
         let (resp_tx, resp_rx) = std::sync::mpsc::channel::<WorkerResponse>();
-        let handle = std::thread::spawn(move || Self::run(config, req_rx, resp_tx));
+        let (delta_tx, delta_rx) = std::sync::mpsc::channel::<WorkerDelta>();
+        let handle = std::thread::spawn(move || Self::run(config, req_rx, resp_tx, delta_tx));
         Self {
             tx: Some(req_tx),
             rx: resp_rx,
             handle: Some(handle),
             session_id,
+            delta_rx,
         }
     }
 
@@ -615,10 +640,20 @@ impl AgentWorker {
         &self.session_id
     }
 
+    /// 非阻塞排空流式预览快照（issue #41；GUI 帧循环调用）。
+    pub fn try_recv_deltas(&self) -> Vec<WorkerDelta> {
+        let mut out = Vec::new();
+        while let Ok(d) = self.delta_rx.try_recv() {
+            out.push(d);
+        }
+        out
+    }
+
     fn run(
         config: AgentSessionConfig,
         req_rx: std::sync::mpsc::Receiver<WorkerRequest>,
         resp_tx: std::sync::mpsc::Sender<WorkerResponse>,
+        delta_tx: std::sync::mpsc::Sender<WorkerDelta>,
     ) {
         let mut bridge: Option<AgentBridge> = None;
         while let Ok(req) = req_rx.recv() {
@@ -633,7 +668,7 @@ impl AgentWorker {
                         continue;
                     }
                     let b = bridge.as_mut().expect("bridge 已在上方建立");
-                    let result = Self::run_turn(b, id, &prompt, &req_rx, &resp_tx)
+                    let result = Self::run_turn(b, id, &prompt, &req_rx, &resp_tx, &delta_tx)
                         .map(WorkerResult::Turn);
                     if resp_tx.send(WorkerResponse { id, result }).is_err() {
                         return;
@@ -696,18 +731,22 @@ impl AgentWorker {
 
     /// 执行单个 turn：非阻塞提交后轮询终态；轮询间隙处理 Cancel
     /// （真实 turn/interrupt）与忙期新 Submit（回绝，保持单活跃口径）。
+    /// issue #41：轮询间隙收割 message/delta，按本 turn 归集后以快照
+    /// 推送 GUI 预览（仅展示；终态仍以 assistant_persisted 为准）。
     fn run_turn(
         b: &mut AgentBridge,
         id: u64,
         prompt: &str,
         req_rx: &std::sync::mpsc::Receiver<WorkerRequest>,
         resp_tx: &std::sync::mpsc::Sender<WorkerResponse>,
+        delta_tx: &std::sync::mpsc::Sender<WorkerDelta>,
     ) -> Result<WorkerTurn, String> {
         let turn_id = b.submit_prompt(prompt).map_err(|e| e.to_string())?;
         let deadline = std::time::Instant::now()
             + std::time::Duration::from_secs(DEFAULT_TURN_TIMEOUT_SECS);
         let mut interrupted = false;
         let mut tool_trace = Vec::new();
+        let mut preview = crate::oup::DeltaPreview::new(&turn_id);
         loop {
             while let Ok(extra) = req_rx.try_recv() {
                 match extra {
@@ -751,6 +790,17 @@ impl AgentWorker {
                 Ok(None) => {
                     // embed-octos-runtime：turn 进行中间隙收割工具事件
                     tool_trace.extend(b.take_tool_events());
+                    // issue #41：收割 delta 并按本 turn 归集，有新内容即推快照
+                    let mut grew = false;
+                    for d in b.take_deltas() {
+                        grew |= preview.push(&d);
+                    }
+                    if grew {
+                        let _ = delta_tx.send(WorkerDelta {
+                            id,
+                            preview: preview.text().to_string(),
+                        });
+                    }
                 }
                 Err(e) => return Err(e.to_string()),
             }
