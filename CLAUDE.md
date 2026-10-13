@@ -130,6 +130,21 @@ Step 5 分批执行提示词（可直接复用）：
 cd <项目根目录> && openlogos <command>
 ```
 
+## ⚠️ CPU 保护强制约束（测试/构建，最高优先级）
+
+运行任何 `cargo test|build|run|check|clippy|bench|doc` 命令必须携带 CPU 保护，否则会被 PreToolUse hook（guard-check Step 0）直接拦截，**无论是否有活跃变更提案**：
+
+1. `nice -n 19` 降优先级前缀
+2. 显式并发上限：`CARGO_BUILD_JOBS=2` 或 `-j 2`（**不得高于 2**）
+3. `cargo test` 另需串行测试线程：`RUST_TEST_THREADS=1` 或 `-- --test-threads=1`
+
+合规示例：
+```bash
+nice -n 19 cargo test -j 2 -p nautilus-research-desktop --offline -- --test-threads=1
+```
+
+`openlogos verify` 的 `pre_run_command`（logos/logos.config.json）已内置同等约束，是验收的固定跑法，不得绕过。
+
 ## Conventions
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案
