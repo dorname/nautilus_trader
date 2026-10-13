@@ -160,3 +160,4 @@
 {"duration_ms":251056,"id":"ST-S17-18","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-1161754-1791879049112199302","scenario":"S17","status":"pass","timestamp":"2026-10-13T08:14:53Z"}
 {"duration_ms":20014,"id":"ST-S18-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-1161754-1791879049112199302","scenario":"S18","status":"pass","timestamp":"2026-10-13T08:15:13Z"}
 {"duration_ms":11,"id":"UT-S17-17","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-1161754-1791879049112199302","scenario":"S17","status":"pass","timestamp":"2026-10-13T08:15:13Z"}
+{"duration_ms":378,"id":"UT-GUI-01","platform":"linux","proposal":"astock-research-desktop","run_id":"pid-63566-1791896341877955534","scenario":"UNKNOWN","status":"pass","timestamp":"2026-10-13T12:59:01Z"}

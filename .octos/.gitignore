@@ -1,0 +1,4 @@
+# Ignore task state and database files
+tasks/
+sessions/
+*.redb
