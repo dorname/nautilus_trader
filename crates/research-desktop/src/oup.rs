@@ -187,6 +187,27 @@ impl From<serde_json::Error> for OupError {
     }
 }
 
+/// issue #38：路径绝对化（fix-issues-38-39-20261013）。
+/// octos 子进程以 `current_dir(workspace_root)` 启动，相对路径会在子进程
+/// 内二次解析错位（实证：嵌套空 profile store → session/open -32602）。
+/// 目录不存在先创建再 canonicalize；canonicalize 失败回退 cwd 拼接
+/// （仍保证绝对）。对 workspace_root 等已存在目录同样适用。
+pub(crate) fn absolutize_path(p: &str) -> String {
+    let path = std::path::Path::new(p);
+    if !path.is_absolute() {
+        let _ = std::fs::create_dir_all(path);
+    }
+    if let Ok(c) = path.canonicalize() {
+        return c.to_string_lossy().into_owned();
+    }
+    if path.is_absolute() {
+        return p.to_string();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path).to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string())
+}
+
 impl OupClient {
     /// 启动 octos serve 子进程并建立 stdio 通道。
     pub fn spawn(config: &OupConfig) -> OupResult<Self> {
@@ -203,6 +224,11 @@ impl OupClient {
         }
         let mut config = config.clone();
         config.octos_bin = resolved.bin;
+        // issue #38：传参前一律绝对化——相对路径会随 current_dir 在子进程
+        // 内二次解析（profile store 错位实证见 issue #38 复现矩阵）
+        config.data_dir = absolutize_path(&config.data_dir);
+        config.instance_dir = absolutize_path(&config.instance_dir);
+        config.workspace_root = absolutize_path(&config.workspace_root);
         // 确保目录存在
         std::fs::create_dir_all(&config.data_dir)?;
         std::fs::create_dir_all(&config.instance_dir)?;

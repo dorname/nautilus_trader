@@ -67,6 +67,15 @@ impl AgentSessionConfig {
         project_id: &str,
         profile_src: Option<&std::path::Path>,
     ) -> Self {
+        // issue #38（fix-issues-38-39-20261013）：base_dir 一律绝对化——
+        // 相对路径经 OupClient::spawn 的 current_dir 会在子进程内二次解析
+        // 为嵌套路径（profile store 错位 → session/open -32602）。
+        // spawn 侧另有防御性绝对化；此处保证配置本身即绝对路径，
+        // 使 profile 复制目标与子进程读取视图一致（UT-S17-32）。
+        let base_dir = std::path::PathBuf::from(crate::oup::absolutize_path(
+            &base_dir.to_string_lossy(),
+        ));
+        let base_dir = base_dir.as_path();
         let data_dir = base_dir.join("data");
         let instance_dir = base_dir.join("instance");
         let profile_dst_dir = data_dir.join("profiles");
@@ -883,6 +892,49 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&copied).unwrap(), "{\"providers\":{\"x\":1}}");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// UT-S17-32（fix-issues-38-39-20261013 / issue #38）：相对路径 base_dir
+    /// 构造 → 配置各路径全部绝对化（canonicalize），profile 复制目标与
+    /// 配置 data_dir 视图一致——堵「测试全用绝对路径」的盲区。
+    #[test]
+    fn ut_s17_32_relative_base_dir_canonicalized() {
+        nautilus_research_testkit::case("UT-S17-32", || {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            // 相对路径（不改进程 cwd，避免并行测试竞态）：以 target/ 下唯一
+            // 相对目录模拟 desktop 默认 `research-workspace/octos-agent` 形态
+            let rel = format!("target/ut-s17-32-{}-{nanos}", std::process::id());
+            let rel_path = std::path::Path::new(&rel);
+            assert!(rel_path.is_relative(), "前提：输入为相对路径");
+
+            let cfg = AgentSessionConfig::desktop_with_profile(rel_path, "P1", None);
+            assert!(
+                std::path::Path::new(&cfg.oup.data_dir).is_absolute(),
+                "data_dir 应绝对化，实际：{}",
+                cfg.oup.data_dir
+            );
+            assert!(
+                std::path::Path::new(&cfg.oup.instance_dir).is_absolute(),
+                "instance_dir 应绝对化"
+            );
+            assert!(
+                std::path::Path::new(&cfg.oup.workspace_root).is_absolute(),
+                "workspace_root 应绝对化"
+            );
+            // 父子视图一致：配置 workspace_root 即 canonicalize 后的真实目录
+            let root = std::path::PathBuf::from(&cfg.oup.workspace_root);
+            assert!(root.is_dir(), "workspace_root 应已创建");
+            assert_eq!(
+                root.canonicalize().expect("canonicalize"),
+                std::path::PathBuf::from(&rel).canonicalize().expect("canonicalize rel"),
+                "配置路径与相对输入指向同一目录"
+            );
+
+            let _ = std::fs::remove_dir_all(&root);
+        });
     }
 
     /// UT-agent-09：无 profile 来源时配置仍可用（连接阶段才报诚实错误）。

@@ -11,14 +11,14 @@
 ## [code] 代码实现
 
 ### ① #38 相对路径修复
-- [ ] `agent_bridge.rs`：`desktop_with_profile` 对 base_dir canonicalize（建目录后解析绝对路径）
-- [ ] `oup.rs`：spawn 传参前对 data_dir/instance_dir/workspace_root 防御性 canonicalize
-- [ ] UT-S17-32：相对路径输入 → 配置各路径为绝对路径（reporter 入账）
+- [x] `agent_bridge.rs`：`desktop_with_profile` 对 base_dir canonicalize（建目录后解析绝对路径）
+- [x] `oup.rs`：spawn 传参前对 data_dir/instance_dir/workspace_root 防御性 canonicalize
+- [x] UT-S17-32：相对路径输入 → 配置各路径为绝对路径（reporter 入账）
 
 ### ② #39 需求草稿 LLM 生成
-- [ ] `app.rs`：DraftRequirement 意图改道真实 LLM（AgentTaskKind::RequirementDraft + 草稿 prompt + 结果落草稿框；busy/失败诚实降级预设行为）
-- [ ] 草稿解析纯函数（非空/结构校验）+ UT-S23-01（reporter 入账）
-- [ ] ST-S23-01：真实 LLM 从一句自然语言生成需求草稿（reporter 入账）
+- [x] `app.rs`：DraftRequirement 意图改道真实 LLM（AgentTaskKind::RequirementDraft + 草稿 prompt + 结果落草稿框；busy/失败诚实降级预设行为）
+- [x] 草稿解析纯函数（非空/结构校验）+ UT-S23-01（reporter 入账）
+- [x] ST-S23-01：真实 LLM 从一句自然语言生成需求草稿（reporter 入账；首跑 420s 超时边界，重跑 402s 通过）
 
 ### 回归
-- [ ] lib 全量 + gui_walkthrough + s22_online_chat + wire_real_llm（CPU 红线 CARGO_BUILD_JOBS=2 RUST_TEST_THREADS=1）
+- [x] lib 全量 54/54 + gui_walkthrough 6/6 + s22_online_chat 2/2 + wire_real_llm 4/4（CPU 红线达标；ST-S22-02 遇 z.ai 端 HTTP 500 抖动重跑通过）

@@ -182,6 +182,22 @@ pub fn chat_prompt(
     )
 }
 
+/// 需求草稿 prompt 模板（S23 / issue #39）：从用户自然语言研究想法
+/// 隐式生成结构化需求草稿（草稿只入草稿框，版本确认由用户显式执行）。
+pub fn requirement_draft_prompt(project_name: &str, user_text: &str) -> String {
+    format!(
+        "你是量化研究桌面「AI 工作台」的中文助手。请把用户描述的研究想法整理成一份\
+         结构化研究需求草稿，用中文 Markdown 小节输出，包含：\n\
+         1. 研究目标（要验证的策略假设）\n\
+         2. 研究范围（市场/标的/数据频率与时间区间）\n\
+         3. 策略参数（名称与默认值）\n\
+         4. 验收标准（可判定的通过条件）\n\
+         5. 风险与边界说明\n\
+         只输出草稿正文，不要输出额外解释；不确定的字段给出合理默认并标注「待确认」。\
+         不要编造回测数值。\n\n当前项目：{project_name}\n用户消息：{user_text}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

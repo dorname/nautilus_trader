@@ -95,6 +95,9 @@ enum AgentTaskKind {
     ExperimentParams,
     /// 自由对话（S22）：未命中确定性意图的问答经真实 LLM turn 回复。
     ChatFree,
+    /// 需求草稿生成（S23 / issue #39）：DraftRequirement 意图由真实 LLM
+    /// 隐式生成结构化草稿，落入草稿框等用户编辑确认。
+    RequirementDraft,
 }
 
 /// 进行中的真实 LLM 任务（AgentWorker 后台线程执行，帧循环轮询结果）。
@@ -355,6 +358,8 @@ pub struct ResearchApp {
     model_settings: ModelSettingsState,
     /// 进行中的 LLM 配置操作（id + 类别；id 与对话任务共用 agent_task_seq）。
     llm_op_pending: Option<(u64, LlmOpTag)>,
+    /// 需求草稿派发暂存的用户原文（S23：失败降级时入草稿框，不丢输入）。
+    draft_pending_text: Option<String>,
     /// 多 Agent 分析后台 worker（惰性启动；确认需求后派发 S17 三契约）。
     swarm_worker: Option<crate::swarm_bridge::SwarmWorker>,
     /// 进行中的多 Agent 分析派发（关联需求版本，三路状态卡数据源）。
@@ -472,6 +477,7 @@ impl ResearchApp {
             chat_online: false,
             model_settings: ModelSettingsState::fresh(),
             llm_op_pending: None,
+            draft_pending_text: None,
             swarm_worker: None,
             swarm_task: None,
             swarm_task_seq: 0,
@@ -5327,7 +5333,7 @@ impl ResearchApp {
             });
         }
         match intent {
-            ai::Intent::DraftRequirement => self.apply_requirement_draft(&text),
+            ai::Intent::DraftRequirement => self.do_requirement_draft_llm(&text),
             ai::Intent::GenerateDesign => {
                 self.do_generate_design_llm();
             }
@@ -5359,6 +5365,35 @@ impl ResearchApp {
     fn do_chat_free(&mut self, text: &str) {
         let prompt = self.chat_free_prompt(text);
         self.start_agent_task("对话回复", AgentTaskKind::ChatFree, prompt);
+    }
+
+    /// 需求草稿派发（S23 / issue #39）：以用户消息隐式生成结构化草稿。
+    /// 芯片默认文案（无实质内容）保持本地行为；busy 时不派发。
+    fn do_requirement_draft_llm(&mut self, text: &str) {
+        if matches!(text.trim(), "生成需求草稿" | "帮我生成需求") {
+            self.apply_requirement_draft(text);
+            return;
+        }
+        if self.agent_task.is_some() {
+            self.ai_notice = Some("当前任务正在执行，请等待或取消".into());
+            return;
+        }
+        let project = self.workspace.current().name.clone();
+        let prompt = ai::requirement_draft_prompt(&project, text);
+        // 原文暂存：失败降级时入草稿框（不丢用户输入）
+        self.draft_pending_text = Some(text.to_string());
+        self.start_agent_task("生成需求草稿", AgentTaskKind::RequirementDraft, prompt);
+    }
+
+    /// UT-S23-01 锚点：草稿结果归约（纯函数）——非空白草稿 Ok；空白判失败
+    /// （调用方走降级：原文入草稿框）。
+    fn normalize_draft(reply: &str) -> Option<String> {
+        let t = reply.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
     }
 
     /// 自由对话 prompt：项目名 + 当前需求/设计摘要 + 用户消息；
@@ -5666,6 +5701,20 @@ impl ResearchApp {
                             format!("{fallback}\n\n（本次提问未能接入模型：{e}；以上为离线预设回复）"),
                             None,
                         );
+                    } else if task.kind == AgentTaskKind::RequirementDraft {
+                        // S23 诚实降级：octos 不可用/派发失败 → 原文入草稿框（S22 前行为）
+                        let raw = self.draft_pending_text.take().unwrap_or_default();
+                        if !raw.is_empty() {
+                            self.ai_req_text = raw;
+                        }
+                        self.record(&format!("{} · 失败（{e}），回退原文入草稿框", task.label));
+                        self.tell(
+                            format!("未能接入模型（{e}）。已把你的原文放入需求草稿框，可直接编辑后确认需求版本。"),
+                            Some(Route::Requirements),
+                        );
+                        let from = self.session.route;
+                        self.session
+                            .navigate(Route::Requirements, self.session.scroll_of(from));
                     } else {
                         self.tell(
                             format!("{}失败：{e}。没有提交新产物，可以重试。", task.label),
@@ -5682,6 +5731,19 @@ impl ResearchApp {
     fn apply_agent_result(&mut self, task: &AgentTask, turn: crate::agent_bridge::WorkerTurn) {
         let reply = turn.reply.unwrap_or_default();
         if reply.trim().is_empty() {
+            // S23：草稿任务空回复走降级——原文入草稿框（不丢用户输入）
+            if task.kind == AgentTaskKind::RequirementDraft {
+                let raw = self.draft_pending_text.take().unwrap_or_default();
+                if !raw.is_empty() {
+                    self.ai_req_text = raw;
+                }
+                self.tell(
+                    "模型未返回有效草稿。已把你的原文放入需求草稿框，可直接编辑后确认需求版本。",
+                    Some(Route::Requirements),
+                );
+                self.record("生成需求草稿 · 空回复降级");
+                return;
+            }
             self.tell(
                 format!("{}失败：模型未返回文本。没有提交新产物，可以重试。", task.label),
                 None,
@@ -5759,6 +5821,25 @@ impl ResearchApp {
                 // S22：回复直接入消息流，不跳转路由；确认在线态（双态标注）。
                 self.chat_online = true;
                 self.tell(reply, None);
+            }
+            AgentTaskKind::RequirementDraft => {
+                // S23 / issue #39：草稿入草稿框等用户编辑确认（不自动确认版本）；
+                // 草稿内容只进工作区持久化，不进运行记录（record 只记 label）。
+                self.draft_pending_text = None;
+                if let Some(draft) = Self::normalize_draft(&reply) {
+                    self.ai_req_text = draft;
+                    self.tell_card(
+                        format!(
+                            "需求草稿已由模型生成{tokens}并填入草稿框。请检查研究目标、范围、参数与验收标准，编辑后确认需求版本。"
+                        ),
+                        Some(Route::Requirements),
+                        Some("研究需求草稿"),
+                        Some("可直接编辑与确认"),
+                    );
+                    let from = self.session.route;
+                    self.session
+                        .navigate(Route::Requirements, self.session.scroll_of(from));
+                }
             }
         }
         self.record(&format!("{} · 完成{tokens}", task.label));
@@ -7634,8 +7715,69 @@ mod tests {
         assert_eq!(strip_code_fence(open), "x = 1");
     }
 
-    /// UT-S22-03（online-chat-llm-config-20261012）：模型设置浮层表单校验与脱敏——
-    /// base_url 空 / api_type 非枚举 / family 未选时保存被阻断并给中文提示；
+    /// UT-S23-01（fix-issues-38-39-20261013 / issue #39）：需求草稿结果归约——
+    /// 非空草稿入框并提示编辑确认；空白回复判失败走降级（原文入框）；
+    /// 草稿内容不进入运行记录。
+    #[test]
+    fn ut_s23_01_requirement_draft_reduce() {
+        nautilus_research_testkit::case("UT-S23-01", || {
+            // 纯函数：非空 Ok（trim），空白判失败
+            assert_eq!(
+                ResearchApp::normalize_draft("  草稿正文  "),
+                Some("草稿正文".to_string())
+            );
+            assert_eq!(ResearchApp::normalize_draft(""), None);
+            assert_eq!(ResearchApp::normalize_draft("  \n\t "), None);
+
+            let draft_text = "## 研究目标\n验证双均线金叉死叉假设\n## 验收标准\n胜率待确认";
+            // 成功路径：草稿入 ai_req_text，运行记录不含草稿内容
+            let mut app = ResearchApp::new(false);
+            app.draft_pending_text = Some("原始用户输入".into());
+            let task = AgentTask {
+                id: 1,
+                label: "生成需求草稿".into(),
+                kind: AgentTaskKind::RequirementDraft,
+                started: std::time::Instant::now(),
+            };
+            app.apply_agent_result(
+                &task,
+                crate::agent_bridge::WorkerTurn {
+                    turn_id: "t1".into(),
+                    reply: Some(draft_text.to_string()),
+                    tokens_in: None,
+                    tokens_out: None,
+                    tool_trace: Vec::new(),
+                },
+            );
+            assert_eq!(app.ai_req_text, draft_text, "草稿应入草稿框");
+            assert!(app.draft_pending_text.is_none(), "暂存原文应清空");
+            let logs = app.logs.join("\n");
+            assert!(
+                !logs.contains("双均线金叉死叉"),
+                "运行记录不得含草稿内容，实际：{logs}"
+            );
+            assert!(logs.contains("生成需求草稿"), "运行记录应含任务 label");
+
+            // 空回复降级：原文入草稿框
+            let mut app2 = ResearchApp::new(false);
+            app2.draft_pending_text = Some("我的研究想法原文".into());
+            app2.apply_agent_result(
+                &task,
+                crate::agent_bridge::WorkerTurn {
+                    turn_id: "t2".into(),
+                    reply: Some("   ".into()),
+                    tokens_in: None,
+                    tokens_out: None,
+                    tool_trace: Vec::new(),
+                },
+            );
+            assert_eq!(app2.ai_req_text, "我的研究想法原文", "空回复应降级原文入框");
+            assert!(app2.draft_pending_text.is_none());
+            assert!(app2.logs.join("\n").contains("空回复降级"));
+        });
+    }
+
+    /// UT-S22-03（online-chat-llm-config-20261012）：模型设置浮层表单校验与脱敏——    /// base_url 空 / api_type 非枚举 / family 未选时保存被阻断并给中文提示；
     /// api_key 不回显、不出现在运行记录与提示串；保存后浮层状态复位。
     #[test]
     fn ut_s22_03_model_settings_validation_and_masking() {
