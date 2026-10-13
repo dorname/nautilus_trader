@@ -10,7 +10,7 @@ tech_stack:
   test: cargo test + nautilus-research-testkit OpenLogos reporter（JSONL → logos/resources/verify/test-results.jsonl）
   python_bridge: python/tests/adapters/astock（通达信/TickFlow 数据子进程，后续批次）
 scenario_counter:
-  next_id: 23
+  next_id: 24
 modules:
 - id: core
   name: 核心功能
