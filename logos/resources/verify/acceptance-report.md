@@ -6,10 +6,10 @@
 
 | Metric | Value |
 |--------|-------|
-| Defined cases | 159 |
+| Defined cases | 165 |
 | Manual cases (excluded) | 18 |
-| Executed cases | 161 |
-| Passed | 157 |
+| Executed cases | 167 |
+| Passed | 163 |
 | Failed | 0 |
 | Skipped | 4 |
 | Uncovered | 0 |
