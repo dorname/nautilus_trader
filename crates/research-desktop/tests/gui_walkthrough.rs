@@ -58,7 +58,7 @@ fn render_enabled() -> bool {
 }
 
 /// 本文件全部测试函数名（计算计划跑数用，与下方 fn 声明保持同步）。
-const TEST_NAMES: [&str; 7] = [
+const TEST_NAMES: [&str; 8] = [
     "st_gui_journey_real_llm",
     "ut_gui_01_render_and_nav",
     "ut_gui_02_empty_state_gating",
@@ -66,6 +66,7 @@ const TEST_NAMES: [&str; 7] = [
     "ut_gui_04_narrow_viewport_slim_sidebar",
     "ut_s17_23_project_isolation",
     "ut_s15_13_route_canvas_isolation",
+    "ut_s15_14_chat_bubble_wrap",
 ];
 
 /// 计划运行的测试数：无过滤词 = 全量；有过滤词按 libtest 子串匹配计数
@@ -614,6 +615,97 @@ fn ut_s15_13_route_canvas_isolation() {
         assert!(
             !texts.iter().any(|t| t.contains(marker)),
             "往返后实验页仍不得残留需求草稿文本"
+        );
+        walk_finished();
+    });
+}
+
+/// UT-S15-14（fix-chat-bubble-wrap-20261014 / issue #40 跟进）：用户长消息
+/// 气泡排版回归——right_to_left 布局下 available_width() 起始约为 0 导致
+/// 换行失效，长消息单行向左越出对话栏压盖画布（issue #40 残留横带的真正
+/// 根因）。无头渲染注入草稿长度级用户消息，断言 galley 折行且不越界。
+#[test]
+fn ut_s15_14_chat_bubble_wrap() {
+    case("UT-S15-14", || {
+        use nautilus_research_desktop::layout::CHAT_W;
+        use nautilus_research_desktop::workspace::{ChatMessage, DRAFT_REQ_TEXT, Role};
+
+        let ctx = egui::Context::default();
+        let mut app = ResearchApp::new(false);
+        // 注入约 76 字用户消息（草稿默认文本，即 issue #40 截图横带内容）
+        app.workspace.projects[0].messages.push(ChatMessage {
+            role: Role::User,
+            text: DRAFT_REQ_TEXT.to_string(),
+        });
+        // 切实验页：画布空态不含草稿文本，marker 唯一来源是用户气泡——
+        // 同时复刻 issue #40 的事发路由
+        app.session.navigate(Route::Experiments, 0.0);
+
+        let win_w = 1440.0_f32;
+        let rail_left = win_w - CHAT_W;
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(win_w, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| app.render_root(ui));
+            shapes = std::mem::take(&mut full.shapes);
+            full.drop_without_applying_deltas();
+        }
+
+        let marker = "收盘后筛选流动性充足";
+        let bubble = shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) if ts.galley.text().contains(marker) => Some(ts),
+                _ => None,
+            })
+            .expect("应渲染用户长消息气泡");
+        // galley 边界：右对齐（halign=RIGHT）时 TextShape.pos 是右上角而非
+        // 左上角，须逐行 rect 平移后求并集得到真实文本边界
+        let rows_bounds = |ts: &egui::epaint::TextShape| {
+            ts.galley
+                .rows
+                .iter()
+                .map(|r| r.rect().translate(ts.pos.to_vec2()))
+                .reduce(|a, b| a.union(b))
+                .expect("galley 至少一行")
+        };
+        let bubble_rect = rows_bounds(bubble);
+        assert!(
+            bubble.galley.rows.len() > 1,
+            "长用户消息应折行为多行（实际 {} 行）",
+            bubble.galley.rows.len()
+        );
+        assert!(
+            bubble_rect.left() >= rail_left - 1.0,
+            "气泡左缘 {:.1} 越出对话栏左边界 {:.1}（压盖画布，issue #40 残留根因）",
+            bubble_rect.left(),
+            rail_left
+        );
+        assert!(
+            bubble_rect.right() <= win_w + 1.0,
+            "气泡右缘 {:.1} 越出窗口右缘",
+            bubble_rect.right()
+        );
+        // 「你」meta 标签与气泡同布局右对齐：标签右缘 = 气泡右缘 + 气泡内边距 13
+        let ni = shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Text(ts) if ts.galley.text() == "你" => Some(ts),
+                _ => None,
+            })
+            .expect("应渲染「你」meta 标签");
+        let ni_rect = rows_bounds(ni);
+        assert!(
+            (ni_rect.right() - (bubble_rect.right() + 13.0)).abs() <= 2.0,
+            "「你」标签右缘 {:.1} 应与气泡右缘 {:.1} 经内边距对齐",
+            ni_rect.right(),
+            bubble_rect.right()
         );
         walk_finished();
     });

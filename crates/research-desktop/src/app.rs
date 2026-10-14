@@ -1778,10 +1778,16 @@ impl ResearchApp {
     ) {
         ui.add_space(10.0);
         if is_user {
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            // issue #40 跟进（fix-chat-bubble-wrap-20261014）：right_to_left
+            // 布局下游标从右缘起步，起始 available_width() 约为 0，导致
+            // `.min(360.0)` 得到约 0、galley 换行失效，长用户消息单行向左
+            // 越出对话栏压盖画布。改用 top_down(Align::Max) 右对齐，换行宽度
+            // 显式取 min(360, 对话栏可用宽)（扣除气泡 inner_margin 13×2）。
+            ui.with_layout(Layout::top_down(Align::Max), |ui| {
                 ui.label(lbl("你", 10.0, theme::FAINT));
             });
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            let bubble_text_w = (ui.available_width().min(360.0) - 26.0).max(60.0);
+            ui.with_layout(Layout::top_down(Align::Max), |ui| {
                 Frame::NONE
                     .fill(theme::GLASS_SOFT)
                     .corner_radius(CornerRadius {
@@ -1793,7 +1799,7 @@ impl ResearchApp {
                     .stroke(Stroke::new(1.0, theme::BORDER))
                     .inner_margin(Margin::symmetric(13, 10))
                     .show(ui, |ui| {
-                        ui.set_max_width(ui.available_width().min(360.0));
+                        ui.set_max_width(bubble_text_w);
                         ui.label(lbl(text, 12.0, theme::TEXT2));
                     });
             });
