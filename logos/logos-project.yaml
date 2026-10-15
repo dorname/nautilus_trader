@@ -10,7 +10,7 @@ tech_stack:
   test: cargo test + nautilus-research-testkit OpenLogos reporter（JSONL → logos/resources/verify/test-results.jsonl）
   python_bridge: python/tests/adapters/astock（通达信/TickFlow 数据子进程，后续批次）
 scenario_counter:
-  next_id: 24
+  next_id: 25
 modules:
 - id: core
   name: 核心功能
@@ -128,6 +128,8 @@ resource_index:
   desc: 历史线框（已由 core-05 统一工作台取代，RD-002 降级）；保留为历史设计参考，不作验收依据
 - path: logos/resources/prd/3-technical-plan/1-architecture/core-05-research-architecture.md
   desc: 架构决策；A股Rust桌面研究设计，尚未实现验收
+- path: logos/resources/prd/3-technical-plan/1-architecture/core-06-multi-agent-architecture.md
+  desc: 多Agent协作生产架构；OUP接入、SwarmBridge拓扑、Agent清单、产物回流与意图即Artifact转译架构（S24）
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-01-research-scenarios.md
   desc: 场景编号与调用索引；A股Rust桌面研究设计，尚未实现验收
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S11-data-snapshot.md
@@ -173,7 +175,7 @@ resource_index:
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-prototype.html
   desc: 统一离线策略研究入口；黑色玻璃态、对话与产物工作区，含需求/设计图/开发/调试/回测/验证/人工计划，非生产运行时
 - path: logos/resources/prd/2-product-design/2-page-design/core-05-ai-workspace-design.md
-  desc: 统一对话工作区设计（现行 UI 权威规格）；单入口、阶段准入、草稿生效边界、实验可比性、黑色玻璃视觉与演示原型/生产桌面映射口径
+  desc: 统一对话工作区设计（现行UI权威规格）；单入口、意图即Artifact流程、阶段准入、草稿生效边界、实验可比性、黑色玻璃视觉与演示原型/生产桌面映射口径
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S19-ai-debug.md
   desc: S19合成实验、事件调试、冻结证据与分层验证；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S17-ai-project.md
@@ -182,10 +184,18 @@ resource_index:
   desc: S18同源流程图/时序图、代码差异与不可变版本；本地原型契约
 - path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S20-plan-bridge.md
   desc: S20独立账户与数据快照、计划生成/核对/过期阻断/导出；本地原型契约
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S22-online-chat-llm-config.md
+  desc: S22在线对话与模型配置；Triage域外后ChatFree、流式预览与持久化口径
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S23-requirement-draft-llm.md
+  desc: S23对话隐式生成需求草稿；L0/L1 Artifact入口与分阶段降级口径
+- path: logos/resources/prd/3-technical-plan/2-scenario-implementation/core-S24-intent-as-artifact.md
+  desc: S24意图即Artifact：注册表、Triage转译、风险门与六组评测；本地原型契约
 - path: logos/resources/test/core-S20-test-cases.md
   desc: ST-S20-11～13；计划账户核算、约束和过期阻断、确认导出；非生产验收
+- path: logos/resources/test/core-S24-test-cases.md
+  desc: S24测试用例；意图注册表、Triage转译、澄清、风险门与离线/真实LLM评测
 - path: logos/resources/prd/1-product-requirements/core-09-ai-workspace-requirements.md
-  desc: FR-R13～R21；对话主入口、项目隔离、同源设计图、版本与证据、计划核对和可用性
+  desc: FR-R13～R25；对话主入口L0/L1/L2、意图即Artifact、项目隔离、同源设计图、版本与证据、计划核对和可用性
 conventions:
 - 遵循 OpenLogos 三层推进模型（Why → What → How）
 - 每次变更必须先创建 logos/changes/ 变更提案
