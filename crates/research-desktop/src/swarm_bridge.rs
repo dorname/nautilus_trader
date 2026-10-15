@@ -690,15 +690,18 @@ impl Drop for SwarmBridge {
 }
 
 /// S19 实验验证契约（单 Agent + 协调器集成）。
+/// 注：experiment-runner 只整理实验参数表单，真实回测由桌面侧协调器执行；
+/// 此处 prompt 引导模型直接输出参数方案与说明，不搜索文件、不调用 shell。
 pub fn s19_experiment_contracts(version_id: &str, data_snapshot: &str) -> Vec<SubtaskContract> {
     vec![SubtaskContract {
         contract_id: "experiment".into(),
         label: "实验执行".into(),
         definition_id: Some("experiment-runner".into()),
         prompt: format!(
-            "执行冻结版本 {} 的回测实验（数据快照：{}）。\n\n\
-            注意：数值结果必须来自协调器计算任务，不得自行生成。\n\
-            输出：1) 实验状态 2) 事件轨迹摘要 3) 账户净值验证",
+            "为冻结版本 {} 准备实验参数表单（数据快照：{}）。\n\n\
+            实验执行由桌面侧协调器负责；数值结果必须来自协调器计算任务，不得自行生成。\
+            请直接给出回答，不要调用任何工具，不要搜索文件系统。\n\
+            输出：1) 建议的 fast/slow/top_k/区间/资金参数 2) 参数来源说明 3) 实验状态预估",
             version_id, data_snapshot
         ),
     }]

@@ -96,7 +96,7 @@ fn triage_once(session_id: &str, user_text: &str) -> String {
     outcome.assistant_text.unwrap_or_default()
 }
 
-/// 注册表摘要：与桌面 `intent_registry_summary` 同源，只含 ID/描述/风险/槽位。
+/// 注册表摘要：与桌面 `intent_registry_summary` 同源，含 ID/描述/风险/槽位/否定示例/正例。
 fn registry_summary(registry: &IntentRegistry) -> String {
     let mut lines = Vec::new();
     use std::fmt::Write;
@@ -110,12 +110,24 @@ fn registry_summary(registry: &IntentRegistry) -> String {
                 s
             })
             .collect();
+        let neg = if ty.boundary_negative.is_empty() {
+            "".to_string()
+        } else {
+            format!("; 否定: {}", ty.boundary_negative.join(", "))
+        };
+        let ex = if ty.examples.is_empty() {
+            "".to_string()
+        } else {
+            format!("; 示例: {}", ty.examples.join(" / "))
+        };
         lines.push(format!(
-            "{} | {} | {} | slots[{}]",
+            "{} | {} | {} | slots[{}]{}{}",
             id,
             ty.description,
             ty.risk_class,
-            slots.join(", ")
+            slots.join(", "),
+            neg,
+            ex
         ));
     }
     lines.sort();

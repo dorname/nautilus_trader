@@ -479,6 +479,19 @@ pub fn reduce_triage_output(
 
     let top1 = valid[0];
     let top2 = valid.get(1).map(|c| c.confidence).unwrap_or(0.0);
+
+    // 特殊硬阻断：只要模型明确给出 forbidden 候选且置信达标，
+    // 不再因与其他候选差距过近而进入澄清，直接返回该 Artifact 由风险门阻断。
+    if registry.risk_class(&top1.type_id) == Some(RiskClass::Forbidden)
+        && top1.confidence >= min_confidence
+    {
+        return TriageResult::Artifact(IntentArtifact {
+            type_id: top1.type_id.clone(),
+            slots: top1.slots.clone(),
+            confidence: top1.confidence,
+        });
+    }
+
     if top1.confidence < min_confidence || (top1.confidence - top2) < min_gap {
         let candidates: Vec<String> = valid
             .iter()
