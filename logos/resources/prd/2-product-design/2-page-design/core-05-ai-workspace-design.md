@@ -124,6 +124,41 @@ ST-S19-14：同输入修复比较可归因；跨参数或快照比较列出差�
 
 ## ADDED — 意图即 Artifact 交互与系统处理流程（S24）
 
+### 架构图
+
+```mermaid
+flowchart LR
+    U[用户] -->|自由文本 / 芯片| UI[右侧对话栏]
+    UI --> APP[research-desktop<br/>do_ai_send_text]
+    subgraph DESKTOP[research-desktop 确定性边界]
+        L0[L0 显式命令匹配器]
+        REG[(logos/intents/*.toml<br/>编译期内嵌注册表)]
+        TRIAGE[Triage 结果归约<br/>serde / 注册表 / 置信度]
+        CLARIFY[ClarificationRequested<br/>候选意图按钮]
+        GATE[确定性风险门<br/>local / confirm / forbidden]
+        EXEC[既有业务处理器]
+        L0 -->|命中| GATE
+        REG --> L0
+        REG --> TRIAGE
+        REG -->|权威 risk_class| GATE
+        TRIAGE -->|Artifact 建议| GATE
+        TRIAGE -->|低置信/二次非法| CLARIFY
+        CLARIFY -. 显式选择 .-> L0
+        GATE -->|local / 已确认| EXEC
+        GATE -->|needs_confirm| CONFIRM[人类确认卡片]
+        CONFIRM -->|仅本次确认| EXEC
+        GATE -->|forbidden| BLOCK[硬阻断]
+    end
+    APP --> L0
+    APP -->|L0 未命中| WORKER[AgentWorker<br/>单活跃任务]
+    WORKER -->|TriageTranslate<br/>OUP turn| OCTOS[octos serve]
+    OCTOS -->|assistant_persisted<br/>结构化 JSON| TRIAGE
+    TRIAGE -->|domain=out_of_scope| CHAT[ChatFree 自由问答]
+    CHAT --> WORKER
+    EXEC -->|计算任务| COORD[Rust 研究协调器]
+    EXEC -->|内容生成| WORKER
+```
+
 ### 系统处理流程图
 
 ```mermaid
@@ -149,6 +184,60 @@ flowchart TD
     CONFIRM -- 确认 --> EXEC
     CONFIRM -- 取消或关闭 --> CANCEL[清除待确认动作<br/>无新产物提交]
     RISK -- forbidden --> BLOCK[硬阻断并说明产品边界<br/>永不进入执行器]
+```
+
+### 时序图
+
+```mermaid
+sequenceDiagram
+    actor U as 用户
+    participant G as research-desktop
+    participant L0 as L0 命令匹配器
+    participant W as AgentWorker
+    participant O as octos serve / LLM
+    participant V as Triage 确定性归约
+    U->>G: 发送自由文本或点击芯片
+    G->>L0: 精确命令/芯片匹配
+    alt L0 命中
+        L0-->>G: 既有 Intent
+        G->>G: 查注册表构造 IntentArtifact
+    else L0 未命中且 octos 可用
+        G->>W: TriageTranslate（注册表摘要+项目状态+用户原话）
+        W->>O: turn/start
+        O-->>W: assistant_persisted(JSON) + turn/completed
+        W-->>G: 结构化回复
+        G->>V: JSON 提取 / serde / 注册表 / 槽位校验
+        alt 首次校验失败
+            V-->>G: 脱敏校验摘要（不写日志）
+            G->>W: 同一 TriageTranslate 重试一次
+            W->>O: turn/start（回灌摘要+无效回复）
+            O-->>W: 修正后的 JSON
+            W-->>G: 重试回复
+            G->>V: 重新校验并归约
+        end
+        alt domain=out_of_scope
+            V-->>G: ChatFree 决策
+            G->>W: ChatFree（项目上下文+用户原话）
+            W->>O: turn/start
+            O-->>W: assistant_persisted + turn/completed
+            W-->>G: 自由问答回复
+        else 二次失败/无候选/低置信/top1-top2 过近
+            V-->>G: ClarificationRequested + 候选类型
+            G-->>U: 候选意图按钮
+            U->>G: 点击候选（等价 L0 显式选择）
+            G->>G: 直接构造 Artifact，不再调用 LLM
+        else 合法且置信度达标
+            V-->>G: IntentArtifact（risk_class 取注册表权威值）
+        end
+    else octos/profile/连接不可用
+        G-->>U: L2 离线能力说明 + 「未接入模型」标注
+    end
+    G->>G: 确定性风险门（local / needs_confirm / forbidden）
+    opt needs_confirm
+        G-->>U: 确认卡片
+        U->>G: 确认
+    end
+    G->>G: 调用既有业务处理器
 ```
 
 ### 对话区与确认交互
