@@ -1,0 +1,7 @@
+[type]
+id = "experiment.run.requested"
+description = "用户希望用当前已保存版本运行一次回测实验"
+boundary_negative = ["看看上次实验结果", "先别跑实验", "运行策略"]
+slots = { version = "optional<int>" }
+risk_class = "needs_confirm"
+examples = ["跑一下实验", "用 v2 回测", "帮我运行策略"]

@@ -1,0 +1,7 @@
+[type]
+id = "experiment.compare.requested"
+description = "用户希望比较两次实验结果"
+boundary_negative = []
+slots = {}
+risk_class = "local_action"
+examples = ["比较实验", "对比两次实验", "看看实验差异"]

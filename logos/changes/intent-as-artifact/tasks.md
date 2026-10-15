@@ -17,15 +17,15 @@
 
 ### ① 意图注册表与确定性层
 
-- [ ] 新增 `logos/intents/*.toml`：录入现有 14 个业务意图的描述、边界反例、槽位、风险等级和示例，并加入真实下单类 forbidden 边界类型
-- [ ] 在 research-desktop 增加注册表加载与校验代码：拒绝缺字段、重复/未知 ID、非法槽位或 risk_class，以及缺少确定性分发约束的可执行类型
-- [ ] 收窄 `ai.rs` 的 `route()` 为芯片/精确显式命令匹配；实现 IntentArtifact、候选/置信度归约、注册表风险等级解析及确定性分发/确认/阻断纯函数
-- [ ] 编写本批 S24 注册表、L0、Artifact 校验与风险门 UT，并接入 OpenLogos reporter；同步更新受影响的 S17/S22 纯函数用例
+- [x] 新增 `logos/intents/*.toml`：录入现有 14 个业务意图的描述、边界反例、槽位、风险等级和示例，并加入真实下单类 forbidden 边界类型
+- [x] 在 research-desktop 增加注册表加载与校验代码：拒绝缺字段、重复/未知 ID、非法槽位或 risk_class，以及缺少确定性分发约束的可执行类型
+- [x] 收窄 `ai.rs` 的 `route()` 为芯片/精确显式命令匹配；实现 IntentArtifact、候选/置信度归约、注册表风险等级解析及确定性分发/确认/阻断纯函数
+- [x] 编写本批 S24 注册表、L0、Artifact 校验与风险门 UT，并接入 OpenLogos reporter；同步更新受影响的 S17/S22 纯函数用例
 
 ### ② Triage 转译、澄清与风险门交互
 
-- [ ] 在 `app.rs` 新增 `AgentTaskKind::TriageTranslate`，复用 AgentWorker/OUP turn 通道实现注册表+项目摘要+用户原话 prompt、结构化结果消费和域外 ChatFree 改道
-- [ ] 实现 serde 错误回灌且最多重试一次、再次失败或低置信/候选过近时澄清；在对话区实现 ClarificationRequested 候选意图按钮，不允许过期任务结果触发动作
-- [ ] 将 needs_confirm 接入可复用确认卡片并区分确认/取消结果；在确定性执行层再次硬阻断 forbidden，保留既有业务前置校验
-- [ ] 实现 octos 不可用/派发失败/空或非法回复的诚实降级与 UI 标注；确保 L0 离线可用，用户原文、识别正文、槽位值和重试上下文不进入运行记录或日志文件
-- [ ] 编写本批 S24 状态归约与六组离线用例 UT、真实 LLM Triage/风险门/降级 ST，并接入 OpenLogos reporter；同步更新 S22/S23 入口与回归测试代码，保留流式回显和草稿降级边界
+- [x] 在 `app.rs` 新增 `AgentTaskKind::TriageTranslate`，复用 AgentWorker/OUP turn 通道实现注册表+项目摘要+用户原话 prompt、结构化结果消费和域外 ChatFree 改道
+- [x] 实现 serde 错误回灌且最多重试一次、再次失败或低置信/候选过近时澄清；在对话区实现 ClarificationRequested 候选意图按钮，不允许过期任务结果触发动作
+- [x] 将 needs_confirm 接入可复用确认卡片并区分确认/取消结果；在确定性执行层再次硬阻断 forbidden，保留既有业务前置校验
+- [x] 实现 octos 不可用/派发失败/空或非法回复的诚实降级与 UI 标注；确保 L0 离线可用，用户原文、识别正文、槽位值和重试上下文不进入运行记录或日志文件
+- [x] 编写本批 S24 状态归约与六组离线用例 UT、真实 LLM Triage/风险门/降级 ST，并接入 OpenLogos reporter；同步更新 S22/S23 入口与回归测试代码，保留流式回显和草稿降级边界

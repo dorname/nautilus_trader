@@ -1,0 +1,7 @@
+[type]
+id = "plan.check.requested"
+description = "用户希望核对当前演示交易计划的约束"
+boundary_negative = []
+slots = {}
+risk_class = "local_action"
+examples = ["核对计划", "检查计划约束", "计划核对"]

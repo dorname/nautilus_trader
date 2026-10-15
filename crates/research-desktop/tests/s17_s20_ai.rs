@@ -120,18 +120,25 @@ fn run_form_zero_cost() -> RunForm {
 #[test]
 fn ut_s17_16_intent_routing_and_project_isolation() {
     case("UT-S17-16", || {
-        // —— 意图路由：预设意图全覆盖 + 未知诚实拒绝 ——
-        assert_eq!(route_or_panic("请帮我确认需求"), Intent::ConfirmRequirement);
-        assert_eq!(route_or_panic("新建一个项目"), Intent::NewProject);
+        // —— 意图路由：L0 精确命令命中；自然语言变体返回 Unknown（交 S24 Triage） ——
+        assert_eq!(route_or_panic("确认需求"), Intent::ConfirmRequirement);
+        assert_eq!(route_or_panic("新建项目"), Intent::NewProject);
         assert_eq!(route_or_panic("切换项目"), Intent::SwitchProject);
-        assert_eq!(route_or_panic("生成设计说明"), Intent::GenerateDesign);
-        assert_eq!(route_or_panic("保存版本 v2"), Intent::SaveVersion);
-        assert_eq!(route_or_panic("跑实验"), Intent::RunExperiment);
-        assert_eq!(route_or_panic("比较两次实验"), Intent::CompareExperiments);
+        assert_eq!(route_or_panic("生成设计"), Intent::GenerateDesign);
+        assert_eq!(route_or_panic("保存版本"), Intent::SaveVersion);
+        assert_eq!(route_or_panic("运行实验"), Intent::RunExperiment);
+        assert_eq!(route_or_panic("比较实验"), Intent::CompareExperiments);
         assert_eq!(route_or_panic("生成验证报告"), Intent::MakeReport);
         assert_eq!(route_or_panic("生成计划"), Intent::PlanGenerate);
         assert_eq!(route_or_panic("核对计划"), Intent::PlanCheck);
         assert_eq!(route_or_panic("导出 CSV"), Intent::PlanExport);
+        // 非精确/自然语言变体不再因 contains 命中
+        assert_eq!(route_or_panic("请帮我确认需求"), Intent::Unknown);
+        assert_eq!(route_or_panic("新建一个项目"), Intent::Unknown);
+        assert_eq!(route_or_panic("生成设计说明"), Intent::Unknown);
+        assert_eq!(route_or_panic("保存版本 v2"), Intent::Unknown);
+        assert_eq!(route_or_panic("跑实验"), Intent::Unknown);
+        assert_eq!(route_or_panic("比较两次实验"), Intent::Unknown);
         assert_eq!(route_or_panic("明天买什么股票"), Intent::Unknown);
         assert_eq!(route_or_panic(""), Intent::Unknown);
         // 未知意图不编造：回复解释能力边界

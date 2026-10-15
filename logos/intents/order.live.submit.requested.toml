@@ -1,0 +1,7 @@
+[type]
+id = "order.live.submit.requested"
+description = "真实市场交易下单请求；本产品不自动下单，识别到即硬阻断"
+boundary_negative = []
+slots = { symbol = "optional<string>", quantity = "optional<int>" }
+risk_class = "forbidden"
+examples = ["帮我下单买入 600519", "买入 100 股茅台", "下单卖出"]

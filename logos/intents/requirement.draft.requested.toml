@@ -1,0 +1,7 @@
+[type]
+id = "requirement.draft.requested"
+description = "用户希望把自然语言研究想法整理成结构化需求草稿，不确认版本"
+boundary_negative = ["看看上次的需求草稿", "需求已经确认过了"]
+slots = {}
+risk_class = "local_action"
+examples = ["生成需求草稿", "帮我生成需求", "整理研究想法"]

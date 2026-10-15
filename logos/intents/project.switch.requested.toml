@@ -1,0 +1,7 @@
+[type]
+id = "project.switch.requested"
+description = "用户希望切换到已有项目"
+boundary_negative = ["新建项目", "创建项目"]
+slots = { project = "optional<string>" }
+risk_class = "local_action"
+examples = ["切换项目", "切换到项目", "换到项目"]

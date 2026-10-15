@@ -1,0 +1,7 @@
+[type]
+id = "code.generate.requested"
+description = "用户希望由已确认需求和设计生成策略代码草稿"
+boundary_negative = ["检查代码", "代码已经保存了"]
+slots = {}
+risk_class = "local_action"
+examples = ["生成代码", "生成策略代码", "写策略代码"]

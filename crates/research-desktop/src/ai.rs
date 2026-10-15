@@ -1,93 +1,37 @@
-//! 离线预设意图对话引擎（S17）：关键词路由 → 预设意图与动作提示。
+//! 离线预设意图对话引擎（S17/S24）：L0 显式命令 → 预设意图与动作提示。
 //!
-//! 边界（架构 core-05「离线预设意图」）：无 LLM、无网络；未知意图诚实
-//! 解释本助手的能力边界，不编造理解。意图 → 路由跳转见 `crate::nav::Route::from_intent`。
+//! 边界（架构 core-05 / S24）：无 LLM、无网络；未知意图诚实解释本助手的
+//! 能力边界，不编造理解。非显式输入进入 S24 Triage，不在这里做关键词分类。
+//! 意图 → 路由跳转见 `crate::nav::Route::from_intent`。
 
-/// 预设意图（对话引擎可执行的动作集合）。
+pub use crate::intents::{Intent, route};
+
+/// 自由对话派发决策（S22，online-chat-llm-config-20261012）。
+/// S24 修订：Unknown 且 octos 可用时不再直接 LlmChat，而是先 Triage；
+/// 此处保留枚举供兼容性使用，实际入口决策由 `app.rs` 的 L0/L1/L2 状态机处理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Intent {
-    /// 确认需求（生成需求版本 R）。
-    ConfirmRequirement,
-    /// 整理需求草稿（不确认版本）。
-    DraftRequirement,
-    /// 新建项目。
-    NewProject,
-    /// 切换项目（数字参数由调用方解析）。
-    SwitchProject,
-    /// 生成设计说明草稿（不保存 D）。
-    GenerateDesign,
-    /// 生成可编辑策略代码草稿。
-    GenerateCode,
-    /// 保存代码版本（不可变 v）。
-    SaveVersion,
-    /// 运行实验。
-    RunExperiment,
-    /// 比较实验。
-    CompareExperiments,
-    /// 生成验证报告。
-    MakeReport,
-    /// 概念辨析（调试/回测/验证/计划核对的职责边界）。
-    ExplainBoundary,
-    /// 生成交易计划。
-    PlanGenerate,
-    /// 核对计划。
-    PlanCheck,
-    /// 导出计划 CSV。
-    PlanExport,
-    /// 未知意图（诚实解释能力边界）。
-    Unknown,
+pub enum ChatDispatch {
+    /// 确定性业务动作：本地执行，不经 LLM。
+    LocalAction,
+    /// 自由问答：派发真实 LLM turn（经 octos）。
+    LlmChat,
+    /// octos 不可用：诚实降级为离线预设回复（UI 需如实标注）。
+    OfflinePreset,
 }
 
-/// 关键词路由（预设意图表；离线确定性；顺序即优先级）。
-pub fn route(text: &str) -> Intent {
-    let t = text.trim();
-    if t.is_empty() {
-        return Intent::Unknown;
-    }
-    // 概念辨析优先于「验证」关键词（「解释验证区别」「了解验证流程」不是生成报告）
-    if t.contains("区别")
-        || t.contains("什么意思")
-        || t.contains("一码事")
-        || t.contains("一回事")
-        || t.contains("验证流程")
-        || t.contains("验证边界")
-        || t.starts_with("解释")
-        || t.starts_with("了解验证")
-    {
-        return Intent::ExplainBoundary;
-    }
-    if t.contains("确认需求") || t.contains("确认版本") {
-        Intent::ConfirmRequirement
-    } else if t.contains("需求草稿") || t.contains("研究目标") {
-        Intent::DraftRequirement
-    } else if (t.contains("新建") || t.contains("新项目")) && t.contains("项目") {
-        Intent::NewProject
-    } else if t.contains("切换项目") || t.contains("切换到项目") {
-        Intent::SwitchProject
-    } else if t.contains("设计") {
-        Intent::GenerateDesign
-    } else if t.contains("生成") && t.contains("代码") {
-        Intent::GenerateCode
-    } else if t.contains("保存版本") || t.contains("冻结版本") {
-        Intent::SaveVersion
-    } else if t.contains("运行实验")
-        || t.contains("跑实验")
-        || t.contains("运行回测")
-        || t.contains("运行策略")
-    {
-        Intent::RunExperiment
-    } else if t.contains("比较") {
-        Intent::CompareExperiments
-    } else if t.contains("验证") || t.contains("报告") {
-        Intent::MakeReport
-    } else if t.contains("生成计划") || t.contains("交易计划") {
-        Intent::PlanGenerate
-    } else if t.contains("核对") {
-        Intent::PlanCheck
-    } else if t.contains("导出") {
-        Intent::PlanExport
-    } else {
-        Intent::Unknown
+/// 意图路由兜底改道（UT-S22-02 纯函数锚点，S24 兼容口径）：
+/// 确定性意图一律本地动作；Unknown 在 octos 可用时进入 Triage（此处仍标记为 LlmChat
+/// 以保持既有返回类型），不可用时降级离线预设。
+pub fn decide_chat_dispatch(intent: &Intent, octos_available: bool) -> ChatDispatch {
+    match intent {
+        Intent::Unknown => {
+            if octos_available {
+                ChatDispatch::LlmChat
+            } else {
+                ChatDispatch::OfflinePreset
+            }
+        }
+        _ => ChatDispatch::LocalAction,
     }
 }
 
@@ -138,34 +82,6 @@ pub fn reply(text: &str) -> String {
     }
 }
 
-/// 自由对话派发决策（S22，online-chat-llm-config-20261012）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatDispatch {
-    /// 确定性业务动作：本地执行，不经 LLM。
-    LocalAction,
-    /// 自由问答：派发真实 LLM turn（经 octos）。
-    LlmChat,
-    /// octos 不可用：诚实降级为离线预设回复（UI 需如实标注）。
-    OfflinePreset,
-}
-
-/// 意图路由兜底改道（UT-S22-02 纯函数锚点）：
-/// 未知意图在 octos 可用时派发真实 LLM 对话；不可用时降级离线预设；
-/// 其余确定性意图一律本地动作（含既有的设计/代码生成 LLM 任务路径，
-/// 由调用方在 match 显式分支中处理，不经本函数）。
-pub fn decide_chat_dispatch(intent: &Intent, octos_available: bool) -> ChatDispatch {
-    match intent {
-        Intent::Unknown => {
-            if octos_available {
-                ChatDispatch::LlmChat
-            } else {
-                ChatDispatch::OfflinePreset
-            }
-        }
-        _ => ChatDispatch::LocalAction,
-    }
-}
-
 /// 自由对话 prompt 模板（S22）：项目上下文 + 用户消息 + 诚实边界约束
 /// （不编造实验数值——数值只来自协调器任务）。
 pub fn chat_prompt(
@@ -198,32 +114,58 @@ pub fn requirement_draft_prompt(project_name: &str, user_text: &str) -> String {
     )
 }
 
+/// Triage 结构化转译 prompt（S24）：输入注册表、项目摘要、用户原话；
+/// 输出 JSON：`{"domain":"in_scope","candidates":[{"type_id":..., "slots":{}, "confidence":0.9}]}`。
+/// 不包含用户原文/槽位值的上下文要求模型按 schema 修正。
+pub fn triage_prompt(
+    registry_text: &str,
+    project_name: &str,
+    req_summary: &str,
+    user_text: &str,
+    prior_validation_error: Option<&str>,
+) -> String {
+    let correction = prior_validation_error
+        .map(|e| format!("\n上一次输出未通过 schema 校验，请修正：{e}\n"))
+        .unwrap_or_default();
+    format!(
+        "你是量化研究桌面「AI 工作台」的意图识别助手。请根据以下意图注册表、项目状态和用户消息，把用户意图转译为结构化候选。\
+         只输出一个 JSON 对象，不要 Markdown、不要解释。\
+         \n\n意图注册表（id / description / risk_class / boundary_negative / slots）：\
+         \n{registry_text}\n\
+         \n项目状态：\
+         \n- 项目名：{project_name}\n- 当前需求摘要：{req_summary}\n\
+         \n用户消息：{user_text}\n\
+         {correction}\n\
+         输出 schema：\n\
+         ```json\n{{\"domain\":\"in_scope\",\"candidates\":[{{\"type_id\":\"来自注册表的合法id\",\"slots\":{{}},\"confidence\":0.0到1.0}}]}}\n```\n\
+         规则：\
+         1. domain 只能是 in_scope 或 out_of_scope；out_of_scope 时 candidates 必须为空。\
+         2. candidates 最多 3 个，按置信度降序排列；confidence 必须 ∈[0,1]。\
+         3. type_id 必须来自注册表；slots 只能使用对应类型声明过的槽位；未声明槽位不得出现。\
+         4. 真实下单、买入卖出等交易请求必须归为 order.live.submit.requested（forbidden）。\
+         5. 否定句、先别做某事等不得直接给出 needs_confirm 执行的 confident 候选；应降低 confidence 或 out_of_scope。\
+         6. 当用户消息是闲聊、问候、天气、时间、个人事务、与量化研究无关的任意指令，或明确要求你自由回答时，domain 必须为 out_of_scope 且 candidates 为空。\
+         7. 用户表达可能对应多个意图时（如「帮我看看设计」既可理解为生成设计，也可理解为解释边界），必须给出 2~3 个相关候选并降低单个置信度，使 top1-top2 差距小于 0.15，触发澄清。\
+         8. 对于明确指向单一业务意图的口语变体（如「帮我跑一下」明显对应 experiment.run.requested），只给出 1 个高置信度候选（confidence ≥ 0.85），不要过度澄清。"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 意图路由的关键词覆盖（含未知意图诚实解释）。
+    /// UT-S24-02：L0 仅精确命中。
     #[test]
     fn routes_and_unknown_honesty() {
-        assert_eq!(route("请帮我确认需求"), Intent::ConfirmRequirement);
+        assert_eq!(route("确认需求"), Intent::ConfirmRequirement);
         assert_eq!(route("生成需求草稿"), Intent::DraftRequirement);
-        assert_eq!(route("新建一个项目"), Intent::NewProject);
-        assert_eq!(route("切换项目"), Intent::SwitchProject);
-        assert_eq!(route("生成设计说明"), Intent::GenerateDesign);
-        assert_eq!(route("保存版本 v2"), Intent::SaveVersion);
-        assert_eq!(route("生成策略代码"), Intent::GenerateCode);
         assert_eq!(route("运行实验"), Intent::RunExperiment);
-        assert_eq!(route("跑实验"), Intent::RunExperiment);
-        assert_eq!(route("运行回测实验"), Intent::RunExperiment);
-        assert_eq!(route("比较两次实验"), Intent::CompareExperiments);
-        assert_eq!(route("生成验证报告"), Intent::MakeReport);
-        assert_eq!(route("解释验证区别"), Intent::ExplainBoundary);
-        assert_eq!(route("了解验证流程"), Intent::ExplainBoundary);
-        assert_eq!(route("回测和验证是一码事吗"), Intent::ExplainBoundary);
-        assert_eq!(route("生成计划"), Intent::PlanGenerate);
-        assert_eq!(route("核对计划"), Intent::PlanCheck);
         assert_eq!(route("导出 CSV"), Intent::PlanExport);
-        assert_eq!(route("今天天气怎么样"), Intent::Unknown);
+        // 宽泛或否定输入不再因 contains 命中
+        assert_eq!(route("帮我跑一下"), Intent::Unknown);
+        assert_eq!(route("帮我看看设计"), Intent::Unknown);
+        assert_eq!(route("先别跑实验"), Intent::Unknown);
+        assert_eq!(route("不要导出"), Intent::Unknown);
         assert_eq!(route(""), Intent::Unknown);
         // 未知意图不编造：回复解释能力边界
         assert!(reply("明天买什么股票").contains("不能理解"));
@@ -246,50 +188,5 @@ mod tests {
         ] {
             assert!(reply(t).len() > 8, "每个意图都有预设回复：{t}");
         }
-    }
-
-    /// UT-S22-02（online-chat-llm-config-20261012）：意图路由兜底改道——
-    /// 未知意图在 octos 可用时派发真实 LLM 对话；不可用时降级离线预设；
-    /// 确定性动作意图仍路由本地动作。
-    #[test]
-    fn ut_s22_02_decide_chat_dispatch() {
-        nautilus_research_testkit::case("UT-S22-02", || {
-            // 未知意图：可用 → LLM 对话派发（非预设兜底文案）
-            assert_eq!(
-                decide_chat_dispatch(&route("今天天气怎么样"), true),
-                ChatDispatch::LlmChat
-            );
-            // 未知意图：octos 不可用 → 诚实降级离线预设
-            assert_eq!(
-                decide_chat_dispatch(&Intent::Unknown, false),
-                ChatDispatch::OfflinePreset
-            );
-            // 确定性业务动作意图：一律本地动作，不经 LLM 对话
-            for intent in [
-                Intent::ConfirmRequirement,
-                Intent::DraftRequirement,
-                Intent::NewProject,
-                Intent::SwitchProject,
-                Intent::SaveVersion,
-                Intent::RunExperiment,
-                Intent::CompareExperiments,
-                Intent::MakeReport,
-                Intent::ExplainBoundary,
-                Intent::PlanGenerate,
-                Intent::PlanCheck,
-                Intent::PlanExport,
-            ] {
-                assert_eq!(
-                    decide_chat_dispatch(&intent, true),
-                    ChatDispatch::LocalAction,
-                    "{intent:?} 应路由本地动作"
-                );
-                assert_eq!(
-                    decide_chat_dispatch(&intent, false),
-                    ChatDispatch::LocalAction,
-                    "{intent:?} 离线时仍为本地动作"
-                );
-            }
-        });
     }
 }

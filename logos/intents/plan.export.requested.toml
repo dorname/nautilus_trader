@@ -1,0 +1,7 @@
+[type]
+id = "plan.export.requested"
+description = "用户希望导出演示交易计划 CSV"
+boundary_negative = ["先别导出", "不要导出"]
+slots = {}
+risk_class = "needs_confirm"
+examples = ["导出 CSV", "导出计划", "确认导出"]

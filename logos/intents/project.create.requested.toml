@@ -1,0 +1,7 @@
+[type]
+id = "project.create.requested"
+description = "用户希望新建一个独立研究项目"
+boundary_negative = ["切换到新项目", "打开已有项目"]
+slots = { name = "optional<string>" }
+risk_class = "local_action"
+examples = ["新建项目", "新建一个项目", "创建新项目"]

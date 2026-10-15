@@ -1,0 +1,7 @@
+[type]
+id = "design.generate.requested"
+description = "用户希望由已确认需求生成策略设计说明草稿"
+boundary_negative = ["看看设计图哪里有问题", "设计已经保存了"]
+slots = {}
+risk_class = "local_action"
+examples = ["生成设计", "生成策略设计", "设计说明"]

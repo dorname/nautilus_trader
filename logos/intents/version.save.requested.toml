@@ -1,0 +1,7 @@
+[type]
+id = "version.save.requested"
+description = "用户希望保存当前策略代码为不可变版本 v"
+boundary_negative = ["修改已保存版本", "覆盖旧版本"]
+slots = {}
+risk_class = "local_action"
+examples = ["保存版本", "冻结版本", "保存当前版本"]

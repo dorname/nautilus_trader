@@ -1,0 +1,7 @@
+[type]
+id = "plan.generate.requested"
+description = "用户希望生成演示交易计划草稿"
+boundary_negative = []
+slots = {}
+risk_class = "local_action"
+examples = ["生成计划", "生成交易计划", "做一份计划"]

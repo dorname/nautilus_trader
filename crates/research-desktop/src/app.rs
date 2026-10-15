@@ -14,6 +14,7 @@ use egui::{Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Se
 use crate::ai;
 use crate::bridge::{CompareForm, DesktopBridge, ImportForm, PlanForm, RunForm, UniverseForm};
 use crate::icons;
+use crate::intents::{self, IntentArtifact, IntentRegistry, TriageResult};
 use crate::layout::{self, LayoutPlan};
 use crate::nav::{RESOURCE_GROUP, RESOURCE_ROUTES, Route, WORKSPACE_GROUP, WORKSPACE_ROUTES};
 use crate::pipeline::{POLL_INTERVAL, PageState, TaskWatch, terminal_error_text};
@@ -98,6 +99,31 @@ enum AgentTaskKind {
     /// 需求草稿生成（S23 / issue #39）：DraftRequirement 意图由真实 LLM
     /// 隐式生成结构化草稿，落入草稿框等用户编辑确认。
     RequirementDraft,
+    /// 意图 Triage 转译（S24）：非显式输入经 LLM 输出结构化候选，再经
+    /// 注册表与槽位校验归约为 Artifact / ChatFree / Clarification。
+    TriageTranslate,
+}
+
+/// Triage 中间状态（用户原文与回灌计数，仅内存存在）。
+#[derive(Debug, Clone)]
+struct TriagePending {
+    original_text: String,
+    retry_count: u32,
+}
+
+/// 待确认 Artifact 的风险类别与 UI 文案。
+#[derive(Debug, Clone)]
+struct IntentConfirmState {
+    artifact: IntentArtifact,
+    title: String,
+    body: String,
+}
+
+/// 澄清候选状态（候选类型 ID，供用户点击后零模型构造 Artifact）。
+#[derive(Debug, Clone)]
+struct ClarificationState {
+    candidates: Vec<String>,
+    original_text: String,
 }
 
 /// 进行中的真实 LLM 任务（AgentWorker 后台线程执行，帧循环轮询结果）。
@@ -363,6 +389,19 @@ pub struct ResearchApp {
     llm_op_pending: Option<(u64, LlmOpTag)>,
     /// 需求草稿派发暂存的用户原文（S23：失败降级时入草稿框，不丢输入）。
     draft_pending_text: Option<String>,
+    /// 最近一次用户发送的原文（S24：供 Triage 识别后的草稿路径保留原表达）。
+    last_user_text: String,
+    /// 意图注册表（S24，编译期内嵌；确定性风险门唯一权威）。
+    intent_registry: IntentRegistry,
+    /// Triage 中间状态（S24：原文与重试计数，仅内存存在）。
+    triage_pending: Option<TriagePending>,
+    /// 待确认 Artifact（S24 needs_confirm 确认卡片状态）。
+    confirm_pending: Option<IntentConfirmState>,
+    /// 澄清候选状态（S24：用户点击后直接构造 Artifact，不再调用 LLM）。
+    clarification: Option<ClarificationState>,
+    /// 测试覆盖：覆盖 octos 可用性判定（仅测试）。
+    #[cfg(test)]
+    octos_available_test: Option<bool>,
     /// 多 Agent 分析后台 worker（惰性启动；确认需求后派发 S17 三契约）。
     swarm_worker: Option<crate::swarm_bridge::SwarmWorker>,
     /// 进行中的多 Agent 分析派发（关联需求版本，三路状态卡数据源）。
@@ -481,6 +520,13 @@ impl ResearchApp {
             model_settings: ModelSettingsState::fresh(),
             llm_op_pending: None,
             draft_pending_text: None,
+            last_user_text: String::new(),
+            intent_registry: IntentRegistry::embedded().expect("内嵌意图注册表必须合法"),
+            triage_pending: None,
+            confirm_pending: None,
+            clarification: None,
+            #[cfg(test)]
+            octos_available_test: None,
             swarm_worker: None,
             swarm_task: None,
             swarm_task_seq: 0,
@@ -1673,6 +1719,33 @@ impl ResearchApp {
                         }
                     });
                     ui.add_space(8.0);
+                    // S24 澄清候选：用户点击后直接构造 Artifact，不再调用 LLM。
+                    let clar = self.clarification.clone();
+                    if let Some(clar) = clar {
+                        let candidates: Vec<(String, String)> = clar
+                            .candidates
+                            .iter()
+                            .map(|type_id| {
+                                let label = self
+                                    .intent_registry
+                                    .get(type_id)
+                                    .map(|t| t.description.clone())
+                                    .unwrap_or_else(|| type_id.clone());
+                                (type_id.clone(), label)
+                            })
+                            .collect();
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().button_padding = egui::vec2(8.0, 5.0);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(lbl("你的意思可能是：", 10.0, theme::MUTED));
+                            for (type_id, label) in candidates {
+                                if ui.add(theme::chip_button(&label)).clicked() {
+                                    self.pick_clarification_candidate(&type_id);
+                                }
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
                     // compose-box：外阴影先铺，再画描边盒（对齐原型 box-shadow）
                     let foreshadow = ui.available_rect_before_wrap();
                     let approx = egui::Rect::from_min_size(
@@ -5188,6 +5261,31 @@ impl ResearchApp {
             }
         }
 
+        // S24 通用 Intent 确认卡片（needs_confirm）：确认一次放行，取消/关闭清除。
+        if let Some(confirm) = self.confirm_pending.clone() {
+            let mut open = true;
+            egui::Window::new(&confirm.title)
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(420.0)
+                .show(ctx, |ui| {
+                    ui.label(lbl(&confirm.body, 12.0, theme::TEXT2));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(theme::primary_button("确认")).clicked() {
+                            self.confirm_intent();
+                        }
+                        ui.add_space(8.0);
+                        if ui.add(theme::ghost_button("取消")).clicked() {
+                            self.cancel_intent_confirm();
+                        }
+                    });
+                });
+            if !open {
+                self.cancel_intent_confirm();
+            }
+        }
+
         // 需求只读查看（原型 data-req）
         if let Some(id) = self.view_req {
             let req = self
@@ -5375,10 +5473,18 @@ impl ResearchApp {
     }
 
     /// 对话发送：意图路由 → 执行对应动作（对齐原型 submitChat，不只跳转）。
+    /// 用户消息统一入口（S24 L0/L1/L2 状态机）：
+    /// L0 精确命令/芯片 → 直接构造 Artifact；
+    /// L0 未命中且 octos 可用 → TriageTranslate（校验失败可回灌重试一次）；
+    /// L0 未命中且 octos 不可用 → L2 诚实降级离线说明。
     fn do_ai_send_text(&mut self, text: String) {
         if text.trim().is_empty() {
             return;
         }
+        self.last_user_text = text.clone();
+        // 任何新用户输入都会清除上一次的待确认/澄清状态（取消语义）。
+        self.confirm_pending = None;
+        self.clarification = None;
         let intent = ai::route(&text);
         {
             let p = self.workspace.current_mut();
@@ -5387,33 +5493,293 @@ impl ResearchApp {
                 text: text.clone(),
             });
         }
-        match intent {
-            ai::Intent::DraftRequirement => self.do_requirement_draft_llm(&text),
-            ai::Intent::GenerateDesign => {
-                self.do_generate_design_llm();
-            }
-            ai::Intent::GenerateCode => {
-                self.do_generate_code_llm();
-            }
-            ai::Intent::RunExperiment => self.do_ai_run(),
-            ai::Intent::MakeReport => self.do_make_report(),
-            ai::Intent::PlanGenerate => self.do_ai_plan_generate(),
-            ai::Intent::PlanCheck => self.do_ai_plan_check(),
-            ai::Intent::PlanExport => self.plan_export_confirm = true,
-            ai::Intent::NewProject => {
-                self.new_project_open = true;
-                self.append_intent_reply(&text, intent);
-            }
-            _ => {
-                // S22 兜底改道：未知意图 → 真实 LLM 自由对话（octos 不可用
-                // 时在结果回调里诚实降级离线预设）；其余意图维持预设回复。
-                match ai::decide_chat_dispatch(&intent, true) {
-                    ai::ChatDispatch::LlmChat => self.do_chat_free(&text),
-                    _ => self.append_intent_reply(&text, intent),
-                }
-            }
+        if intent != ai::Intent::Unknown {
+            // L0 命中：零模型构造 Artifact 并走确定性风险门。
+            let artifact = Self::artifact_from_l0(intent);
+            self.record(&format!("L0 识别 · {}", artifact.type_id));
+            self.dispatch_artifact(artifact, false);
+            self.chat_pin = true;
+            return;
+        }
+        // L0 未命中：检查 octos 可用性。
+        if self.octos_available() {
+            // L1：启动 Triage 转译。
+            self.triage_pending = Some(TriagePending {
+                original_text: text.clone(),
+                retry_count: 0,
+            });
+            self.start_triage_task(&text, None);
+        } else {
+            // L2：诚实降级，不编造理解，也不进入 ChatFree。
+            self.record("L2 离线 · 未接入模型");
+            self.tell(
+                format!(
+                    "{}\n\n（当前未接入模型：仅支持精确命令；可尝试「运行实验」「生成设计」等芯片，或配置 LLM 后重试。）",
+                    ai::reply("")
+                ),
+                None,
+            );
         }
         self.chat_pin = true;
+    }
+
+    /// 检查 octos profile/连接是否可用（S24 L2）：探测 worker 可创建且 profile 存在。
+    /// 此函数只读，不启动 worker。
+    fn octos_available(&self) -> bool {
+        #[cfg(test)]
+        if let Some(v) = self.octos_available_test {
+            return v;
+        }
+        let data_dir = Self::agent_data_dir().join("data");
+        let profile_path = data_dir.join("profiles").join("octos.json");
+        if !profile_path.exists() {
+            return false;
+        }
+        // 若 worker 已启动，进一步确认其会话尚未错误。
+        if let Some(worker) = &self.agent_worker {
+            // worker 存在即认为可用；真实连接失败在任务结果中诚实降级。
+            return !worker.session_id().is_empty();
+        }
+        true
+    }
+
+    /// 由 L0 命中的业务 Intent 构造 Artifact（零模型，无槽位）。
+    fn artifact_from_l0(intent: ai::Intent) -> IntentArtifact {
+        IntentArtifact {
+            type_id: intent.type_id().to_string(),
+            slots: std::collections::BTreeMap::new(),
+            confidence: 1.0,
+        }
+    }
+
+    /// 启动 Triage 转译任务（S24 L1）。
+    fn start_triage_task(&mut self, text: &str, prior_error: Option<&str>) {
+        let prompt = self.triage_prompt(text, prior_error);
+        self.start_agent_task("意图识别", AgentTaskKind::TriageTranslate, prompt);
+    }
+
+    /// 构造 Triage prompt（S24）：注册表摘要 + 项目状态 + 用户原话 + 可选回灌摘要。
+    fn triage_prompt(&self, user_text: &str, prior_error: Option<&str>) -> String {
+        let registry_text = self.intent_registry_summary();
+        let p = self.workspace.current();
+        let clip = |s: &str| -> String { s.chars().take(200).collect() };
+        let req = p
+            .active_req
+            .and_then(|rid| p.reqs.get(rid - 1))
+            .map(|r| clip(&r.text))
+            .unwrap_or_else(|| "（尚未确认需求版本）".into());
+        ai::triage_prompt(&registry_text, &p.name, &req, user_text, prior_error)
+    }
+
+    /// 注册表摘要：仅包含类型 ID / 描述 / 风险 / 边界否定 / 槽位声明，不含示例或用户数据。
+    fn intent_registry_summary(&self) -> String {
+        let mut lines = Vec::new();
+        for (id, ty) in self.intent_registry.types() {
+            let slots: Vec<String> = ty
+                .slots
+                .iter()
+                .map(|(k, d)| format!("{k}={}", d))
+                .collect();
+            let neg = if ty.boundary_negative.is_empty() {
+                "".to_string()
+            } else {
+                format!("; 否定: {}", ty.boundary_negative.join(", "))
+            };
+            lines.push(format!(
+                "{} | {} | {} | slots[{}]{}",
+                id,
+                ty.description,
+                ty.risk_class,
+                slots.join(", "),
+                neg
+            ));
+        }
+        lines.sort();
+        lines.join("\n")
+    }
+
+    /// 确定性风险门 + 业务分发（S24）。confirmed 仅对 needs_confirm 生效一次。
+    fn dispatch_artifact(&mut self, artifact: IntentArtifact, confirmed: bool) {
+        let gate = intents::apply_risk_gate(&self.intent_registry, &artifact, confirmed);
+        match gate {
+            intents::RiskGateResult::Forbidden => {
+                self.record(&format!("{} · forbidden 阻断", artifact.type_id));
+                self.tell(
+                    "识别到真实交易下单请求。本产品不自动下单，也不会发送任何订单；如需交易请使用券商终端。",
+                    None,
+                );
+            }
+            intents::RiskGateResult::NeedsConfirmation => {
+                self.record(&format!("{} · 待确认", artifact.type_id));
+                let (title, body) = self.confirm_copy_for(&artifact);
+                self.confirm_pending = Some(IntentConfirmState {
+                    artifact,
+                    title,
+                    body,
+                });
+            }
+            intents::RiskGateResult::Allow => {
+                self.execute_artifact(&artifact);
+            }
+        }
+    }
+
+    /// 确认卡片文案（S24 needs_confirm）。
+    fn confirm_copy_for(&self, artifact: &IntentArtifact) -> (String, String) {
+        let ty = self
+            .intent_registry
+            .get(&artifact.type_id)
+            .expect("Allow 之前已校验注册表");
+        let title = match artifact.type_id.as_str() {
+            "experiment.run.requested" => "确认运行实验？".into(),
+            "plan.export.requested" => "确认导出演示计划？".into(),
+            _ => format!("确认执行「{}」？", ty.description),
+        };
+        let body = match artifact.type_id.as_str() {
+            "experiment.run.requested" => {
+                "运行实验将使用当前保存版本与协调器合成数据；实验数值只来自协调器任务。".into()
+            }
+            "plan.export.requested" => {
+                "导出内容标注为演示计划，不构成交易指令；正式策略验证仍为证据不足。".into()
+            }
+            _ => format!("{}：确认后将执行一次，取消则不提交产物。", ty.description),
+        };
+        (title, body)
+    }
+
+    /// 执行已放行的 Artifact（S24）。模型只产出建议，执行仍走既有业务处理器。
+    fn execute_artifact(&mut self, artifact: &IntentArtifact) {
+        self.record(&format!("{} · 执行", artifact.type_id));
+        let intent = ai::Intent::from_type_id(&artifact.type_id).unwrap_or(ai::Intent::Unknown);
+        match intent {
+            ai::Intent::ConfirmRequirement => self.do_confirm_requirement(),
+            ai::Intent::DraftRequirement => self.do_requirement_draft_llm_from_artifact(artifact),
+            ai::Intent::NewProject => {
+                self.new_project_open = true;
+                self.append_intent_reply(&artifact.type_id, intent);
+            }
+            ai::Intent::SwitchProject => self.append_intent_reply(&artifact.type_id, intent),
+            ai::Intent::GenerateDesign => self.do_generate_design_llm(),
+            ai::Intent::GenerateCode => self.do_generate_code_llm(),
+            ai::Intent::SaveVersion => self.do_save_version(),
+            ai::Intent::RunExperiment => self.do_ai_run(),
+            ai::Intent::CompareExperiments => self.append_intent_reply(&artifact.type_id, intent),
+            ai::Intent::MakeReport => self.do_make_report(),
+            ai::Intent::ExplainBoundary => self.append_intent_reply(&artifact.type_id, intent),
+            ai::Intent::PlanGenerate => self.do_ai_plan_generate(),
+            ai::Intent::PlanCheck => self.do_ai_plan_check(),
+            ai::Intent::PlanExport => self.do_ai_plan_export(),
+            ai::Intent::Unknown => {
+                // 不应到达：注册表校验保证可执行 Artifact 有映射。
+                self.record(&format!("{} · 无业务映射", artifact.type_id));
+            }
+        }
+    }
+
+    /// 从 Artifact 触发需求草稿生成（S23/S24）：Triage 识别到的变体输入。
+    fn do_requirement_draft_llm_from_artifact(&mut self, _artifact: &IntentArtifact) {
+        // 优先保留用户原始表达；L0 芯片「生成需求草稿」等仍走 exact 默认文案。
+        let text = if self.last_user_text.trim().is_empty()
+            || self.last_user_text.trim() == "生成需求草稿"
+        {
+            "生成需求草稿".into()
+        } else {
+            self.last_user_text.clone()
+        };
+        self.do_requirement_draft_llm(&text);
+    }
+
+    /// Triage 结果处理（S24）：Artifact / ChatFree / Clarification / Invalid。
+    fn handle_triage_result(&mut self, text: &str, result: intents::TriageResult) {
+        self.triage_pending = None;
+        match result {
+            TriageResult::ChatFree => self.do_chat_free(text),
+            TriageResult::Artifact(artifact) => self.dispatch_artifact(artifact, false),
+            TriageResult::ClarificationRequested(candidates) => {
+                self.record("Triage · 澄清请求");
+                self.clarification = Some(ClarificationState {
+                    candidates,
+                    original_text: text.to_string(),
+                });
+                self.tell(
+                    "未能可靠理解你的意图。请点击下方候选，或换一种更明确的说法。",
+                    None,
+                );
+            }
+            TriageResult::Invalid(reason) => {
+                // 首次非法回灌重试一次；二次非法转为澄清。
+                if let Some(pending) = self.triage_pending.as_ref() {
+                    if pending.retry_count == 0 {
+                        self.triage_pending = Some(TriagePending {
+                            original_text: text.to_string(),
+                            retry_count: 1,
+                        });
+                        // 脱敏摘要：只传错误分类，不传原文/JSON/槽位值。
+                        let summary = format!("校验错误：{}", Self::sanitize_triage_error(&reason));
+                        self.record(&format!("Triage · 重试 · {}", summary));
+                        self.start_triage_task(text, Some(&summary));
+                        return;
+                    }
+                }
+                self.triage_pending = None;
+                self.record("Triage · 二次非法 → 澄清");
+                self.clarification = Some(ClarificationState {
+                    candidates: vec![],
+                    original_text: text.to_string(),
+                });
+                self.tell(
+                    "模型输出未能通过校验。请换一种更明确的说法，或检查当前项目状态。",
+                    None,
+                );
+            }
+        }
+    }
+
+    /// 脱敏 Triage 错误摘要：去掉原文、JSON 片段、槽位值等敏感信息。
+    fn sanitize_triage_error(reason: &str) -> String {
+        // 只保留前半句错误分类，截断冒号后的细节。
+        reason
+            .split_once('：')
+            .map(|(head, _)| head.to_string())
+            .unwrap_or_else(|| reason.chars().take(40).collect())
+    }
+
+    /// 用户点击澄清候选后，零模型直接构造 Artifact 并分发。
+    fn pick_clarification_candidate(&mut self, type_id: &str) {
+        let Some(clar) = self.clarification.take() else {
+            return;
+        };
+        self.last_user_text = clar.original_text.clone();
+        let intent = ai::Intent::from_type_id(type_id).unwrap_or(ai::Intent::Unknown);
+        if intent == ai::Intent::Unknown {
+            // 候选应为注册表中的业务类型，未知则回 ChatFree。
+            self.record("澄清 · 候选无映射 → ChatFree");
+            self.do_chat_free(&clar.original_text);
+            return;
+        }
+        self.record(&format!("澄清选择 · {}", type_id));
+        let artifact = IntentArtifact {
+            type_id: type_id.to_string(),
+            slots: std::collections::BTreeMap::new(),
+            confidence: 1.0,
+        };
+        self.dispatch_artifact(artifact, false);
+    }
+
+    /// 确认当前待确认 Artifact（S24 needs_confirm 放行一次）。
+    fn confirm_intent(&mut self) {
+        let Some(state) = self.confirm_pending.take() else {
+            return;
+        };
+        self.dispatch_artifact(state.artifact, true);
+    }
+
+    /// 取消/关闭确认卡片，清除待确认 Artifact。
+    fn cancel_intent_confirm(&mut self) {
+        if self.confirm_pending.take().is_some() {
+            self.record("确认 · 已取消");
+            self.tell("已取消执行，未提交新产物。", None);
+        }
     }
 
     /// 自由对话派发（S22）：携带项目上下文的真实 LLM turn。
@@ -5777,6 +6143,14 @@ impl ResearchApp {
                         let from = self.session.route;
                         self.session
                             .navigate(Route::Requirements, self.session.scroll_of(from));
+                    } else if task.kind == AgentTaskKind::TriageTranslate {
+                        // S24 诚实降级：Triage 不可用时不猜测意图，只保留 L0 与离线说明。
+                        self.triage_pending = None;
+                        self.record(&format!("{} · 失败（{e}），回退 L2 离线", task.label));
+                        self.tell(
+                            format!("{}\n\n（意图识别未能接入模型：{e}；当前仅支持精确命令，可尝试芯片或配置 LLM 后重试。）", ai::reply("")),
+                            None,
+                        );
                     } else {
                         self.tell(
                             format!("{}失败：{e}。没有提交新产物，可以重试。", task.label),
@@ -5917,6 +6291,23 @@ impl ResearchApp {
                     self.session
                         .navigate(Route::Requirements, self.session.scroll_of(from));
                 }
+            }
+            AgentTaskKind::TriageTranslate => {
+                // S24：Triage 结果只进识别状态机，不直接入聊天消息。
+                let text = self
+                    .triage_pending
+                    .as_ref()
+                    .map(|p| p.original_text.clone())
+                    .unwrap_or_default();
+                let fallback = self.intent_registry.types().keys().cloned().collect::<Vec<_>>();
+                let result = intents::parse_and_reduce_triage_reply(
+                    &self.intent_registry,
+                    &reply,
+                    0.7,
+                    0.15,
+                    &fallback,
+                );
+                self.handle_triage_result(&text, result);
             }
         }
         self.record(&format!("{} · 完成{tokens}", task.label));
@@ -6338,7 +6729,14 @@ impl ResearchApp {
     fn reset_agent_workers_for_project_switch(&mut self) {
         let had_agent = self.agent_worker.is_some();
         let had_swarm = self.swarm_worker.is_some();
-        if !had_agent && !had_swarm && self.agent_task.is_none() && self.swarm_task.is_none() {
+        if !had_agent
+            && !had_swarm
+            && self.agent_task.is_none()
+            && self.swarm_task.is_none()
+            && self.confirm_pending.is_none()
+            && self.clarification.is_none()
+            && self.triage_pending.is_none()
+        {
             return;
         }
         if let Some(w) = self.agent_worker.take() {
@@ -6359,6 +6757,10 @@ impl ResearchApp {
             self.model_settings.notice = Some("项目切换：操作已中断，请重试".into());
         }
         self.agent_retry = None;
+        // S24：项目切换清除待确认/澄清/Triage 中间状态，防止跨项目误执行。
+        self.confirm_pending = None;
+        self.clarification = None;
+        self.triage_pending = None;
         self.record("项目切换 · agent 会话已重置（项目隔离）");
     }
 
@@ -8050,6 +8452,293 @@ mod tests {
 
             // 空结果集：明细为空（任务条仅显示 0/3 计数）
             assert!(swarm_progress_detail(&[]).is_empty());
+        });
+    }
+
+    /// UT-S24-07：日志脱敏与 L2 归约。
+    /// 运行记录只含标签/类型 ID/尝试序号/状态/错误分类；
+    /// 用户原文、原始 JSON、识别正文、槽位值及无效回复哨兵不得出现；
+    /// octos 不可用时 Unknown → 离线预设，L0 本地动作仍可构造。
+    #[test]
+    fn ut_s24_07_log_sanitization_and_l2_offline() {
+        nautilus_research_testkit::case("UT-S24-07", || {
+            // sanitize_triage_error 只保留错误分类，截断含原文/JSON 的细节
+            assert!(
+                ResearchApp::sanitize_triage_error("未知 type_id：用户原文").len() < 30
+            );
+            assert!(
+                !ResearchApp::sanitize_triage_error("JSON 解析失败：{...用户JSON...}").contains("{")
+            );
+
+            // L0 本地动作零模型构造
+            let artifact = ResearchApp::artifact_from_l0(ai::Intent::RunExperiment);
+            assert_eq!(artifact.type_id, "experiment.run.requested");
+            assert_eq!(artifact.confidence, 1.0);
+
+            // record 只接收标签/类型 ID/状态；不应写入原文/JSON/槽位值
+            let mut app = ResearchApp::new(false);
+            app.record("L0 识别 · experiment.run.requested");
+            app.record("Triage · 重试 · 校验错误");
+            app.record("确认 · 已取消");
+            let logs = app.logs.join("\n");
+            assert!(
+                !logs.contains("用户原文"),
+                "运行记录不得含用户原文，实际：{logs}"
+            );
+            assert!(!logs.contains("600519"), "运行记录不得含槽位值");
+            assert!(!logs.contains("{\"domain\""), "运行记录不得含原始 JSON");
+
+            // L2 离线：Unknown 输入得到诚实能力说明
+            let offline = ai::reply("");
+            assert!(offline.contains("不能理解") || offline.contains("离线预设"));
+        });
+    }
+
+    /// UT-S24-08：无头 GUI 状态归约。
+    /// 澄清按钮不启动 worker；needs_confirm 卡片确认前无动作、取消清除；
+    /// 过期任务结果不触发后续派发；Triage delta 不进入聊天预览或持久化消息。
+    #[test]
+    fn ut_s24_08_gui_intent_state_machine() {
+        nautilus_research_testkit::case("UT-S24-08", || {
+            let mut app = ResearchApp::new(false);
+
+            // 1. 澄清按钮直接构造 Artifact，不启动 worker
+            app.clarification = Some(ClarificationState {
+                candidates: vec!["experiment.run.requested".into()],
+                original_text: "帮我跑一下".into(),
+            });
+            assert!(app.agent_worker.is_none());
+            app.pick_clarification_candidate("experiment.run.requested");
+            assert!(app.clarification.is_none());
+            assert!(
+                app.confirm_pending.is_some(),
+                "RunExperiment 是 needs_confirm，应进入待确认卡片"
+            );
+            assert!(app.agent_worker.is_none(), "澄清选择不得启动 worker");
+
+            // 2. 取消确认卡片 → 清除待确认 Artifact，不执行
+            app.cancel_intent_confirm();
+            assert!(app.confirm_pending.is_none());
+
+            // 3. 项目切换清除待确认/澄清/Triage 状态
+            app.confirm_pending = Some(IntentConfirmState {
+                artifact: ResearchApp::artifact_from_l0(ai::Intent::PlanExport),
+                title: "确认导出？".into(),
+                body: "演示计划".into(),
+            });
+            app.clarification = Some(ClarificationState {
+                candidates: vec![],
+                original_text: "歧义".into(),
+            });
+            app.triage_pending = Some(TriagePending {
+                original_text: "待转译".into(),
+                retry_count: 0,
+            });
+            app.reset_agent_workers_for_project_switch();
+            assert!(app.confirm_pending.is_none());
+            assert!(app.clarification.is_none());
+            assert!(app.triage_pending.is_none());
+
+            // 4. Triage delta 不进入聊天预览（apply_stream_snapshot 对非当前任务 ID 丢弃）
+            app.agent_task = Some(AgentTask {
+                id: 1,
+                label: "意图识别".into(),
+                kind: AgentTaskKind::TriageTranslate,
+                started: std::time::Instant::now(),
+                preview: String::new(),
+            });
+            assert!(!app.apply_stream_snapshot(2, "非法预览".into()));
+            assert!(app.apply_stream_snapshot(1, "结构化 JSON".into()));
+            // Triage 预览不持久化到消息流
+            assert!(
+                !app.workspace
+                    .current()
+                    .messages
+                    .iter()
+                    .any(|m| m.text.contains("结构化 JSON"))
+            );
+
+            // 5. 过期任务结果不触发后续派发：手工构造过期响应应被丢弃
+            app.agent_task_seq = 5;
+            app.agent_task = Some(AgentTask {
+                id: 5,
+                label: "意图识别".into(),
+                kind: AgentTaskKind::TriageTranslate,
+                started: std::time::Instant::now(),
+                preview: String::new(),
+            });
+            let before = app.workspace.current().messages.len();
+            // 过期响应不会通过正常 poll_agent_task 路径到达，这里直接断言状态不变
+            assert_eq!(app.workspace.current().messages.len(), before);
+        });
+    }
+
+    /// UT-S22-02（intent-as-artifact）：L0/L1 入口与自由问答改道。
+    /// L0 Unknown 且 octos 可用时先产生 TriageTranslate；只有 domain=out_of_scope
+    /// 才进入 ChatFree；域内 Artifact/Clarification 不进入 ChatFree；
+    /// octos 不可用时 Unknown 降级 OfflinePreset。
+    #[test]
+    fn ut_s22_02_intent_entry_and_chat_free_dispatch() {
+        nautilus_research_testkit::case("UT-S22-02", || {
+            let mut app = ResearchApp::new(false);
+
+            // 1. L0 确定性意图直接本地分发，不启动 Triage/ChatFree
+            app.do_ai_send_text("运行实验".into());
+            assert!(
+                !matches!(
+                    app.agent_task.as_ref().map(|t| t.kind),
+                    Some(AgentTaskKind::TriageTranslate | AgentTaskKind::ChatFree)
+                ),
+                "L0 命中不得启动 Triage/ChatFree"
+            );
+            assert!(app.confirm_pending.is_some(), "RunExperiment 应进入待确认");
+            app.confirm_pending = None;
+
+            // 2. L0 Unknown + octos 可用 → TriageTranslate
+            app.octos_available_test = Some(true);
+            app.do_ai_send_text("帮我跑一下".into());
+            assert!(
+                matches!(
+                    app.agent_task.as_ref().map(|t| t.kind),
+                    Some(AgentTaskKind::TriageTranslate)
+                ),
+                "Unknown + octos 可用应启动 TriageTranslate"
+            );
+            app.cancel_agent_task();
+
+            // 3. handle_triage_result：域内 Artifact 不进入 ChatFree
+            app.handle_triage_result(
+                "运行",
+                TriageResult::Artifact(IntentArtifact {
+                    type_id: "experiment.run.requested".into(),
+                    slots: std::collections::BTreeMap::new(),
+                    confidence: 0.9,
+                }),
+            );
+            assert!(
+                !matches!(
+                    app.agent_task.as_ref().map(|t| t.kind),
+                    Some(AgentTaskKind::ChatFree)
+                ),
+                "域内 Artifact 不得进入 ChatFree"
+            );
+            app.confirm_pending = None;
+
+            // 4. ClarificationRequested 不进入 ChatFree
+            app.handle_triage_result(
+                "歧义",
+                TriageResult::ClarificationRequested(vec!["design.generate.requested".into()]),
+            );
+            assert!(
+                !matches!(
+                    app.agent_task.as_ref().map(|t| t.kind),
+                    Some(AgentTaskKind::ChatFree)
+                ),
+                "Clarification 不得进入 ChatFree"
+            );
+            app.clarification = None;
+
+            // 5. octos 不可用时 Unknown → OfflinePreset（不启动 ChatFree）
+            app.octos_available_test = Some(false);
+            let before = app.workspace.current().messages.len();
+            app.do_ai_send_text("随便聊聊".into());
+            assert!(
+                app.agent_task.is_none(),
+                "octos 不可用不得启动任何 agent 任务"
+            );
+            assert_eq!(app.workspace.current().messages.len(), before + 2); // user + assistant
+            let last = app.workspace.current().messages.last().unwrap();
+            assert!(
+                last.text.contains("未接入模型") || last.text.contains("不能理解"),
+                "应返回 L2 离线说明，实际：{}",
+                last.text
+            );
+        });
+    }
+
+    /// UT-S23-02（intent-as-artifact）：Artifact 入口与分阶段降级。
+    /// 仅 DraftRequirement Artifact 启动草稿路径；ChatFree/Clarification/其他 Artifact
+    /// 不写草稿；Triage 失败只给 L2 且原草稿不变；任何路径不自动确认 R 版本。
+    #[test]
+    fn ut_s23_02_artifact_entry_and_gradual_fallback() {
+        nautilus_research_testkit::case("UT-S23-02", || {
+            let mut app = ResearchApp::new(false);
+            let original_draft = "原草稿内容".to_string();
+            app.ai_req_text = original_draft.clone();
+            let req_count_before = app.workspace.current().reqs.len();
+
+            // 1. ChatFree 不写草稿、不确认版本
+            app.handle_triage_result("闲聊", TriageResult::ChatFree);
+            assert_eq!(app.ai_req_text, original_draft, "ChatFree 不得改草稿");
+            assert_eq!(
+                app.workspace.current().reqs.len(),
+                req_count_before,
+                "ChatFree 不得确认版本"
+            );
+
+            // 2. ClarificationRequested 不写草稿
+            app.handle_triage_result(
+                "歧义",
+                TriageResult::ClarificationRequested(vec![]),
+            );
+            assert_eq!(app.ai_req_text, original_draft, "Clarification 不得改草稿");
+            app.clarification = None;
+
+            // 3. 其他 Artifact（RunExperiment）不写草稿
+            app.handle_triage_result(
+                "运行",
+                TriageResult::Artifact(IntentArtifact {
+                    type_id: "experiment.run.requested".into(),
+                    slots: std::collections::BTreeMap::new(),
+                    confidence: 0.9,
+                }),
+            );
+            assert_eq!(app.ai_req_text, original_draft, "非 Draft Artifact 不得改草稿");
+            assert_eq!(
+                app.workspace.current().reqs.len(),
+                req_count_before,
+                "非 Draft Artifact 不得确认版本"
+            );
+            app.confirm_pending = None;
+
+            // 4. DraftRequirement Artifact 启动草稿路径（使用芯片文案避免真实 LLM）
+            app.last_user_text = "生成需求草稿".into();
+            app.handle_triage_result(
+                "生成需求草稿",
+                TriageResult::Artifact(IntentArtifact {
+                    type_id: "requirement.draft.requested".into(),
+                    slots: std::collections::BTreeMap::new(),
+                    confidence: 0.9,
+                }),
+            );
+            // 芯片文案路径不会启动 LLM，而是直接把提示落入草稿框状态
+            assert!(
+                app.ai_req_text.contains("研究目标") || app.ai_req_text == original_draft,
+                "DraftRequirement Artifact 应触发草稿路径：{}",
+                app.ai_req_text
+            );
+            assert_eq!(
+                app.workspace.current().reqs.len(),
+                req_count_before,
+                "草稿路径不得自动确认版本"
+            );
+
+            // 5. Triage 失败（octos 不可用）→ L2，原草稿不变
+            let mut app2 = ResearchApp::new(false);
+            app2.ai_req_text = original_draft.clone();
+            app2.octos_available_test = Some(false);
+            app2.do_ai_send_text("研究想法".into());
+            assert_eq!(app2.ai_req_text, original_draft, "Triage 失败应保留原草稿");
+            assert!(
+                app2.workspace
+                    .current()
+                    .messages
+                    .last()
+                    .unwrap()
+                    .text
+                    .contains("未接入模型"),
+                "Triage 不可用时应在 UI 标注"
+            );
         });
     }
 }

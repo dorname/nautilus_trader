@@ -1,0 +1,7 @@
+[type]
+id = "report.generate.requested"
+description = "用户希望生成当前版本的验证报告"
+boundary_negative = ["看看上次报告", "报告已经过期了"]
+slots = {}
+risk_class = "local_action"
+examples = ["生成报告", "生成验证报告", "看看验证结果"]

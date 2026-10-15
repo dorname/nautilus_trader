@@ -1,0 +1,7 @@
+[type]
+id = "boundary.explain.requested"
+description = "用户希望解释调试、回测、验证、交易计划核对等概念的边界"
+boundary_negative = []
+slots = {}
+risk_class = "local_action"
+examples = ["解释验证区别", "回测和验证是一回事吗", "了解验证流程"]

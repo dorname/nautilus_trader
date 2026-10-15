@@ -1,0 +1,7 @@
+[type]
+id = "requirement.confirm.requested"
+description = "用户希望确认当前需求正文与验收标准，生成需求版本 R"
+boundary_negative = ["看看上次确认的需求", "需求还没写好"]
+slots = {}
+risk_class = "local_action"
+examples = ["确认需求", "确认版本", "提交需求"]
