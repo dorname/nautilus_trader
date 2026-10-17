@@ -115,7 +115,9 @@ resource_index:
 - path: logos/resources/api/tickflow-klines.yaml
   desc: TickFlow K线接口契约（OpenAPI摘要，官方文档2026-09-28抓取）
 - path: logos/resources/test/astock/astock-test-cases.md
-  desc: A股测试用例：UT-AST-01~11 + ST-A1/A2 + AC溯源
+  desc: A股测试用例：UT-AST-01~11 + ST-A1/A2 + UT-STF-01~11 + ST-STF-01 + AC溯源
+- path: logos/resources/scenario/core-st-risk-orchestration.json
+  desc: ST-STF-01 内部 API 编排规格（screen_pool → apply_pool），A股 S10 辅助子流程
 - path: logos/resources/api/core-research-contracts.yaml
   desc: 桌面本地命令契约；12个接口来自S11～S15时序，非HTTP服务
 - path: logos/resources/database/core-01-research-storage.sql

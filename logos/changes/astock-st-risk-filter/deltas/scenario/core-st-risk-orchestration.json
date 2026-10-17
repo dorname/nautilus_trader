@@ -1,0 +1,57 @@
+{
+  "kind": "component-orchestration-spec",
+  "version": 1,
+  "description": "ST-STF-01 内部 API 编排规格：AstockSTFilter.screen_pool -> apply_pool 调用链。使用离线固定小样本，不访问 TickFlow。沿用 A股 S10 辅助子流程，不新增业务场景编号。",
+  "fixtures": {
+    "F-STF-POOL": {
+      "symbols": ["GOOD.SH", "WARN.SH", "LOSS.SH", "NODATA.SH"],
+      "fin_metrics": {
+        "GOOD.SH": [
+          {"period_end": "2024-12-31", "net_profit": 8e8, "bps": 5.0},
+          {"period_end": "2025-12-31", "net_profit": 9e8, "bps": 5.5}
+        ],
+        "WARN.SH": [
+          {"period_end": "2024-12-31", "net_profit": 5e7, "bps": 3.0},
+          {"period_end": "2025-12-31", "net_profit": -2e7, "bps": 2.8}
+        ],
+        "LOSS.SH": [
+          {"period_end": "2024-12-31", "net_profit": -5e7, "bps": 2.0},
+          {"period_end": "2025-12-31", "net_profit": -3e7, "bps": 1.5}
+        ]
+      },
+      "catalog_bars": {
+        "GOOD.SH": [10.0],
+        "WARN.SH": [10.0],
+        "LOSS.SH": [10.0]
+      },
+      "catalog_turnovers": {
+        "GOOD.SH": [1e7],
+        "WARN.SH": [1e7],
+        "LOSS.SH": [1e7]
+      }
+    }
+  },
+  "flows": [
+    {
+      "id": "ST-STF-01",
+      "scenario": "S10",
+      "subflow": "独立Python辅助筛选",
+      "acceptance": ["S10-AC-08"],
+      "steps": [
+        {"step": 1, "operation": "加载固定样本", "fixture": "F-STF-POOL", "extract": "inputs"},
+        {"step": 2, "call": "AstockSTFilter.screen_pool", "arguments": "inputs", "extract": "verdicts"},
+        {"step": 3, "call": "AstockSTFilter.apply_pool", "arguments": {"verdicts": "$verdicts", "drop_warn": false}, "extract": "default_pool"},
+        {"step": 4, "call": "AstockSTFilter.apply_pool", "arguments": {"verdicts": "$verdicts", "drop_warn": true}, "extract": "strict_pool"}
+      ],
+      "assertions": {
+        "severity": {"GOOD.SH": "clean", "WARN.SH": "warn", "LOSS.SH": "hard", "NODATA.SH": "hard"},
+        "excluded": {"GOOD.SH": false, "WARN.SH": false, "LOSS.SH": true, "NODATA.SH": true},
+        "reasons_contains": {"NODATA.SH": "no-data"},
+        "default_pool": ["GOOD.SH", "WARN.SH"],
+        "strict_pool": ["GOOD.SH"]
+      },
+      "status": "待实现",
+      "reporter_id": "ST-STF-01"
+    }
+  ]
+}

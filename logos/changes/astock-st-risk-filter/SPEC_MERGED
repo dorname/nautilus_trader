@@ -1,0 +1,15 @@
+SPEC_MERGED
+
+提案：astock-st-risk-filter
+合并时间：2026-10-17
+合并依据：外环第4条终审批准及 `openlogos merge astock-st-risk-filter` 生成 MERGE_PROMPT.md
+
+已合并到 logos/resources 的规格：
+- logos/resources/prd/1-product-requirements/07-astock-requirements.md — 新增 FR-A9、S10-AC-05~09、研究假设阈值、当前数据边界
+- logos/resources/prd/2-product-design/1-feature-specs/core-02-research-workflow.md — 新增 ST 风险筛选器内部契约、调用时序、数据不足口径、与 S12 不接线声明
+- logos/resources/test/astock/astock-test-cases.md — 新增 UT-STF-01~11 与 ST-STF-01 用例、AC 追溯
+- logos/resources/scenario/core-st-risk-orchestration.json — 新增 ST-STF-01 内部 API 编排规格
+
+资源索引同步：logos/logos-project.yaml 已更新 astock-test-cases.md 描述并新增 core-st-risk-orchestration.json 条目；scenario_counter.next_id 保持 25。
+
+本文件标记规格合并完成。后续按 tasks.md [code] 阶段实现测试代码与 reporter 修正，完成后运行 openlogos verify 验收。
